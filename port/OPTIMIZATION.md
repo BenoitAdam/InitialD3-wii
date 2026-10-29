@@ -67,6 +67,7 @@ than half the budget.
 | 10-27 | Every frame drawn (log 9) | 40-44 fps |
 | 10-28 | Black lights dropped: car select fully on the GPU | car select 28 -> 60 fps |
 | 10-28 | Depth measuring spread over 32 renders (log 10 bug, fixed in log 11) | 35 -> 38-41 fps |
+| 10-30 | BACKFACE CULL (flickering trees fix): back faces no longer rasterised, ~350-400 GX cull changes a frame | awaiting log 12 (expect equal or a little less GP time) |
 
 ## What was done
 

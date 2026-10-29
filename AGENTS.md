@@ -19,7 +19,7 @@ it exists.
   (MSVC: launcher, headless runner and tests, used for bring-up, censuses and A/B checks).
 - GitHub: `BenoitAdam/Initial-D-3-wii`, branch `main`. The owner commits often themselves.
 
-### Status (2026-10-29)
+### Status (2026-10-30)
 
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
 - Menus/attract/car select: 100% speed. Race: ~38-41 fps with every frame drawn
@@ -34,6 +34,11 @@ it exists.
   2026-10-29) but it ran at a few fps, every list lit on the CPU. NIGHT LIGHTS = GPU (APPROX)
   (RENDERING page, default) now lights those lists with GX local lights: the whole demo goes
   to the GPU path on Windows (`--gpu-tnl`). Awaiting its speed and look on a Wii (log 12).
+- Trees flickered in every race (owner, 2026-10-29): trees and guardrails are two-sided cards
+  the arcade back-face culls; drawn both ways, the faces z-fight in GX's 24-bit Z. New option
+  BACKFACE CULL (RENDERING page, last row, default ON = gxRend ISP_CULL 2). Windows emulation
+  of the Wii's Z buffer: Z-rounding-sensitive race pixels 1.7-5K -> 32-98 a frame. Untested on
+  a Wii (if the road or cars vanish, the winding is wrong: ON, OTHER SIDE).
 
 ## Hard rules
 
@@ -124,6 +129,8 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--gpu-tnl` | take the lists the Wii GPU path would take; runs the **GPU fetch check** (`[run] GPU fetch check`: program triangles vs the CPU draw; must stay at 0 mismatches) |
 | `--frameskip N`, `--model-skip 0/1`, `--fixes on/off` | same as the launcher options, for A/B runs |
 | `--point-lights 0/1` | NIGHT LIGHTS: 1 = point lights as GX local lights; without `--gpu-tnl` the CPU draws those lists lit the way GX would (snapshot preview) |
+| `--cull 0/1/2` | BACKFACE CULL in the snapshots: 2 = the polygons' cull modes (launcher ON), 1 = the other winding |
+| env `IDAS3_GX_DEPTH=N:F:rules;...` | each snapshot redrawn with the Wii's 24-bit Z (near N, far F; N 0 = exact) and other depth rules, `_diffK.png` + winning lists of the differing pixels; a config against itself with `j0.5` = pixels that flicker (rules in `soft_renderer.cpp`, `GxDepth`). Race: `0:1:geq+cull;0.00999:100100:geq+cull;0.00999:100100:geq+cull+j0.5+r1` |
 | `--histo-from F` | PC histogram from frame F (best tool when stuck without a hang) |
 | `--trace-from PC`, `--trace-pc a,b`, `--watch ADDR`, `--path-after-elan` | SH-4 tracing |
 | `--area1-census` | who writes the 32-bit VRAM interface |
@@ -203,6 +210,14 @@ probe, ELAN draw split, fetch programs/patches/ring passes); `[CC]` JIT call-out
   the async ring during the game.
 - Text on screen is 8x16 sprites whose 13th vertex word repeats the character code (handy to
   read menus from dumps).
+- Depth on GX is 24-bit integer 1/W, the PVR's was float. A race pins the frame's near plane at
+  the matrices' 0.01 (the road under the camera), so one Z step is ~6e-6 x W^2 units (0.06 at
+  W=100). Exact ties are stable (same vertices, same math); near-ties flicker as the camera
+  moves. Flickering trees were two-sided cards: honour ISP CullMode (BACKFACE CULL). gxRend's
+  ISP_CULL 2 is the right GX pairing (libogc: clockwise = front; mode 2 culls counter-clockwise);
+  the ELAN flips CullMode per model (`cwCulling`) and for the mirror's projection
+  (`naomi_elan_tnl.cpp`). Translucent lists must keep writing depth: without a sort the HUD's
+  layers need it.
 
 ## Open issues (besides speed)
 

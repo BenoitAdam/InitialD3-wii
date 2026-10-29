@@ -1157,7 +1157,9 @@ extern "C" int get_hud_pass_preset();
 extern "C" int get_isp_depth_func_preset();
 #define ISP_DEPTH_FUNC() (get_isp_depth_func_preset())
 
-// 5. PER-POLYGON Z-WRITE: Forces depth updates on depth-tested polygons.
+// 5. ISP CULL: honor the polygon's CullMode (2 = the right GX winding for this
+//    renderer, see dc_cull_to_gx). Initial D 3 draws its trees and guardrails
+//    as two-sided cards: drawn both ways, the faces z-fight in GX's 24-bit Z.
 extern "C" int get_isp_cull_preset();
 #define ISP_CULL() (get_isp_cull_preset())
 
@@ -8888,6 +8890,11 @@ void DoRender()
   // winding. GX's FRONT/BACK naming doesn't follow GL's convention and the
   // effective winding also depends on this renderer's projection, so the 2/3
   // pairing is selectable (ISP_CULL()==2 swaps it) instead of hardcoded.
+  // ==2 is the right one here: this projection keeps the DC screen's
+  // orientation, mode 2 culls a negative determinant (counter-clockwise on
+  // screen) and libogc calls clockwise front-facing. NAOMI 2: the ELAN's GPU
+  // lists carry their polygon's ISP (cull mode already flipped per model and
+  // for the mirror's projection) through this same per-strip block.
   u8 dc_cull_to_gx[4] = { GX_CULL_NONE, GX_CULL_NONE, GX_CULL_FRONT, GX_CULL_BACK };
   if (isp_cull == 2) { dc_cull_to_gx[2] = GX_CULL_BACK; dc_cull_to_gx[3] = GX_CULL_FRONT; }
   int last_cull = GX_CULL_NONE; // GX_SetCullMode(GX_CULL_NONE) is the frame default

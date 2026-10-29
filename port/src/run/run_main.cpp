@@ -675,6 +675,13 @@ int main(int argc, char** argv)
         extern int g_elan_point_preset;
         g_elan_point_preset = atoi(pl);
     }
+    if (const char* cu = argValue(argc, argv, "--cull"))
+    {
+        // BACKFACE CULL: 2 = the polygons' own cull modes (the launcher's ON),
+        // 1 = the other winding; the snapshots show it.
+        extern int g_isp_cull_preset;
+        g_isp_cull_preset = atoi(cu);
+    }
     if (hasFlag(argc, argv, "--path-after-elan"))
     {
         s_pathSeen.assign(0x10000000, false);

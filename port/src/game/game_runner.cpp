@@ -27,6 +27,7 @@ extern int g_trans_sort_preset;
 extern int g_punch_through_preset;
 extern int g_autosort_preset;
 extern int g_split_screen_preset;
+extern int g_isp_cull_preset;
 extern int g_vram_present_preset;     // emu/plugs/drkPvr/gxRend.cpp
 extern int g_show_fps_overlay;
 extern int g_speed_limiter_preset;
@@ -283,7 +284,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_arm7_str_align_preset, &g_adpcm_loop_preset,  &g_arm7_reset_fix_preset, &g_aica_race_preset,
         &g_aica_ca_clamp_preset, &g_jit_link_guard_preset, &g_div32_fix_preset,  &g_interp_fix_preset,
         &g_spg_fix_preset,       &g_ta_guard_preset,     &g_inf_vtx_preset,
-        &g_elan_point_preset};
+        &g_elan_point_preset,    &g_isp_cull_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

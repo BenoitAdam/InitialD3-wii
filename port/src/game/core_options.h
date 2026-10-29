@@ -88,6 +88,7 @@ enum CoreOptionId
     OPT_INF_VTX,
     // Rendering, added last so that no saved or autolaunch position moves
     OPT_ELAN_POINT,
+    OPT_ISP_CULL,
     kCoreOptionCount
 };
 
@@ -232,6 +233,10 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // ---- Rendering, continued ------------------------------------------------
     {"NIGHT LIGHTS  ", "3D T&L GPU: night lamps and headlights on the GPU (approximate, far faster)",
      PAGE_DEPTH, 1, 2, {"CPU (EXACT)", "GPU (APPROX)"}, {0, 1}},
+    // gxRend's ISP_CULL: 2 pairs the polygon's cull mode with GX's winding the
+    // right way for this renderer's projection, 1 the other way round.
+    {"BACKFACE CULL ", "drops polygons facing away like the arcade: fixes flickering trees", PAGE_DEPTH, 1, 3,
+     {"OFF (LEGACY)", "ON", "ON, OTHER SIDE"}, {0, 2, 1}},
 };
 
 } // namespace idas3

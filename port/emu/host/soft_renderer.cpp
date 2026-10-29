@@ -10,8 +10,9 @@
 // or flat colour, offset colour, the four texture shading instructions,
 // source/destination blending, the PowerVR depth modes, and textures in
 // every pixel format (twiddled, strided, VQ, palettes, mipmaps; point
-// sampled). Not modelled: modifier volumes, fog, user tile clipping,
-// translucent sorting, bump maps, the background plane (cleared to grey).
+// sampled), user tile clipping, back-face culling (runner --cull). Not
+// modelled: modifier volumes, fog, translucent sorting, bump maps, the
+// background plane (cleared to grey).
 #include "types.h"
 
 #if HOST_OS != OS_WII
@@ -24,6 +25,7 @@
 #include "host_hooks.h"
 #include "naomi/naomi_elan_gx.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +39,7 @@ using namespace TASplitter;
 HostRenderStats g_host_render;
 
 extern s32 render_end_pending_cycles;   // SPG.cpp
+extern int g_isp_cull_preset;           // presets_generated.cpp
 
 namespace {
 
@@ -366,6 +369,92 @@ const Texture& texture(u32 tcw, u32 tsp)
 u32 s_color[kWidth * kHeight];
 float s_depth[kWidth * kHeight];
 
+// Env IDAS3_GX_DEPTH=NEAR:FAR[:RULES][;NEAR:FAR[:RULES]...] (up to 8): each
+// snapshot is also drawn with the Wii's depth buffer (1/W mapped onto 24-bit
+// integers between those planes, like gxRend's projection; NEAR 0 = exact
+// 1/W), and _diffK images mark the pixels that differ from the first one; the
+// lists that win those pixels are counted. RULES, joined by '+':
+//   geq  GEQUAL for every list (gxRend with ISP DEPTH FUNC = OFF)
+//   isp  opaque/punch-through: the polygon's depth mode, translucent GEQUAL
+//   fly  Flycast: opaque the polygon's mode, punch-through and translucent
+//        GEQUAL, translucent without depth writes (auto-sort)
+//   nzw  translucent without depth writes
+//   bK   translucent depth K steps nearer (a Z offset)
+//   rK   compared with configuration K instead of the first
+//   jK   every depth K steps nearer (K < 1: moves where Z rounds)
+//   cull / cullx  the polygons' cull modes (cullx: the other winding), like
+//        runner --cull 2 / 1 (BACKFACE CULL)
+//   none of geq/isp/fly: every list uses its polygon's depth mode
+// A configuration and the same with j0.5 against it show which pixels depend
+// on Z rounding, i.e. flicker when the camera moves.
+struct GxDepth
+{
+    bool quantize = false, geq = false, isp = false, fly = false, nzw = false;
+    int cull = 0;           // as g_isp_cull_preset
+    float bias = 0.f, jitter = 0.f;
+    u32 ref = 0;
+    float p5 = 0.f, p6 = 0.f;
+};
+GxDepth s_gxCfg[8];
+u32 s_gxCount = 0;
+const GxDepth* s_gx = nullptr;  // the current rasterise() emulates this Z buffer
+u32 s_owner[kWidth * kHeight];  // list << 24 | state of the last write, + 1
+
+void gxDepthInit()
+{
+    static bool done = false;
+    if (done)
+        return;
+    done = true;
+    const char* e = getenv("IDAS3_GX_DEPTH");
+    while (e && *e && s_gxCount < 8)
+    {
+        float n = -1.f, f = 0.f;
+        char rules[32] = {};
+        if (sscanf(e, "%f:%f:%31[a-z0-9.+]", &n, &f, rules) < 2 || n < 0.f || f <= n)
+            break;
+        GxDepth& g = s_gxCfg[s_gxCount++];
+        g.quantize = n > 0.f;
+        for (char* r = strtok(rules, "+"); r; r = strtok(nullptr, "+"))
+        {
+            g.geq |= !strcmp(r, "geq");
+            g.isp |= !strcmp(r, "isp");
+            g.fly |= !strcmp(r, "fly");
+            g.nzw |= !strcmp(r, "nzw");
+            if (r[0] == 'b')
+                g.bias = (float)atof(r + 1);
+            if (r[0] == 'r' && (u32)atoi(r + 1) < s_gxCount - 1)
+                g.ref = (u32)atoi(r + 1);
+            if (r[0] == 'j')
+                g.jitter = (float)atof(r + 1);
+            if (!strcmp(r, "cull"))
+                g.cull = 2;
+            if (!strcmp(r, "cullx"))
+                g.cull = 1;
+        }
+        if (g.quantize)
+        {
+            g.p6 = -1.f / (1.f / f - 1.f / n);
+            g.p5 = g.p6 / n;
+        }
+        printf("[gxdepth] #%u: near %g far %g%s%s%s%s%s bias %g jitter %g cull %d, against #%u\n", s_gxCount - 1, n,
+               f, g.quantize ? "" : " (exact 1/W)", g.geq ? " geq" : "", g.isp ? " isp" : "", g.fly ? " fly" : "",
+               g.nzw ? " nzw" : "", g.bias, g.jitter, g.cull, g.ref);
+        e = strchr(e, ';');
+        e = e ? e + 1 : nullptr;
+    }
+}
+
+// 1/W -> the 24-bit Z the Wii would store (float math like the XF's).
+inline float gxZ(float invW, float bias)
+{
+    if (!s_gx || !s_gx->quantize)
+        return invW;
+    const float W = 1.f / invW;
+    const float zs = ((s_gx->p5 * -W + s_gx->p6) / W) * 16777215.f + 16777215.f + bias + s_gx->jitter;
+    return zs < 0.f ? 0.f : zs > 16777215.f ? 16777215.f : zs;
+}
+
 bool depthPass(u32 mode, float z, float stored)
 {
     switch (mode)
@@ -421,6 +510,17 @@ void drawTriangle(const Vtx& a, const Vtx& b, const Vtx& c, const State& st, u32
     if (!std::isfinite(area) || std::fabs(area) < 1e-6f || std::fabs(a.x) > 1e6f || std::fabs(b.x) > 1e6f ||
         std::fabs(c.x) > 1e6f || std::fabs(a.y) > 1e6f || std::fabs(b.y) > 1e6f || std::fabs(c.y) > 1e6f)
         return;
+    // BACKFACE CULL (g_isp_cull_preset, runner --cull): ISP cull mode 2 drops
+    // a negative area (counter-clockwise on screen), 3 a positive one; preset
+    // 1 swaps them, as gxRend's ISP_CULL 1 does against 2.
+    const int cull = s_gx ? s_gx->cull : g_isp_cull_preset;
+    if (cull)
+    {
+        const u32 cullMode = (st.isp >> 27) & 3;
+        const float signedArea = cull == 2 ? area : -area;
+        if ((cullMode == 2 && signedArea < 0.f) || (cullMode == 3 && signedArea > 0.f))
+            return;
+    }
     int minX = (int)std::floor(std::fmin(a.x, std::fmin(b.x, c.x)));
     int maxX = (int)std::ceil(std::fmax(a.x, std::fmax(b.x, c.x)));
     int minY = (int)std::floor(std::fmin(a.y, std::fmin(b.y, c.y)));
@@ -446,8 +546,22 @@ void drawTriangle(const Vtx& a, const Vtx& b, const Vtx& c, const State& st, u32
     const bool textured = (st.pcw >> 3) & 1;
     const bool offset = (st.pcw >> 2) & 1;
     const bool gouraud = (st.pcw >> 1) & 1;
-    const u32 depthMode = st.isp >> 29;
-    const bool zWrite = ((st.isp >> 26) & 1) == 0;
+    u32 depthMode = st.isp >> 29;
+    bool zWrite = ((st.isp >> 26) & 1) == 0;
+    float bias = 0.f;
+    if (s_gx)
+    {
+        if (s_gx->geq || ((s_gx->isp || s_gx->fly) && list == 2) || (s_gx->fly && list == 4))
+            depthMode = 6;
+        if (list == 2)
+        {
+            zWrite &= !s_gx->fly && !s_gx->nzw;
+            bias = s_gx->bias;
+        }
+    }
+    const bool quantize = s_gx && s_gx->quantize;
+    const float za = gxZ(a.z, bias), zb = gxZ(b.z, bias), zc = gxZ(c.z, bias);
+    const u32 owner = (list << 24 | (u32)(&st - s_frame.states.data())) + 1;
     const u32 srcInstr = st.tsp >> 29, dstInstr = (st.tsp >> 26) & 7;
     const bool useAlpha = (st.tsp >> 20) & 1, ignoreTexA = (st.tsp >> 19) & 1;
     const bool flipU = (st.tsp >> 18) & 1, flipV = (st.tsp >> 17) & 1;
@@ -470,7 +584,9 @@ void drawTriangle(const Vtx& a, const Vtx& b, const Vtx& c, const State& st, u32
             float w2 = 1.f - w0 - w1;
             if (w0 < 0 || w1 < 0 || w2 < 0)
                 continue;
-            const float z = w0 * a.z + w1 * b.z + w2 * c.z;
+            float z = w0 * za + w1 * zb + w2 * zc;
+            if (quantize)
+                z = std::floor(z);
             const int pixel = y * kWidth + x;
             if (!depthPass(depthMode, z, s_depth[pixel]))
                 continue;
@@ -548,6 +664,7 @@ void drawTriangle(const Vtx& a, const Vtx& b, const Vtx& c, const State& st, u32
             }
             dstPixel = (u32)(clamp01(out[3]) * 255.f + 0.5f) << 24 | (u32)(clamp01(out[0]) * 255.f + 0.5f) << 16 |
                        (u32)(clamp01(out[1]) * 255.f + 0.5f) << 8 | (u32)(clamp01(out[2]) * 255.f + 0.5f);
+            s_owner[pixel] = owner;
             if (zWrite)
                 s_depth[pixel] = z;
         }
@@ -560,6 +677,7 @@ void rasterise()
         c = 0xFF202020;
     for (float& d : s_depth)
         d = 0.f;
+    memset(s_owner, 0, sizeof(s_owner));
     s_textures.clear();
     static const u32 order[3] = {0, 4, 2};
     for (u32 list : order)
@@ -653,6 +771,146 @@ bool writePng(const char* path)
     fwrite(png.data(), 1, png.size(), f);
     fclose(f);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// IDAS3_GX_DEPTH report (see GxDepth)
+// ---------------------------------------------------------------------------
+// How the frame's polygons cull, in draw order: what BACKFACE CULL costs in
+// GX cull mode changes.
+void gxCullCensus(u32 frame)
+{
+    u32 modes[4] = {}, changes = 0, last = 0;
+    static const u32 order[3] = {0, 4, 2};
+    for (u32 list : order)
+    {
+        u32 prevState = ~0u;
+        for (const Tri& t : s_frame.tris[list])
+        {
+            if (t.state == prevState)
+                continue;
+            prevState = t.state;
+            const u32 m = (s_frame.states[t.state].isp >> 27) & 3;
+            modes[m]++;
+            const u32 gx = m >= 2 ? m : 0;
+            changes += gx != last;
+            last = gx;
+        }
+    }
+    printf("[gxdepth] frame %u cull modes (polygon headers): 0:%u 1:%u 2:%u 3:%u, GX cull changes %u\n", frame,
+           modes[0], modes[1], modes[2], modes[3], changes);
+}
+
+void describeOwner(u32 owner, char* out, size_t n)
+{
+    if (!owner)
+    {
+        snprintf(out, n, "background");
+        return;
+    }
+    const State& st = s_frame.states[(owner - 1) & 0xFFFFFF];
+    snprintf(out, n, "list %u st %u dm %u cull %u zw %u blend %u/%u tex %06X", (owner - 1) >> 24,
+             (owner - 1) & 0xFFFFFF, st.isp >> 29, (st.isp >> 27) & 3, ((st.isp >> 26) & 1) ^ 1, st.tsp >> 29,
+             (st.tsp >> 26) & 7, (st.tcw & 0x1FFFFF) << 3);
+}
+
+// Env IDAS3_GX_DEPTH_STACK: every triangle under pixel px, in draw order.
+void printPixelStack(int px)
+{
+    const float sx = px % kWidth + 0.5f, sy = px / kWidth + 0.5f;
+    printf("[gxstack] pixel %d,%d\n", px % kWidth, px / kWidth);
+    static const u32 order[3] = {0, 4, 2};
+    for (u32 list : order)
+        for (size_t t = 0; t < s_frame.tris[list].size(); t++)
+        {
+            const Tri& tr = s_frame.tris[list][t];
+            const Vtx& p = s_frame.vtx[tr.v[0]];
+            const Vtx& q = s_frame.vtx[tr.v[1]];
+            const Vtx& r = s_frame.vtx[tr.v[2]];
+            const float area = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+            if (!std::isfinite(area) || std::fabs(area) < 1e-6f)
+                continue;
+            const float w0 = ((q.x - sx) * (r.y - sy) - (q.y - sy) * (r.x - sx)) / area;
+            const float w1 = ((r.x - sx) * (p.y - sy) - (r.y - sy) * (p.x - sx)) / area;
+            const float w2 = 1.f - w0 - w1;
+            if (w0 < 0 || w1 < 0 || w2 < 0)
+                continue;
+            const State& st = s_frame.states[tr.state];
+            printf("[gxstack]  list %u tri %zu st %u dm %u cull %u tex %06X 1/W %.9g | W (%.6f %.6f %.6f) xy (%.3f %.3f) "
+                   "(%.3f %.3f) (%.3f %.3f)\n",
+                   list, t, tr.state, st.isp >> 29, (st.isp >> 27) & 3, (st.tcw & 0x1FFFFF) << 3,
+                   w0 * p.z + w1 * q.z + w2 * r.z, 1.f / p.z, 1.f / q.z, 1.f / r.z, p.x, p.y, q.x, q.y, r.x, r.y);
+        }
+}
+
+// The snapshot just rasterised, drawn again with each configuration; s_color
+// holds the plain snapshot again on return.
+void gxDepthReport(u32 frame)
+{
+    gxDepthInit();
+    if (!s_gxCount)
+        return;
+    static u32 plain[kWidth * kHeight];
+    static std::vector<u32> results[8], owners[8];
+    static std::vector<float> refDepth;
+    memcpy(plain, s_color, sizeof(plain));
+    gxCullCensus(frame);
+    for (u32 k = 0; k < s_gxCount; k++)
+    {
+        s_gx = &s_gxCfg[k];
+        rasterise();
+        s_gx = nullptr;
+        char path[512];
+        snprintf(path, sizeof(path), "%s/frame_%05u_gx%u.png", s_snapDir.c_str(), frame, k);
+        writePng(path);
+        results[k].assign(s_color, s_color + kWidth * kHeight);
+        owners[k].assign(s_owner, s_owner + kWidth * kHeight);
+        if (k == 0)
+        {
+            refDepth.assign(s_depth, s_depth + kWidth * kHeight);  // 1/W when #0 is exact
+            continue;
+        }
+        const u32* ref = results[s_gxCfg[k].ref].data();
+        const u32* refOwner = owners[s_gxCfg[k].ref].data();
+        std::unordered_map<u64, u32> pairs;    // reference's winner, this one's -> pixels
+        std::unordered_map<u64, double> pairW;
+        u32 differ = 0;
+        for (int i = 0; i < kWidth * kHeight; i++)
+        {
+            const bool d = s_color[i] != ref[i];
+            if (d)
+            {
+                const u64 key = (u64)refOwner[i] << 32 | s_owner[i];
+                differ++;
+                pairs[key]++;
+                pairW[key] += refDepth[i] > 0.f ? 1.0 / refDepth[i] : 0.0;
+            }
+            s_color[i] = d ? 0xFFFF00FFu : (ref[i] >> 1 & 0x7F7F7F) | 0xFF000000u;
+        }
+        snprintf(path, sizeof(path), "%s/frame_%05u_diff%u.png", s_snapDir.c_str(), frame, k);
+        writePng(path);
+        printf("[gxdepth] frame %u #%u against #%u: %u pixels differ\n", frame, k, s_gxCfg[k].ref, differ);
+        std::vector<std::pair<u32, u64>> top;
+        for (const auto& p : pairs)
+            top.push_back({p.second, p.first});
+        std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (size_t j = 0; j < top.size() && j < 8; j++)
+        {
+            char a[96], b[96];
+            describeOwner((u32)(top[j].second >> 32), a, sizeof(a));
+            describeOwner((u32)top[j].second, b, sizeof(b));
+            printf("[gxdepth]   %6u px, W %.1f: ref %s | this %s\n", top[j].first, pairW[top[j].second] / top[j].first,
+                   a, b);
+        }
+        if (k == 1 && !top.empty() && getenv("IDAS3_GX_DEPTH_STACK"))
+            for (int i = 0; i < kWidth * kHeight; i++)
+                if (s_color[i] == 0xFFFF00FFu && ((u64)refOwner[i] << 32 | s_owner[i]) == top[0].second)
+                {
+                    printPixelStack(i);
+                    break;
+                }
+    }
+    memcpy(s_color, plain, sizeof(plain));
 }
 
 } // namespace
@@ -1061,6 +1319,7 @@ void StartRender()
         rasterise();
         char path[512];
         snprintf(path, sizeof(path), "%s/frame_%05u.png", s_snapDir.c_str(), g_host_render.vblanks);
+        gxDepthReport(g_host_render.vblanks);
         if (writePng(path))
             printf("[snap] %s (%u tris op, %u pt, %u tr; %u states, %u vtx | totals: lists %u sprites %u params %u)\n",
                    path, (u32)s_frame.tris[0].size(), (u32)s_frame.tris[4].size(), (u32)s_frame.tris[2].size(),
