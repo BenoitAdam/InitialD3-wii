@@ -6,6 +6,7 @@
 
 int g_elan_gx_preset = 0;
 int g_elan_fetch_preset = 1;
+int g_elan_point_preset = 0;
 
 // ---- Strip structure of an ICH list (Wii draw and Windows census) ----------
 // Vertex records: word 0 header (bit 31 ends the strip, bits 29-30 == 2 make
@@ -450,6 +451,8 @@ struct CheckTotals
 {
     u64 vertices, lists, fetched, built, written, color, other, patchVertices;
     u64 liveWords;          // ring words of the programs drawn (each once a render)
+    u64 lightSets;          // light sets the Wii's arena would hold
+    u32 lightSetsMax;       // ...in its fullest render
     u32 draws, mismatches, overruns;
 };
 
@@ -457,6 +460,23 @@ std::vector<FetchRec> s_fetchRecs;
 std::vector<const FetchList*> s_drawnPrograms;  // this render's
 CheckTotals s_check = {};
 u32 s_checkRenders = 0;
+
+// This render's light sets, shared as the Wii's elan_gx_record shares them:
+// same key as the last list, or a copy among the last kDedupDepth (4) sets.
+std::vector<ElanGxLightSet> s_renderSets;
+u32 s_lastSetKey = 0;
+
+void lightSetNote(const ElanGxRecord& r)
+{
+    if (r.lightKey && r.lightKey == s_lastSetKey)
+        return;
+    s_lastSetKey = r.lightKey;
+    const size_t n = s_renderSets.size();
+    for (size_t k = 0; k < 4 && k < n; k++)
+        if (!memcmp(&s_renderSets[n - 1 - k], &r.lights, sizeof(r.lights)))
+            return;
+    s_renderSets.push_back(r.lights);
+}
 
 void fetchNote(const ElanGxRecord& r)
 {
@@ -498,6 +518,11 @@ void elan_gx_census_render()
     if (!ram || !g_elan_gx_preset || size > kElanBytes || !fetchCheckInit(size))
         return;
     s_ram = ram;
+    s_check.lightSets += s_renderSets.size();
+    if (s_renderSets.size() > s_check.lightSetsMax)
+        s_check.lightSetsMax = (u32)s_renderSets.size();
+    s_renderSets.clear();
+    s_lastSetKey = 0;
     static u32 pages[8192];
     const u32 n = host_GuestTakeWritten(ram, size, pages, 8192);
     for (u32 k = 0; k < n; k++)
@@ -569,11 +594,12 @@ void elan_gx_census_render()
         const double d = 64.0, v = s_check.vertices ? (double)s_check.vertices : 1.0;
         printf("[run]   GPU fetch per drawn render: %.0f vertices in %.0f lists | from programs %.0f (%.0f%%), "
                "built now %.0f (%.0f%%), pages written since the last render %.0f (%.0f%%), colour lists %.0f, "
-               "other CPU-fed %.0f | patched records %.0f | programs drawn take %.0f of the ring's %u KB\n",
+               "other CPU-fed %.0f | patched records %.0f | programs drawn take %.0f of the ring's %u KB | "
+               "light sets %.1f (most %u)\n",
                s_check.vertices / d, s_check.lists / d, s_check.fetched / d, 100.0 * s_check.fetched / v,
                s_check.built / d, 100.0 * s_check.built / v, s_check.written / d, 100.0 * s_check.written / v,
                s_check.color / d, s_check.other / d, s_check.patchVertices / d, s_check.liveWords * 2 / 1024.0 / d,
-               s_progWords * 2 / 1024);
+               s_progWords * 2 / 1024, s_check.lightSets / d, s_check.lightSetsMax);
         printf("[run]   GPU fetch check: %u draws compared with the CPU draw, %u MISMATCHES, %u ring overruns | "
                "programs so far: %u built, %u patches (%.1f records each), %u ring passes, %u too big, %u aborted, "
                "%u stale caught, %u table restarts\n",
@@ -590,6 +616,7 @@ bool elan_gx_record(const ElanGxRecord& r)
     stripCensusCounts(r);
     stripCensus(r);
     fetchNote(r);
+    lightSetNote(r);
     return rend_AddElanItem(r.pcw, r.isp, r.tsp, r.tcw, 0, r.nearW, r.farW);
 }
 
@@ -609,7 +636,10 @@ namespace {
 // punch-through lists too the larger one is tried first (~140 KB more).
 constexpr u32 kMaxItems = 6144, kMinItems = 4096;
 constexpr u32 kMaxXforms = 1536, kMinXforms = 1024;
-constexpr u32 kMaxLightSets = 128, kMinLightSets = 64;
+// A day race uses ~4 light sets a render, the night attract demo ~33, 51 at
+// most (NIGHT LIGHTS = GPU: each list's lights depend on its box). A set is
+// ~500 bytes; lists past the last one take the CPU path.
+constexpr u32 kMaxLightSets = 64, kMinLightSets = 48;
 constexpr u32 kMaxIndices = 65535;              // GX_Begin's count is 16-bit
 constexpr u32 kDedupDepth = 4;                  // earlier entries searched for a copy
 
@@ -733,10 +763,23 @@ void loadLights(const ElanGxLightSet& ls)
     {
         const ElanGxLight& l = ls.lights[i];
         GXLightObj lo;
-        // A light far away along its direction acts as a parallel one.
-        GX_InitLightPos(&lo, l.dir[0] * 1.0e8f, l.dir[1] * 1.0e8f, l.dir[2] * 1.0e8f);
         GX_InitLightColor(&lo, (GXColor){toByte(l.color[0]), toByte(l.color[1]), toByte(l.color[2]), 255});
-        GX_InitLightAttn(&lo, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f);
+        if (ls.localMask >> i & 1)
+        {
+            // GX_InitLightDir stores the direction negated: the hardware's
+            // spot cosine is then dot(vertex-to-light, l.dir), the ELAN's.
+            GX_InitLightPos(&lo, l.pos[0], l.pos[1], l.pos[2]);
+            GX_InitLightDir(&lo, -l.dir[0], -l.dir[1], -l.dir[2]);
+            GX_InitLightAttn(&lo, l.angle[0], l.angle[1], l.angle[2], l.dist[0], l.dist[1], l.dist[2]);
+        }
+        else
+        {
+            // A light far away along its direction acts as a parallel one.
+            // Attenuation 1 under GX_AF_SPOT too (a set with local lights).
+            GX_InitLightPos(&lo, l.dir[0] * 1.0e8f, l.dir[1] * 1.0e8f, l.dir[2] * 1.0e8f);
+            GX_InitLightDir(&lo, 0.f, 0.f, 0.f);
+            GX_InitLightAttn(&lo, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f);
+        }
         GX_LoadLightObj(&lo, GX_LIGHT0 << i);
     }
 }
@@ -1405,15 +1448,17 @@ static void drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
 
     // Colour channel 0: material = vertex colour or the list's base colour,
     // lit by the hardware lights (diffuse, clamped N.L), ambient from the
-    // light model. Alpha is never lit.
+    // light model. Alpha is never lit. Local lights need the spot/distance
+    // attenuation of the channel.
     const u8 matSrc = hasColor ? GX_SRC_VTX : GX_SRC_REG;
-    const u32 chanKey = (ls.lit ? 0x100u | ls.count : 0u) | (hasColor ? 0x200u : 0u);
+    const bool local = ls.lit && ls.localMask;
+    const u32 chanKey = (ls.lit ? 0x100u | ls.count : 0u) | (hasColor ? 0x200u : 0u) | (local ? 0x400u : 0u);
     if (chanKey != s_run.chan)
     {
         if (ls.lit)
         {
             GX_SetChanCtrl(GX_COLOR0, GX_ENABLE, GX_SRC_REG, matSrc, (u8)((1u << ls.count) - 1), GX_DF_CLAMP,
-                           GX_AF_NONE);
+                           local ? GX_AF_SPOT : GX_AF_NONE);
             GX_SetChanCtrl(GX_ALPHA0, GX_DISABLE, GX_SRC_REG, matSrc, 0, GX_DF_NONE, GX_AF_NONE);
         }
         else

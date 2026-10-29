@@ -15,6 +15,7 @@
 // gxRend's own (same screen position and depth mapping as the TA path).
 //
 // Scope: opaque, translucent and punch-through lists, parallel lights,
+// point lights as GX local lights (NIGHT LIGHTS = GPU, approximate),
 // diffuse lighting (the PVR offset/specular colour is off by default in
 // gxRend anyway), environment maps (texgen from the normal), the five plain
 // vertex layouts. Everything else keeps the CPU path.
@@ -32,14 +33,19 @@ struct ElanGxXform
 
 struct ElanGxLight
 {
-    float dir[3];               // unit vector towards the light (lighting space)
+    float dir[3];               // unit vector towards the light (lighting space); local: spot axis
     float color[3];             // already x2 (the ELAN's light scale), clamped
+    // Local (point) lights only, drawn with GX_AF_SPOT: position in lighting
+    // space, angle (a0 a1 a2) and distance (k0 k1 k2) attenuation.
+    float pos[3];
+    float angle[3], dist[3];
 };
 
 struct ElanGxLightSet
 {
     bool lit;
     u8 count;                   // <= 8 (GX hardware lights)
+    u8 localMask;               // lights that are local (point) lights
     float ambient[3];
     ElanGxLight lights[8];
 };
@@ -96,3 +102,6 @@ extern "C" bool rend_AddElanItem(u32 pcw, u32 isp, u32 tsp, u32 tcw, u32 item, f
 extern int g_elan_gx_preset;
 // Launch option: 1 = the GPU fetches unchanged lists' vertices itself (Wii).
 extern int g_elan_fetch_preset;
+// Launch option NIGHT LIGHTS: 0 = lists lit by point lights stay on the CPU
+// (exact), 1 = the GPU path lights them with GX local lights (approximate).
+extern int g_elan_point_preset;

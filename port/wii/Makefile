@@ -1,11 +1,13 @@
 #---------------------------------------------------------------------------------
 # Wii build of the Initial D Arcade Stage 3 port (devkitPPC + libogc).
 #
-#   cd port/wii && make            -> boot.dol / boot.elf
+#   cd port/wii && make            -> dist/apps/initiald3wii/boot.dol
+#                                     (boot.elf and its map stay in build/)
 #
-# Install: copy boot.dol, meta.xml and icon.png to sd:/apps/initiald3wii/
-# and put your own gds-0033.chd, 317-0384-com.pic and naomi.zip (a NAOMI BIOS
-# set) in sd:/initiald3/ (or usb:/initiald3/).
+# Install: copy the contents of dist/ to the root of the SD card
+# (apps/initiald3wii/ holds boot.dol, meta.xml and icon.png) and put your own
+# gds-0033.chd, 317-0384-com.pic and naomi.zip (a NAOMI BIOS set) in
+# sd:/initiald3/ (or usb:/initiald3/).
 #
 # Two halves are linked together:
 #   - the launcher (../src): CHD/PIC/DIMM handling and the menus,
@@ -60,7 +62,7 @@ CFLAGS   := -g -O2 -Wall $(MACHDEP) $(INCLUDE) -D_7ZIP_ST -DZSTD_DISABLE_ASM \
             -fno-strict-aliasing -fsingle-precision-constant -frename-registers \
             -fomit-frame-pointer -ffast-math
 CXXFLAGS := $(CFLAGS) -std=gnu++17 -fno-exceptions -fno-rtti
-LDFLAGS  := -g $(MACHDEP) -Wl,-Map,$(notdir $@).map
+LDFLAGS  := -g $(MACHDEP) -Wl,-Map,$(TARGET).elf.map
 
 # Third-party C code and the inherited core are built with fewer warnings;
 # the launcher keeps the strict set.
@@ -76,7 +78,10 @@ LIBDIRS  :=
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 #---------------------------------------------------------------------------------
 
-export OUTPUT  := $(CURDIR)/$(TARGET)
+# The .dol is written straight into the SD card layout; the .elf (symbols,
+# for addr2line / objdump) stays with the objects.
+export APPDIR  := $(CURDIR)/dist/apps/initiald3wii
+export OUTPUT  := $(CURDIR)/$(BUILD)/$(TARGET)
 export VPATH   := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
                   $(CURDIR)/$(CHDR)/deps/zlib-1.3.1
 export DEPSDIR := $(CURDIR)/$(BUILD)
@@ -98,24 +103,24 @@ export LIBPATHS := -L$(LIBOGC_LIB)
 
 .PHONY: $(BUILD) clean run package
 
+# Builds dist/, the SD card layout: copy its contents to the root of the card.
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
+	@mkdir -p $(APPDIR) dist/initiald3
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
-
-# SD card layout: copy the contents of dist/ to the root of the card.
-package: $(BUILD)
-	@mkdir -p dist/apps/initiald3wii dist/initiald3
-	@cp $(OUTPUT).dol dist/apps/initiald3wii/boot.dol
-	@cp meta.xml icon.png dist/apps/initiald3wii/
+	@cp meta.xml icon.png $(APPDIR)/
 	@printf "Put your own gds-0033.chd, 317-0384-com.pic and naomi.zip (NAOMI BIOS set) in this folder.\r\n" > dist/initiald3/PUT_GAME_FILES_HERE.txt
+
+# Kept for build_wii.bat and habits: the default target already lays out dist/.
+package: $(BUILD)
 	@echo packaged ... dist/
 
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) $(OUTPUT).elf $(OUTPUT).dol $(OUTPUT).elf.map dist
+	@rm -fr $(BUILD) dist
 
 run:
-	wiiload $(OUTPUT).dol
+	wiiload $(APPDIR)/$(TARGET).dol
 
 #---------------------------------------------------------------------------------
 else
@@ -123,7 +128,9 @@ else
 
 DEPENDS := $(OFILES:.o=.d)
 
-$(OUTPUT).dol: $(OUTPUT).elf
+$(APPDIR)/$(TARGET).dol: $(OUTPUT).elf
+	$(SILENTMSG) output ... dist/apps/initiald3wii/$(notdir $@)
+	$(SILENTCMD)elf2dol $< $@
 $(OUTPUT).elf: $(OFILES)
 
 $(THIRD_PARTY_OFILES): CFLAGS += $(THIRD_PARTY_CFLAGS)

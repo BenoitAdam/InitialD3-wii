@@ -36,11 +36,12 @@ NAOMI BIOS zip to run the game.
 **Wii:** devkitPro with devkitPPC and libogc.
 
 ```
-port\build_wii.bat            (runs make && make package inside devkitPro's shell)
+port\build_wii.bat            (runs make inside devkitPro's shell)
 cd port/wii && make           (from a devkitPro shell)
 ```
 
-Output: `port/wii/boot.dol`, and the SD card layout in `port/wii/dist/` after `make package`.
+Output: the SD card layout in `port/wii/dist/` (`apps/initiald3wii/boot.dol`, meta.xml, icon.png);
+`boot.elf` and its map stay in `port/wii/build/`.
 
 **Windows:** Visual Studio 2022 or Build Tools with the C++ workload (CMake and Ninja
 included).

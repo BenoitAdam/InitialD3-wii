@@ -28,6 +28,7 @@ extern int g_autosort_preset;
 
 #include <cmath>
 #include <cstring>
+#include <utility>
 #include <vector>
 #if !defined(GEKKO)
 #include <unordered_map>
@@ -339,6 +340,40 @@ void lighting(float* base, float* offs, int vol, Vec3 P, Vec3 N)
     }
 }
 
+#if !defined(GEKKO)
+// Windows preview of NIGHT LIGHTS = GPU (the runner has no GX): point-lit
+// lists take the colour GX's channel would give them - material x clamp(
+// ambient + sum of attenuation x clamped N.L x light colour), no offset colour.
+const ElanGxLightSet* s_gxPreview = nullptr;
+
+void gxLighting(float* base, float* offs, Vec3 P, Vec3 N, const ElanGxLightSet& ls)
+{
+    float acc[3] = {ls.ambient[0], ls.ambient[1], ls.ambient[2]};
+    for (u32 i = 0; i < ls.count; i++)
+    {
+        const ElanGxLight& g = ls.lights[i];
+        Vec3 L = {g.dir[0], g.dir[1], g.dir[2]};
+        float attn = 1.f;
+        if (ls.localMask >> i & 1)
+        {
+            const Vec3 toLight = Vec3{g.pos[0], g.pos[1], g.pos[2]} - P;
+            const float d2 = dot(toLight, toLight), d = std::sqrt(d2);
+            L = d > 0.f ? toLight * (1.f / d) : toLight;
+            const float c = std::fmax(0.f, dot(L, {g.dir[0], g.dir[1], g.dir[2]}));
+            attn = std::fmax(0.f, g.angle[0] + g.angle[1] * c + g.angle[2] * c * c) /
+                   (g.dist[0] + g.dist[1] * d + g.dist[2] * d2);
+        }
+        const float f = attn * std::fmax(0.f, dot(N, L));
+        for (int c = 0; c < 3; c++)
+            acc[c] += f * g.color[c];
+    }
+    for (int c = 0; c < 3; c++)
+        base[c] *= clamp01(acc[c]);
+    for (int c = 0; c < 4; c++)
+        offs[c] = 0.f;
+}
+#endif
+
 // Converts one ICH vertex. `layout` is the list's vertex format flags.
 TnlVtx convert(const u32* v, u32 layout, bool textured, bool envMap, bool& lit)
 {
@@ -384,7 +419,12 @@ TnlVtx convert(const u32* v, u32 layout, bool textured, bool envMap, bool& lit)
     const Vec3 P = {-o.X, o.Y, -o.Z};             // Flycast's view space
     if (s.lightModel.set && !(s.material.set && (s.material.select >> 9 & 1)))
     {
-        lighting(o.base, o.offs, 0, P, N);
+#if !defined(GEKKO)
+        if (s_gxPreview)
+            gxLighting(o.base, o.offs, P, N, *s_gxPreview);
+        else
+#endif
+            lighting(o.base, o.offs, 0, P, N);
         lit = true;
         if (!textured)
             for (int c = 0; c < 4; c++)
@@ -628,6 +668,245 @@ void sendStrip(const TnlVtx* v, u32 n, float nearZ)
     s_clipped.n = 0;
 }
 
+// ---------------------------------------------------------------------------
+// Point lights on the GPU path (NIGHT LIGHTS = GPU)
+// ---------------------------------------------------------------------------
+// Initial D's night scenes light every list with 6-11 point lights (street
+// lamps reaching 40 units, the cars' lights 100-200), which kept them all on
+// the CPU. GX local lights stand in for them, approximately.
+
+bool gpuLayout(u32 layout)
+{
+    return layout == 0x002 || layout == 0x00A || layout == 0x00E || layout == 0x042 || layout == 0x04A;
+}
+
+// Whether the current state lights volume 0 with a point light.
+bool litByPointLights()
+{
+    if (!s.lightModel.set || (s.material.set && (s.material.select >> 9 & 1)))
+        return false;
+    if (s.lightsDirty)
+        rebuildActiveLights();
+    for (u32 k = 0; k < s.activeCount[0]; k++)
+        if (!s.lights[s.active[0][k]].parallel)
+            return true;
+    return false;
+}
+
+// A list's vertices in lighting space (-X, Y, -Z).
+struct Box
+{
+    float mn[3], mx[3];
+};
+
+float distanceSq(const Box& b, Vec3 p)
+{
+    const float q[3] = {p.x, p.y, p.z};
+    float d2 = 0.f;
+    for (int c = 0; c < 3; c++)
+    {
+        const float e = q[c] < b.mn[c] ? b.mn[c] - q[c] : q[c] > b.mx[c] ? q[c] - b.mx[c] : 0.f;
+        d2 += e * e;
+    }
+    return d2;
+}
+
+// The view depth range of a list's vertices in front of the camera and, with
+// kBox, the box of all its vertices (placeholders aside) in lighting space.
+template <bool kBox>
+void measureList(const u32* v, u32 count, u32 vertexSize, const float* t, float& minZ, float& maxZ, Box* box)
+{
+    minZ = 1e30f;
+    maxZ = 0.f;
+    if (kBox)
+        *box = {{1e30f, 1e30f, 1e30f}, {-1e30f, -1e30f, -1e30f}};
+    for (u32 i = 0; i < count; i++, v += vertexSize / 4)
+    {
+#if defined(__GNUC__)
+        __builtin_prefetch(v + 8 * (vertexSize / 4));   // dcbt: misses cost far more than this loop
+#endif
+        const float x = asFloat(v[1]), y = asFloat(v[2]), z = asFloat(v[3]);
+        const float Z = t[2] * x + t[5] * y + t[8] * z + t[11];
+        if (Z > 0.f && Z < 1e30f)              // in front, and not a placeholder (-inf) vertex
+        {
+            if (Z < minZ)
+                minZ = Z;
+            if (Z > maxZ)
+                maxZ = Z;
+        }
+        if (kBox)
+        {
+            const float p[3] = {-(t[0] * x + t[3] * y + t[6] * z + t[9]), t[1] * x + t[4] * y + t[7] * z + t[10], -Z};
+            if (std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]))
+                for (int c = 0; c < 3; c++)
+                {
+                    box->mn[c] = p[c] < box->mn[c] ? p[c] : box->mn[c];
+                    box->mx[c] = p[c] > box->mx[c] ? p[c] : box->mx[c];
+                }
+        }
+    }
+}
+
+// A point light as a GX local light (GX_AF_SPOT), `scale` times its colour.
+//
+// Distance: the ELAN's clamp(B / d + A), A < 0 < B, is 1 near the light and
+// exactly 0 from B / -A (the reach); GX's 1 / (k0 + k1 d + k2 d^2) has no such
+// edge. A least-squares fit over three times the reach gives k1 = 0,
+// k0 = 0.84 and k2 ~ (1.5 + 1.9 / -A) / reach^2: for A = -1, 0.6 at half the
+// reach where the ELAN gives 1, and a tail (0.24 at the reach, 0.12 at 1.5x).
+// Lights out of reach of a whole list are left out of it (pointLightSet),
+// which keeps the tails off most lists.
+//
+// Angle: clamp((A + B) - B c), c the cosine to the spot axis, is linear, and
+// GX clamps it at 0 but not at 1. When it saturates before the axis, a
+// parabola with the same zero and its top (1) on the axis stands in (the
+// cars' headlights: 0 from 25 degrees, 1 within 15, the parabola 0.87 at 15).
+//
+// False for the forms Initial D does not use: those lists keep the CPU path.
+bool gxPointLight(const Light& l, float scale, ElanGxLight& g)
+{
+    if (!l.distAtten)
+    {
+        g.dist[0] = 1.f;
+        g.dist[1] = g.dist[2] = 0.f;
+    }
+    else if (!l.distMode && l.distA < 0.f && l.distB > 0.f)
+    {
+        const float reach = l.distB / -l.distA;
+        g.dist[0] = 0.84f;
+        g.dist[1] = 0.f;
+        g.dist[2] = (1.5f + 1.9f / -l.distA) / (reach * reach);
+    }
+    else
+        return false;
+
+    const float p = l.angleAtten ? l.angleA + l.angleB : 1.f, q = l.angleAtten ? -l.angleB : 0.f;
+    g.angle[1] = g.angle[2] = 0.f;
+    if (q == 0.f || (p >= 1.f && p + q >= 1.f))
+        g.angle[0] = clamp01(p);                         // constant (street lamps: 4.4 + 7 c, always 1)
+    else if (q < 0.f)
+        return false;                                    // brighter away from the axis
+    else if (p + q <= 1.f)
+    {
+        g.angle[0] = p;                                  // never above 1: exact
+        g.angle[1] = q;
+    }
+    else
+    {
+        const float w = 1.f + p / q;                     // 1 - c at the zero, c = -p / q
+        const float k = 1.f / (w * w);
+        g.angle[0] = 1.f - k;                            // 1 - ((1 - c) / w)^2
+        g.angle[1] = 2.f * k;
+        g.angle[2] = -k;
+    }
+
+    // GX colours stop at 1: what is above goes in the attenuation instead.
+    float c[3], top = 1.f;
+    for (int i = 0; i < 3; i++)
+    {
+        c[i] = l.color[i] * scale;
+        top = c[i] > top ? c[i] : top;
+    }
+    for (int i = 0; i < 3; i++)
+    {
+        g.color[i] = c[i] / top;
+        g.angle[i] *= top;
+    }
+    g.dir[0] = l.dir.x;
+    g.dir[1] = l.dir.y;
+    g.dir[2] = l.dir.z;
+    g.pos[0] = l.pos.x;
+    g.pos[1] = l.pos.y;
+    g.pos[2] = l.pos.z;
+    return true;
+}
+
+bool sameLight(const Light& a, const Light& b)
+{
+    return a.parallel == b.parallel && a.pos.x == b.pos.x && a.pos.y == b.pos.y && a.pos.z == b.pos.z &&
+           a.dir.x == b.dir.x && a.dir.y == b.dir.y && a.dir.z == b.dir.z && a.color[0] == b.color[0] &&
+           a.color[1] == b.color[1] && a.color[2] == b.color[2] && a.distA == b.distA && a.distB == b.distB &&
+           a.angleA == b.angleA && a.angleB == b.angleB && a.distMode == b.distMode && a.routing == b.routing;
+}
+
+// The GX lights of a list lit by point lights, from its box. Lights out of
+// reach of the whole box add nothing to it and are left out (exact). Copies
+// of one light (the game sends a car's headlight up to 4 times) become one
+// light that many times as bright. Past 8 lights, the parallel ones and the
+// point lights nearest the box (against their reach) are kept. False when a
+// light needs the CPU path.
+bool pointLightSet(ElanGxLightSet& out, const Box& box)
+{
+    const LightModel& lm = s.lightModel;
+    memset(&out, 0, sizeof(out));                // padding too: sets are compared with memcmp
+    out.lit = true;
+    for (int c = 0; c < 3; c++)
+        out.ambient[c] = clamp01(lm.ambientBase[0][c]);
+    struct Pick
+    {
+        u8 slot, copies;
+        float near;                              // squared distance / squared reach; parallel: -1
+    };
+    Pick pick[16];
+    u32 n = 0;
+    for (u32 k = 0; k < s.activeCount[0]; k++)
+    {
+        const int i = s.active[0][k];
+        const Light& l = s.lights[i];
+        if (l.routing & 0xE)
+            return false;                        // routed to offset/alpha/negative
+        if (!(lm.diffuseMask[0] >> i & 1))
+            continue;                            // specular only: no offset colour on this path
+        float near = -1.f;
+        if (!l.parallel)
+        {
+            const float d2 = distanceSq(box, l.pos);
+            if (d2 >= l.reachSq)
+                continue;
+            near = d2 / l.reachSq;
+        }
+        u32 j = 0;
+        while (j < n && !sameLight(s.lights[pick[j].slot], l))
+            j++;
+        if (j < n)
+            pick[j].copies++;
+        else
+            pick[n++] = {(u8)i, 1, near};
+    }
+    if (n > 8)
+    {
+        // The 8 nearest, then back in slot order (same lights, same set).
+        for (u32 a = 1; a < n; a++)
+            for (u32 b = a; b > 0 && pick[b].near < pick[b - 1].near; b--)
+                std::swap(pick[b], pick[b - 1]);
+        n = 8;
+        for (u32 a = 1; a < n; a++)
+            for (u32 b = a; b > 0 && pick[b].slot < pick[b - 1].slot; b--)
+                std::swap(pick[b], pick[b - 1]);
+    }
+    for (u32 j = 0; j < n; j++)
+    {
+        const Light& l = s.lights[pick[j].slot];
+        ElanGxLight& g = out.lights[out.count];
+        if (l.parallel)
+        {
+            g.dir[0] = l.dirN.x;
+            g.dir[1] = l.dirN.y;
+            g.dir[2] = l.dirN.z;
+            for (int c = 0; c < 3; c++)
+                g.color[c] = clamp01(2.f * pick[j].copies * l.color[c]);   // the ELAN's x2 light scale
+        }
+        else
+        {
+            if (!gxPointLight(l, 2.f * pick[j].copies, g))
+                return false;
+            out.localMask |= (u8)(1u << out.count);
+        }
+        out.count++;
+    }
+    return true;
+}
+
 // GPU lists' depth measurement (recordForGpu), per frame.
 struct DepthPin
 {
@@ -646,11 +925,12 @@ DepthPin s_depth = {false, false, false, 1e30f, 1e30f, 0, 0, 0};
 constexpr u32 kDepthWindow = 32;
 
 // The list's state as an ElanGxRecord for the GPU path, or false when the
-// GX hardware cannot reproduce its lighting (point lights, unusual routing,
-// more than 8 lights, a layout without a plain vertex format).
+// GX hardware cannot reproduce its lighting (point lights unless NIGHT
+// LIGHTS = GPU, unusual routing, more than 8 parallel lights, a layout
+// without a plain vertex format).
 bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, u32 isp, u32 tsp, bool envMap)
 {
-    if (layout != 0x002 && layout != 0x00A && layout != 0x00E && layout != 0x042 && layout != 0x04A)
+    if (!gpuLayout(layout))
         return false;
     static ElanGxRecord r;
     r.vtx = w + 8;
@@ -694,12 +974,17 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     // nearer plane (or none: 0.001) are still measured, so they don't drag
     // the frame's near plane, i.e. its depth precision, down for nothing. The
     // menus, whose nearest model sits metres away, keep measuring.
+    //
+    // Lists lit by point lights (NIGHT LIGHTS = GPU) are measured every time,
+    // in X and Y too: their box decides which lights reach them.
     const float nearZ = s.matrix.nearZ > 0.f ? s.matrix.nearZ : 0.001f;
+    const bool pointLit = g_elan_point_preset && litByPointLights();
+    Box box;
     // Every list takes an index, dropped ones too: otherwise each list after a
     // measured one found behind the camera got the same index and was measured
     // as well, i.e. the whole stretch of track behind the camera every render.
     const u32 index = s_depth.lists++;
-    if (s_depth.pinnedLastFrame && nearZ >= s_depth.pinPlaneLastFrame &&
+    if (!pointLit && s_depth.pinnedLastFrame && nearZ >= s_depth.pinPlaneLastFrame &&
         (index + s_depth.frames) % kDepthWindow != 0)
     {
         r.nearW = nearZ;
@@ -708,23 +993,11 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     }
     else
     {
-        const float* t = s.matrix.tm;
-        float minZ = 1e30f, maxZ = 0.f;
-        const u32* v = w + 8;
-        for (u32 i = 0; i < count; i++, v += vertexSize / 4)
-        {
-#if defined(__GNUC__)
-            __builtin_prefetch(v + 8 * (vertexSize / 4));   // dcbt: misses cost far more than this loop
-#endif
-            const float Z = t[2] * asFloat(v[1]) + t[5] * asFloat(v[2]) + t[8] * asFloat(v[3]) + t[11];
-            if (Z > 0.f && Z < 1e30f)          // in front, and not a placeholder (-inf) vertex
-            {
-                if (Z < minZ)
-                    minZ = Z;
-                if (Z > maxZ)
-                    maxZ = Z;
-            }
-        }
+        float minZ, maxZ;
+        if (pointLit)
+            measureList<true>(w + 8, count, vertexSize, s.matrix.tm, minZ, maxZ, &box);
+        else
+            measureList<false>(w + 8, count, vertexSize, s.matrix.tm, minZ, maxZ, nullptr);
         if (maxZ < nearZ)
             return true;                             // entirely behind the near plane
         r.nearW = minZ > nearZ ? minZ : nearZ;
@@ -735,7 +1008,26 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     if (r.nearW <= nearZ * 1.5f && nearZ < s_depth.pinPlane)
         s_depth.pinPlane = nearZ;
 
-    if (r.lightKey != s_lightGen)
+    if (pointLit)
+    {
+        // Built for every list (its box). An unchanged set keeps its key, so
+        // the renderer shares it without comparing; keys with the top bit set
+        // never meet a light generation.
+        if (!pointLightSet(r.lights, box))
+        {
+            r.lightKey = 0;
+            return false;
+        }
+        static ElanGxLightSet last;
+        static u32 key = 0;
+        if (memcmp(&last, &r.lights, sizeof(last)))
+        {
+            last = r.lights;
+            key = (key + 1) | 0x80000000u;
+        }
+        r.lightKey = key;
+    }
+    else if (r.lightKey != s_lightGen)
     {
         r.lightKey = 0;                              // until built: a refused set is rebuilt next time
         memset(&r.lights, 0, sizeof(r.lights));
@@ -1169,6 +1461,20 @@ int tnl_DrawList(const u32* w, u32 vertexSize, int listType)
     }
 
     s_out.begin(outPcw, isp, tsp, w[3]);
+#if !defined(GEKKO)
+    // NIGHT LIGHTS = GPU, Windows preview: the point-lit lists the Wii's GPU
+    // path would take are lit as GX would (--gpu-tnl drops them instead).
+    ElanGxLightSet preview;
+    if (g_elan_point_preset && gpuLayout(layout) && (list == 0 || (!g_trans_sort_preset && !g_autosort_preset)) &&
+        litByPointLights())
+    {
+        Box box;
+        float minZ, maxZ;
+        measureList<true>(w + 8, count, vertexSize, s.matrix.tm, minZ, maxZ, &box);
+        if (pointLightSet(preview, box))
+            s_gxPreview = &preview;
+    }
+#endif
 
     // Strips and fans, linked into one strip with degenerate triangles, sent
     // a piece at a time.
@@ -1226,6 +1532,9 @@ int tnl_DrawList(const u32* w, u32 vertexSize, int listType)
         }
     }
     ELAN_TIME_END(convNs, tv);
+#if !defined(GEKKO)
+    s_gxPreview = nullptr;
+#endif
     sendStrip(s_strip.v, s_strip.n, nearZ);
     s_strip.n = 0;
     ELAN_TIME_END(tnlNs, t0);

@@ -11,7 +11,7 @@ it exists.
 
 - An **emulation-based port** of *Initial D Arcade Stage 3* (Sega NAOMI 2, GD-ROM GDS-0033)
   to the **Wii**, launched from the Homebrew Channel. App name: **Speed Boy 3**
-  (`port/wii/meta.xml`). Version string in `port/src/version.h` (currently `alpha 0.25`).
+  (`port/wii/meta.xml`). Version string in `port/src/version.h` (currently `alpha 0.26`).
 - Core = fork of the owner's own **nullDC4Wii** (Dreamcast emulator for Wii, MIT; author
   handle Xale00 / BenoitAdam94), forked around nullDC4Wii commit 0996e7c on 2026-10-15,
   plus a NAOMI 2 layer written here (DIMM board, JVS/MIE, card reader, **ELAN** T&L chip).
@@ -19,7 +19,7 @@ it exists.
   (MSVC: launcher, headless runner and tests, used for bring-up, censuses and A/B checks).
 - GitHub: `BenoitAdam/Initial-D-3-wii`, branch `main`. The owner commits often themselves.
 
-### Status (2026-10-28)
+### Status (2026-10-29)
 
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
 - Menus/attract/car select: 100% speed. Race: ~38-41 fps with every frame drawn
@@ -29,10 +29,11 @@ it exists.
   (see OPTIMIZATION.md).
 - Music tempo follows emulation speed (the game streams it through the SH-4), so music is
   right only at 100%.
-- Attract mode (no coin, ~20 s after the title) runs a **night** demo race: ~9 point lights
-  per vertex keep nearly every list on the CPU T&L path. It crashed on the Wii (2026-10-29
-  report; most likely the CPU path's vectors exhausting the C heap, now fixed buffers) and is
-  far too slow there (see Open issues). Owner to confirm the crash is gone (log 12).
+- Attract mode (no coin, ~20 s after the title) runs a **night** demo race: 6-11 point lights
+  per list. Its crash on the Wii is fixed (CPU T&L fixed buffers; owner: "demo works now",
+  2026-10-29) but it ran at a few fps, every list lit on the CPU. NIGHT LIGHTS = GPU (APPROX)
+  (RENDERING page, default) now lights those lists with GX local lights: the whole demo goes
+  to the GPU path on Windows (`--gpu-tnl`). Awaiting its speed and look on a Wii (log 12).
 
 ## Hard rules
 
@@ -65,7 +66,7 @@ current work:
 | `port/src/run/run_main.cpp` | Windows headless runner `idas3wii_run` (all diagnostics flags) |
 | `port/emu/naomi/naomi_frontend.cpp` | Core init/run/settings, idle-loop skip (`naomi_IdleCycleScale`), assert/BIOS-entry traps |
 | `port/emu/naomi/naomi_board.cpp` | DIMM board, cart DMA, register counters |
-| `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin, `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs |
+| `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin + GPU light sets (point lights as GX local lights), `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs |
 | `port/emu/plugs/drkPvr/gxRend.cpp` | PowerVR -> GX renderer (TA lists, ELAN items, VRAM present, tile clip, buffer caps) |
 | `port/emu/plugs/drkPvr/frame_prof.cpp` | FPROF per-frame profiler |
 | `port/emu/host/soft_renderer.cpp` | Windows software renderer for the runner (snapshots, stand-ins for the `rend_*` hooks) |
@@ -77,10 +78,14 @@ current work:
 
 Paths below assume the default devkitPro and VS install locations; see `AGENTS.local.md`.
 
-**Wii** (output `port/wii/boot.dol`; `make package` lays out `port/wii/dist/`):
+**Wii** (`make` writes the SD layout `port/wii/dist/`, the only `boot.dol` being
+`dist/apps/initiald3wii/boot.dol`; `boot.elf` and its map stay in `port/wii/build/`):
 
-- `port\build_wii.bat` (runs `make && make package` inside devkitPro's MSYS2; extra args go to
-  make, e.g. `build_wii.bat clean`).
+- `port\build_wii.bat` (runs `make` inside devkitPro's MSYS2; extra args go to make, e.g.
+  `build_wii.bat clean`).
+- Header changes rebuild only through `build/*.d`, which hold absolute paths: after moving the
+  repo, run `make clean` once (stale paths made a header change rebuild nothing, so the
+  launcher kept an old option table).
 - From Git Bash, devkitPro's make does not see `DEVKITPRO`/`DEVKITPPC`; go through its own shell:
   `MSYS_NO_PATHCONV=1 /c/devkitPro/msys2/usr/bin/bash.exe -lc 'cd /<drive>/<path>/port/wii && make'`
 - Verify hand-written PPC encodings in the dynarec with `powerpc-eabi-objdump`.
@@ -118,6 +123,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--press F:name,F:name,...` | press a button at frame F, e.g. `5000:coin,5300:start` (coin, start, view, up, down, left, right, gas, brake, test, service) |
 | `--gpu-tnl` | take the lists the Wii GPU path would take; runs the **GPU fetch check** (`[run] GPU fetch check`: program triangles vs the CPU draw; must stay at 0 mismatches) |
 | `--frameskip N`, `--model-skip 0/1`, `--fixes on/off` | same as the launcher options, for A/B runs |
+| `--point-lights 0/1` | NIGHT LIGHTS: 1 = point lights as GX local lights; without `--gpu-tnl` the CPU draws those lists lit the way GX would (snapshot preview) |
 | `--histo-from F` | PC histogram from frame F (best tool when stuck without a hang) |
 | `--trace-from PC`, `--trace-pc a,b`, `--watch ADDR`, `--path-after-elan` | SH-4 tracing |
 | `--area1-census` | who writes the 32-bit VRAM interface |
@@ -200,12 +206,15 @@ probe, ELAN draw split, fetch programs/patches/ring passes); `[CC]` JIT call-out
 
 ## Open issues (besides speed)
 
-- Specular is dropped on the GPU T&L path (visible on untextured lists); point lights still go
-  to the CPU path (ELAN distance attenuation differs from GX local lights).
-- Night scenes (the attract demo, night courses): 55-89K point-lit vertices a frame on the CPU
-  path, 30-90 ms a frame on a PC, so a few fps on a Wii. Point lights out of reach are skipped
-  per vertex (exact). Next: lists out of every point light's reach to the GPU path (~20% of
-  the vertices), then GX local lights with a fitted attenuation (approximate).
+- Specular is dropped on the GPU T&L path (visible on untextured lists, and at night on
+  bumpers, grilles and the road's glints, where the headlights make it).
+- Night scenes with NIGHT LIGHTS = GPU: point lights are GX local lights (`gxPointLight` in
+  `naomi_elan_tnl.cpp`): fitted distance attenuation (dimmer core, faint tail past the reach),
+  parabola for saturating spots, duplicates merged, lights out of a list's reach left out, at
+  most 8. Unverified on hardware: GX attenuation above 1 (merged headlights) and the
+  spot-direction sign (from libogc's disassembly: `GX_InitLightDir` negates). Each point-lit
+  list is measured every render (box for the light cull): ~55K vertex reads a night frame.
+  NIGHT LIGHTS = CPU keeps the exact CPU path (a few fps at night on a Wii).
 - Modifier volumes, the credit-digit glyph, in-race memory headroom, a live window + keyboard
   for the Windows build.
 - Windows build has no audio; sound changes can only be heard on Wii/Dolphin.

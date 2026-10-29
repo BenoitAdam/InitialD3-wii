@@ -282,7 +282,8 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_sound_realtime_preset, &g_audio_stats_preset,
         &g_arm7_str_align_preset, &g_adpcm_loop_preset,  &g_arm7_reset_fix_preset, &g_aica_race_preset,
         &g_aica_ca_clamp_preset, &g_jit_link_guard_preset, &g_div32_fix_preset,  &g_interp_fix_preset,
-        &g_spg_fix_preset,       &g_ta_guard_preset,     &g_inf_vtx_preset};
+        &g_spg_fix_preset,       &g_ta_guard_preset,     &g_inf_vtx_preset,
+        &g_elan_point_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

@@ -668,6 +668,13 @@ int main(int argc, char** argv)
     }
     if (const char* ms = argValue(argc, argv, "--model-skip"))
         g_elan_model_skip_preset = atoi(ms);
+    if (const char* pl = argValue(argc, argv, "--point-lights"))
+    {
+        // NIGHT LIGHTS: 1 = point lights as GX local lights. Without --gpu-tnl
+        // the lists stay on the CPU, lit the way GX would (a preview).
+        extern int g_elan_point_preset;
+        g_elan_point_preset = atoi(pl);
+    }
     if (hasFlag(argc, argv, "--path-after-elan"))
     {
         s_pathSeen.assign(0x10000000, false);

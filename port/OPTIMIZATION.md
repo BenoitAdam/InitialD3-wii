@@ -198,10 +198,14 @@ needs 100% speed, hence FRAMESKIP AUTO for now.
 10. Accuracy items with a speed cost to measure: specular on the GPU path (COLOR1 +
     GX_AF_SPEC), point lights on the GPU (ELAN uses a linear clamped distance attenuation that
     GX local lights do not match).
-11. **Night scenes (attract demo, night courses).** Every lit list carries ~9 point lights
-    (street lamps reach 40 units, the car's lights 100-200), so the GPU path refuses nearly
-    all of them: 55-89K CPU-lit vertices a frame, 30-90 ms of T&L on a PC. Done: point lights
-    beyond their reach (attenuation clamped to 0) are skipped per vertex, exactly. Left, in
-    order: (a) lists out of every point light's reach go to the GPU path unchanged (a view-space
-    box per list; ~20% of the point-lit vertices in the demo); (b) GX local lights with
-    k0/k1/k2 fitted to `clamp(B/d + A)` for the rest (approximate, behind an option).
+11. **Night scenes (attract demo, night courses).** Every lit list carries 6-11 point lights
+    (street lamps reach 40 units, the car's lights 100-200; a car's headlight is sent up to 4
+    times), no parallel light: ~600 lists, 55K vertices a frame. On the CPU path that was
+    30-90 ms of T&L on a PC, a few fps on a Wii. Done: (a) point lights beyond their reach are
+    skipped per vertex on the CPU path, exactly; (b) option NIGHT LIGHTS = GPU (APPROX), the
+    default: point-lit lists go to the GPU path with GX local lights (`GX_AF_SPOT`, fitted
+    k0/k2, a parabola for saturating spots, duplicates merged, a light cull against each list's
+    box). On Windows (`--gpu-tnl`) the demo leaves 0 vertices to the CPU (T&L 25 ms -> ~4 ms a
+    frame on a PC, host census included); `--point-lights 1` without `--gpu-tnl` previews the
+    look in snapshots. Left: the box costs every point-lit list a full vertex pass each drawn
+    render (~55K reads a night frame); item 1's cached model-space box would remove it.

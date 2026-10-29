@@ -79,8 +79,8 @@ Music tempo follows emulation speed, so it only sounds right when the game runs 
 ## Building
 
 **Wii:** devkitPro with devkitPPC and libogc. Run `port\build_wii.bat`, or run `make` in
-`port/wii` from a devkitPro shell. `make package` creates the SD card layout in
-`port/wii/dist/`. Output: `port/wii/boot.dol`.
+`port/wii` from a devkitPro shell. It builds the SD card layout in `port/wii/dist/`
+(`apps/initiald3wii/boot.dol`): copy its contents to the root of the card.
 
 **Windows (debug build and tests):** Visual Studio 2022 or Build Tools with the C++ workload.
 Run `port\build_windows.bat`, or from an x64 Native Tools prompt:

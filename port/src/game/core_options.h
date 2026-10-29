@@ -86,6 +86,8 @@ enum CoreOptionId
     OPT_SPG_FIX,
     OPT_TA_GUARD,
     OPT_INF_VTX,
+    // Rendering, added last so that no saved or autolaunch position moves
+    OPT_ELAN_POINT,
     kCoreOptionCount
 };
 
@@ -227,6 +229,9 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
      {0, 1}},
     {"INF VTX CUT   ", "vertices with 1/W = +inf are cut out of their strips (no spikes)", PAGE_FIXES, 1, 2,
      {"OFF (LEGACY)", "ON (CUT)"}, {0, 1}},
+    // ---- Rendering, continued ------------------------------------------------
+    {"NIGHT LIGHTS  ", "3D T&L GPU: night lamps and headlights on the GPU (approximate, far faster)",
+     PAGE_DEPTH, 1, 2, {"CPU (EXACT)", "GPU (APPROX)"}, {0, 1}},
 };
 
 } // namespace idas3
