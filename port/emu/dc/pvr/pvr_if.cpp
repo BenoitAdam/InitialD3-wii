@@ -1,0 +1,508 @@
+#include "types.h"
+#include "pvr_if.h"
+#include "pvrLock.h"
+#include "dc/sh4/intc.h"
+#include "dc/mem/_vmem.h"
+#include "plugins/plugin_manager.h"
+#include "dc/asic/asic.h"
+
+//==============================================================================
+// PowerVR Interface Implementation
+// Handles YUV conversion, register access, and VRAM operations
+//==============================================================================
+
+//------------------------------------------------------------------------------
+// YUV Converter Constants
+//------------------------------------------------------------------------------
+namespace {
+    constexpr u32 YUV_TEMP_BUFFER_SIZE = 512; // bytes
+    constexpr u32 YUV_BLOCK_SIZE_420 = 384;   // YUV 4:2:0 format
+    constexpr u32 YUV_BLOCK_SIZE_422 = 512;   // YUV 4:2:2 format
+    constexpr u32 YUV_MACROBLOCK_SIZE = 16;   // 16x16 pixels per macroblock
+    
+    // Register addresses
+    constexpr u32 TA_YUV_TEX_BASE_ADDR = 0x5F8148;
+    constexpr u32 TA_YUV_TEX_CTRL_ADDR = 0x5F814C;
+    constexpr u32 TA_YUV_TEX_CNT_ADDR  = 0x5F8150;
+}
+
+//------------------------------------------------------------------------------
+// YUV Converter State
+//------------------------------------------------------------------------------
+static u32 YUV_tempdata[YUV_TEMP_BUFFER_SIZE / 4]; // Temporary conversion buffer
+static u32 YUV_index = 0;          // Current position in temp buffer
+static u32 YUV_dest = 0;           // Destination address in VRAM
+static u32 YUV_doneblocks = 0;     // Number of completed macroblocks
+static u32 YUV_blockcount = 0;     // Total macroblocks to process
+
+static u32 YUV_x_curr = 0;         // Current X position in output
+static u32 YUV_y_curr = 0;         // Current Y position in output
+static u32 YUV_x_size = 0;         // Output width in pixels
+static u32 YUV_y_size = 0;         // Output height in pixels
+
+//------------------------------------------------------------------------------
+// YUV Converter Output Regions
+//------------------------------------------------------------------------------
+// The renderer needs the REAL per-row pixel pitch of a YUV422 texture that this
+// converter produced: a game declares a power-of-two texture size in TSP/TCW,
+// but the converter writes rows of YUV_x_size pixels (the video's native width,
+// e.g. 320) back-to-back with no padding, so decoding at the declared width
+// shears the picture into repeated slices.
+//
+// TA_YUV_TEX_CTRL alone cannot answer that question. It describes whatever the
+// converter unit was last programmed for and says nothing about a YUV422
+// texture the game uploaded to VRAM directly - for those it is often stale or
+// zero, and a zero decodes as a 16x16 "real size" that blacks the texture out.
+// So remember the regions the converter actually wrote and let the renderer
+// look a texture address up. Small ring because FMV is commonly double- or
+// triple-buffered across a handful of base addresses.
+struct YuvConvRegion { u32 base; u32 w; u32 h; };
+static const u32 YUV_REGION_SLOTS = 4;
+static YuvConvRegion YUV_regions[YUV_REGION_SLOTS];
+static u32 YUV_region_next = 0;
+
+/**
+ * Record (or refresh) the region the converter is currently writing.
+ * Called once per macroblock; the 4-slot scan is noise next to converting
+ * 256 pixels.
+ */
+static void YUV_RememberRegion(u32 base, u32 w, u32 h)
+{
+    if (w == 0 || h == 0)
+        return;
+
+    for (u32 i = 0; i < YUV_REGION_SLOTS; i++) {
+        if (YUV_regions[i].w != 0 && YUV_regions[i].base == base) {
+            YUV_regions[i].w = w;
+            YUV_regions[i].h = h;
+            return;
+        }
+    }
+
+    YUV_regions[YUV_region_next].base = base;
+    YUV_regions[YUV_region_next].w    = w;
+    YUV_regions[YUV_region_next].h    = h;
+    YUV_region_next = (YUV_region_next + 1) % YUV_REGION_SLOTS;
+}
+
+/**
+ * Look an address up against the regions the YUV converter has written.
+ * @param addr   VRAM address (already VRAM_MASK'd) of a YUV422 texture
+ * @param out_w  receives the real source pitch in pixels
+ * @param out_h  receives the real source row count
+ * @return 1 if addr falls inside converter output, 0 otherwise
+ */
+extern "C" int yuv_conv_lookup(u32 addr, u32 *out_w, u32 *out_h)
+{
+    for (u32 i = 0; i < YUV_REGION_SLOTS; i++) {
+        const YuvConvRegion &r = YUV_regions[i];
+        if (r.w == 0 || r.h == 0)
+            continue;
+        if (addr >= r.base && addr < r.base + r.w * r.h * 2) {
+            *out_w = r.w;
+            *out_h = r.h;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+//------------------------------------------------------------------------------
+// YUV Helper Functions
+//------------------------------------------------------------------------------
+
+/**
+ * Write 2 pixels (4 bytes) to VRAM at current position
+ * @param x X offset from current position
+ * @param y Y offset from current position
+ * @param pixdata YUYV packed pixel data (2 pixels)
+ */
+INLINE void YUV_putpixel2(u32 x, u32 y, u32 pixdata)
+{
+    u32 offset = YUV_dest + (YUV_x_curr + x + (YUV_y_curr + y) * YUV_x_size) * 2;
+    *(u32*)(&vram.data[offset]) = pixdata;
+}
+
+/**
+ * Extract Y (luminance) component from 4:2:0 macroblock
+ * @param x X coordinate (0-15)
+ * @param y Y coordinate (0-15)
+ * @param base Pointer to Y component data (256 bytes)
+ * @return Y value
+ */
+INLINE u8 GetY420(int x, int y, u8* base)
+{
+    // 4:2:0 format stores Y in 8x8 sub-blocks
+    if (x > 7) {
+        x -= 8;
+        base += 64;  // Move to right 8x8 block
+    }
+    
+    if (y > 7) {
+        y -= 8;
+        base += 128; // Move to bottom 8x8 block
+    }
+    
+    return *host_ptr_xor(&base[x + y * 8]);
+}
+
+/**
+ * Extract U or V (chrominance) component from 4:2:0 macroblock
+ * U and V are subsampled 2:1 in both dimensions (8x8 for 16x16 block)
+ * @param x X coordinate (0-15)
+ * @param y Y coordinate (0-15)
+ * @param base Pointer to U or V component data (64 bytes)
+ * @return U or V value
+ */
+INLINE u8 GetUV420(int x, int y, u8* base)
+{
+    // Subsample coordinates
+    int realx = x >> 1;
+    int realy = y >> 1;
+
+    return *host_ptr_xor(&base[realx + realy * 8]);
+}
+
+/**
+ * Initialize YUV converter state from hardware registers
+ */
+void YUV_init()
+{
+    YUV_index = 0;
+    YUV_x_curr = 0;
+    YUV_y_curr = 0;
+    YUV_doneblocks = 0;
+    
+    // Read destination address and mask to valid VRAM range
+    YUV_dest = pvr_readreg_TA(TA_YUV_TEX_BASE_ADDR, 4) & VRAM_MASK;
+    
+    // Read texture control register
+    u32 TA_YUV_TEX_CTRL = pvr_readreg_TA(TA_YUV_TEX_CTRL_ADDR, 4);
+    
+    // Calculate total number of macroblocks
+    u32 blocks_x = ((TA_YUV_TEX_CTRL >> 0) & 0x3F) + 1;
+    u32 blocks_y = ((TA_YUV_TEX_CTRL >> 8) & 0x3F) + 1;
+    YUV_blockcount = blocks_x * blocks_y;
+    
+    // Determine output size
+    if ((TA_YUV_TEX_CTRL >> 16) & 1) {
+        // Small texture mode (single 16x16 block)
+        YUV_x_size = YUV_MACROBLOCK_SIZE;
+        YUV_y_size = YUV_MACROBLOCK_SIZE;
+    } else {
+        // Normal mode (multiple blocks)
+        YUV_x_size = blocks_x * YUV_MACROBLOCK_SIZE;
+        YUV_y_size = blocks_y * YUV_MACROBLOCK_SIZE;
+    }
+}
+
+/**
+ * Convert one YUV macroblock (16x16 pixels) to YUYV format and write to VRAM
+ */
+INLINE void YUV_ConvertMacroBlock()
+{
+    u32 TA_YUV_TEX_CTRL = pvr_readreg_TA(TA_YUV_TEX_CTRL_ADDR, 4);
+    
+    YUV_doneblocks++;
+    YUV_index = 0;
+    
+    // Determine block format
+    bool is_yuv420 = ((TA_YUV_TEX_CTRL & (1 << 24)) == 0);
+    
+    if (is_yuv420) {
+        // This block is about to be written for real - remember where, so the
+        // renderer can tell converter output apart from a directly-uploaded
+        // YUV422 texture (see YUV_RememberRegion).
+        YUV_RememberRegion(YUV_dest, YUV_x_size, YUV_y_size);
+
+        // YUV 4:2:0 format (384 bytes per macroblock)
+        // Layout: 64 bytes U, 64 bytes V, 256 bytes Y
+        u8* U = (u8*)&YUV_tempdata[0];
+        u8* V = (u8*)&YUV_tempdata[64 / 4];
+        u8* Y = (u8*)&YUV_tempdata[(64 + 64) / 4];
+        
+        u8 yuyv[4]; // Temporary buffer for 2 pixels
+        
+        // Convert 16x16 block
+        for (u32 y = 0; y < YUV_MACROBLOCK_SIZE; y++) {
+            for (u32 x = 0; x < YUV_MACROBLOCK_SIZE; x += 2) {
+                // Pack as DC LE UYVY u32 (U|Y0<<8|V<<16|Y1<<24).
+                // Written as Wii BE u32, this stores bytes [Y1,V,Y0,U] in
+                // vram.data — the same layout CPU 32-bit stores produce —
+                // so the UYVY u32 decoder (Yu=word>>0, Y0=word>>8, ...) works
+                // for both TA-YUV and CPU-written YUV422 textures.
+                yuyv[0] = GetY420(x + 1, y, Y);  // Y1 = Wii BE MSB = DC byte 3
+                yuyv[1] = GetUV420(x, y, V);      // V  = DC byte 2
+                yuyv[2] = GetY420(x, y, Y);       // Y0 = DC byte 1
+                yuyv[3] = GetUV420(x, y, U);      // U  = Wii BE LSB = DC byte 0
+                
+                // Write 2 pixels at once
+                YUV_putpixel2(x, y, *(u32*)yuyv);
+            }
+        }
+        
+        // Advance to next macroblock position
+        YUV_x_curr += YUV_MACROBLOCK_SIZE;
+        if (YUV_x_curr >= YUV_x_size) {
+            YUV_x_curr = 0;
+            YUV_y_curr += YUV_MACROBLOCK_SIZE;
+            if (YUV_y_curr >= YUV_y_size) {
+                YUV_y_curr = 0;
+            }
+        }
+    } else {
+        // YUV 4:2:2 format not currently implemented
+        printf("YUV 4:2:2 format not supported in YUV converter\n");
+    }
+    
+    // Check if all blocks are processed
+    if (YUV_doneblocks >= YUV_blockcount) {
+        YUV_init();
+        // Raise interrupt to signal completion
+        asic_RaiseInterrupt(holly_YUV_DMA);
+    }
+}
+
+/**
+ * Process incoming YUV data
+ * @param data Pointer to YUV data
+ * @param count Number of 32-byte blocks
+ */
+void YUV_data(u32* data, u32 count)
+{
+    // Initialize if not already done
+    if (YUV_blockcount == 0) {
+        printf("YUV_data: YUV decoder not initialized, initializing now\n");
+        YUV_init();
+    }
+    
+    u32 TA_YUV_TEX_CTRL = pvr_readreg_TA(TA_YUV_TEX_CTRL_ADDR, 4);
+    
+    // Determine block size based on format
+    u32 block_size = ((TA_YUV_TEX_CTRL & (1 << 24)) == 0) 
+                     ? YUV_BLOCK_SIZE_420 
+                     : YUV_BLOCK_SIZE_422;
+    
+    // Convert count from 32-byte blocks to bytes
+    count *= 32;
+    
+    // Process data in chunks
+    while (count > 0) {
+        u32 bytes_til_block_end = block_size - YUV_index;
+        
+        if (count >= bytes_til_block_end) {
+            // Complete at least one full block
+            memcpy(&YUV_tempdata[YUV_index >> 2], data, bytes_til_block_end);
+            data += bytes_til_block_end >> 2;
+            count -= bytes_til_block_end;
+            YUV_ConvertMacroBlock();
+        } else {
+            // Partial block - buffer it
+            memcpy(&YUV_tempdata[YUV_index >> 2], data, count);
+            YUV_index += count;
+            count = 0;
+        }
+    }
+}
+
+//------------------------------------------------------------------------------
+// Register Access Functions
+//------------------------------------------------------------------------------
+
+/**
+ * Read from PVR Tile Accelerator register
+ */
+u32 pvr_readreg_TA(u32 addr, u32 sz)
+{
+    // Handle YUV block counter register specially
+    if ((addr & 0xFFFFFF) == TA_YUV_TEX_CNT_ADDR) {
+        return YUV_doneblocks;
+    }
+    
+    // Delegate to plugin implementation
+    return libPvr_ReadReg(addr, sz);
+}
+
+/**
+ * Write to PVR Tile Accelerator register
+ */
+void pvr_writereg_TA(u32 addr, u32 data, u32 sz)
+{
+    // Delegate to plugin implementation
+    libPvr_WriteReg(addr, data, sz);
+    
+    // Reinitialize YUV converter if base address is written
+    if ((addr & 0xFFFFFF) == TA_YUV_TEX_BASE_ADDR) {
+        YUV_init();
+    }
+}
+
+//------------------------------------------------------------------------------
+// VRAM Access Functions (32-bit to 64-bit address conversion)
+//------------------------------------------------------------------------------
+
+u8 FASTCALL pvr_read_area1_8(u32 addr)
+{
+    printf("Warning: 8-bit VRAM reads are not supported by hardware\n");
+    return 0;
+}
+
+u16 FASTCALL pvr_read_area1_16(u32 addr)
+{
+    addr = vramlock_ConvOffset32toOffset64(addr);
+    return *host_ptr_xor((u16*)&vram[addr]);
+}
+
+u32 FASTCALL pvr_read_area1_32(u32 addr)
+{
+    addr = vramlock_ConvOffset32toOffset64(addr);
+    return *(u32*)&vram[addr];
+}
+
+void FASTCALL pvr_write_area1_8(u32 addr, u8 data)
+{
+    printf("Warning: 8-bit VRAM writes are not supported by hardware\n");
+}
+
+void FASTCALL pvr_write_area1_16(u32 addr, u16 data)
+{
+    addr = vramlock_ConvOffset32toOffset64(addr);
+    *host_ptr_xor((u16*)&vram[addr]) = data;
+}
+
+void FASTCALL pvr_write_area1_32(u32 addr, u32 data)
+{
+    addr = vramlock_ConvOffset32toOffset64(addr);
+    *(u32*)&vram[addr] = data;
+}
+
+//------------------------------------------------------------------------------
+// Tile Accelerator DMA Interface
+//------------------------------------------------------------------------------
+
+/**
+ * Write data to Tile Accelerator
+ * Routes data based on target address:
+ * - 0x000000-0x7FFFFF: TA polygon data
+ * - 0x800000-0xFFFFFF: YUV converter
+ * - 0x1000000+:        Direct VRAM write
+ */
+void FASTCALL TAWrite(u32 address, u32* data, u32 count)
+{
+    u32 address_masked = address & 0x1FFFFFF;
+    
+    if (address_masked < 0x800000) {
+        // TA polygon data (0-8MB range)
+        libPvr_TaDMA(data, count);
+    } else if (address_masked < 0x1000000) {
+        // YUV converter (8-16MB range)
+        YUV_data(data, count);
+    } else {
+        // Direct VRAM write (16MB+ range). Same interleave bug/fix as
+        // TAWriteSQ below: the 64-bit VRAM area is bank-interleaved, so write
+        // through pvr_write_area1_32 (vramlock_ConvOffset32toOffset64) to match
+        // the renderer's read layout, not a linear memcpy.
+        //   OLD (linear, wrong): memcpy(&vram.data[address & VRAM_MASK], data, count*32);
+        u32 off    = address & VRAM_MASK;
+        u32 words  = count * 8;                   // 8 u32 per 32-byte block
+        for (u32 i = 0; i < words; i++, off += 4)
+            pvr_write_area1_32(off, data[i]);
+    }
+}
+
+/**
+ * Store-queue writes that are NOT TA polygon data: the YUV converter and the
+ * direct 0x11xxxxxx VRAM/texture region.
+ *
+ * Split out of TAWriteSQ, and noinline on purpose. Both branches need
+ * callee-saved registers, so while they were inline GCC hoisted a prologue
+ * (stwu r1,-32(r1) / stw r31,28(r1)) ABOVE the TA test and tore it back down
+ * on the way out. The geometry path -- ~500 K calls/s, one per vertex -- was
+ * therefore paying a stack frame plus a `stw r31` followed six instructions
+ * later by `lwz r31` from the same slot. On the 750 that reload is a
+ * load-hit-store: the core does not forward from a pending store, it rejects
+ * the load and retries. With the cold half out of line the TA path is a
+ * compare and a tail call, no frame at all.
+ */
+static void __attribute__((noinline)) TAWriteSQ_slow(u32 address, u32* data)
+{
+    if ((address & 0x1FFFFFF) < 0x1000000) {
+        // YUV converter
+        YUV_data(data, 1);
+        return;
+    }
+
+    // Direct VRAM write (0x11xxxxxx texture region, via store queue).
+    //
+    // BUG FIX (Rez / WinCE texture-upload-via-SQ): the old code wrote the
+    // 32 bytes LINEARLY into vram.data. But the PVR VRAM 64-bit area is
+    // bank-interleaved: the renderer reads textures through
+    // fast_ConvOffset32toOffset64 (gxRend.cpp) and every other VRAM write
+    // path (pvr_write_area1_32, the ch2-DMA texture path) applies
+    // vramlock_ConvOffset32toOffset64. Writing linearly here put SQ-
+    // uploaded textures in a layout the renderer never reads back the same
+    // way — scrambled. PSP's TAWriteSQ writes via pvr_write_area1_32 (its
+    // pvr_map32), i.e. interleaved; match that. Shared by interpreter AND
+    // recompiler, so it explains a failure that reproduces on both cores.
+    //   OLD (linear, wrong): memcpy(&vram.data[address & VRAM_MASK], data, 32);
+    u32 off = address & VRAM_MASK;          // 32-bit VRAM offset
+    for (int i = 0; i < 8; i++, off += 4)   // 8 * 4 = 32 bytes
+        pvr_write_area1_32(off, data[i]);   // applies the 32->64 interleave
+}
+
+/**
+ * Write single 32-byte block via Store Queue
+ * Optimized path for SH4 store queue operations
+ *
+ * Called once per 32-byte TA block from do_sqw() (dc/sh4/sh4_cpu.cpp), i.e.
+ * about once per Dreamcast vertex. Keep it a bare test + tail call; anything
+ * needing registers belongs in TAWriteSQ_slow above.
+ */
+void FASTCALL TAWriteSQ(u32 address, u32* data)
+{
+    if ((address & 0x1FFFFFF) < 0x800000) {
+        // TA polygon data
+        libPvr_TaSQ(data);
+        return;
+    }
+    TAWriteSQ_slow(address, data);
+}
+
+//------------------------------------------------------------------------------
+// Module Lifecycle
+//------------------------------------------------------------------------------
+
+void pvr_Init()
+{
+    // Reserved for future initialization
+}
+
+void pvr_Term()
+{
+    // Reserved for future cleanup
+}
+
+void pvr_Reset(bool Manual)
+{
+    // Clear VRAM on automatic reset only
+    if (!Manual) {
+        vram.Zero();
+    }
+    
+    // Reset YUV converter state
+    YUV_index = 0;
+    YUV_dest = 0;
+    YUV_doneblocks = 0;
+    YUV_blockcount = 0;
+    YUV_x_curr = 0;
+    YUV_y_curr = 0;
+    YUV_x_size = 0;
+    YUV_y_size = 0;
+
+    for (u32 i = 0; i < YUV_REGION_SLOTS; i++) {
+        YUV_regions[i].base = 0;
+        YUV_regions[i].w    = 0;
+        YUV_regions[i].h    = 0;
+    }
+    YUV_region_next = 0;
+}

@@ -1,0 +1,256 @@
+#include "types.h"
+#include <string.h>
+
+#include "maple_if.h"
+
+#include "config/config.h"
+
+#include "dc/sh4/intc.h"
+#include "dc/mem/sb.h"
+#include "dc/mem/sh4_mem.h"
+#include "plugins/plugin_manager.h"
+#include "dc/asic/asic.h"
+#include "dc/maple/maple_helper.h"
+#include "plugs/drkPvr/frame_prof.h" // FRAME_PROF: pad bucket
+
+maple_device* MapleDevices[4][6];
+s32 maple_dma_pending=0;
+
+/*
+	Maple host controller
+	Direct processing, async interrupt handling
+	Device code is on maple_devs.cpp/h, config&managment is on maple_cfg.cpp/h
+
+	This code is missing many of the hardware details, like proper trigger handling,
+	dma continuation on suspect, etc ...
+*/
+
+void maple_DoDma();
+
+//realy hackish
+//misses delay , and stop/start implementation
+//ddt/etc are just hacked for wince to work
+//now with proper maple delayed dma maby its time to look into it ?
+bool maple_ddt_pending_reset=false;
+void maple_vblank()
+{
+	if (SB_MDEN &1)
+	{
+		if (SB_MDTSEL&1)
+		{
+			if (maple_ddt_pending_reset)
+			{
+				//printf("DDT vblank ; reset pending\n");
+			}
+			else
+			{
+				//printf("DDT vblank\n");
+				maple_DoDma();
+				SB_MDST = 0;
+				if ((SB_MSYS>>12)&1)
+				{
+					maple_ddt_pending_reset=true;
+				}
+			}
+		}
+		else
+		{
+			maple_ddt_pending_reset=false;
+		}
+	}
+}
+void maple_SB_MSHTCL_Write(u32 data)
+{
+	if (data&1)
+		maple_ddt_pending_reset=false;
+}
+void maple_SB_MDST_Write(u32 data)
+{
+	if (data & 0x1)
+	{
+		if (SB_MDEN &1)
+		{
+			SB_MDST=1;
+			maple_DoDma();
+		}
+	}
+}
+
+bool IsOnSh4Ram(u32 addr)
+{
+	if (((addr>>26)&0x7)==3)
+	{
+		if ((((addr>>29) &0x7)!=7))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+u32 dmacount=0;
+void maple_DoDma()
+{
+	// FRAME_PROF: every device dma() below ends in a host input read --
+	// PAD_ScanPads/WPAD_ScanPads, and on the Sixaxis path a USB transfer. Those
+	// are host calls with host latency sitting in the middle of an emulated
+	// frame, so they get their own bucket instead of hiding in the sh4 residual.
+	FP_T0(_fp_pad0);
+
+	verify(SB_MDEN &1)
+	verify(SB_MDST &1)
+
+#if debug_maple
+	printf("Maple: DoMapleDma\n");
+#endif
+	u32 addr = SB_MDSTAR;
+	u32 xfer_count=0;
+	bool last = false;
+	while (last != true)
+	{
+		dmacount++;
+		u32 header_1 = ReadMem32_nommu(addr);
+		u32 header_2 = ReadMem32_nommu(addr + 4) &0x1FFFFFE0;
+
+		last = (header_1 >> 31) == 1;//is last transfer ?
+		u32 plen = (header_1 & 0xFF )+1;//transfer length
+		u32 maple_op=(header_1>>8)&7;
+		xfer_count+=plen*4;
+
+		//this is kinda wrong .. but meh
+		//really need to properly process the commands at some point
+		if (maple_op==0)
+		{
+			if (!IsOnSh4Ram(header_2))
+			{
+				printf("MAPLE ERROR : DESTINATION NOT ON SH4 RAM 0x%X\n",header_2);
+				header_2&=0xFFFFFF;
+				header_2|=(3<<26);
+			}
+			u32* p_out=(u32*)GetMemPtr(header_2,4);
+			u32 outlen=0;
+
+			u32* p_data =(u32*) GetMemPtr(addr + 8,(plen)*sizeof(u32));
+			
+			//Command code 
+			u32 command=p_data[0] &0xFF;
+			//Recipient address 
+			u32 reci=(p_data[0] >> 8) & 0xFF;//0-5;
+			u32 port=maple_GetPort(reci);
+			u32 bus=maple_GetBusId(reci);
+			//Sender address 
+			u32 send=(p_data[0] >> 16) & 0xFF;
+			//Number of additional words in frame 
+			u32 inlen=(p_data[0]>>24) & 0xFF;
+			u32 resp=0;
+			inlen*=4;
+
+			if (MapleDevices[bus][5] && MapleDevices[bus][port] && MapleDevices[bus][port]->IsRaw())
+			{
+				outlen = MapleDevices[bus][port]->RawDma(p_data, inlen + 4, p_out);
+				xfer_count += outlen;
+			}
+			else if (MapleDevices[bus][5] && MapleDevices[bus][port])
+			{
+				resp=MapleDevices[bus][port]->Dma(command,&p_data[1],inlen,&p_out[1],outlen);
+
+				if(reci&0x20)
+					reci|=maple_GetAttachedDevices(bus);
+
+				verify(u8(outlen/4)*4==outlen);
+				p_out[0]=(resp<<0)|(send<<8)|(reci<<16)|((outlen/4)<<24);
+				xfer_count+=outlen+4;
+			}
+			else
+			{
+				outlen=4;
+				p_out[0]=0xFFFFFFFF;
+			}
+
+			//goto next command
+			addr += 2 * 4 + plen * 4;
+		}
+		else
+		{
+			addr += 1 * 4;
+		}
+	}
+
+	//printf("Maple XFER size %d bytes - %.2f ms\n",xfer_count,xfer_count*100.0f/(2*1024*1024/8));
+	maple_dma_pending=xfer_count*(SH4_CLOCK_EFF/(2*1024*1024/8));
+
+	FP_ACC(pad, _fp_pad0);
+	FP_BUMP(n_pad);
+}
+
+void maple_Update(u32 cycles)
+{
+	if (maple_dma_pending>0)
+	{
+		maple_dma_pending-=cycles;
+		if (SB_MDEN&1)
+		{
+			if (maple_dma_pending<=0)
+			{
+				SB_MDST=0;
+				asic_RaiseInterrupt(holly_MAPLE_DMA);
+			}
+		}
+		else
+		{
+			printf("WARNING: MAPLE DMA ABORT\n");
+			SB_MDST=0;	//I really wonder what this means, can the dma be continued ?
+		}
+	}
+}
+
+// A game waiting for the maple transfer polls SB_MDST, and the completion is
+// only checked every 28 672 cycles (VerySlowUpdate): hundreds of polls a
+// frame, each a trip through the register handlers. Every poll while the
+// transfer runs also counts as this many cycles of it, so the wait ends after
+// a few polls; a game that polls now and then sees no difference.
+static const s32 kMaplePollCredit = 4096;
+
+static u32 maple_SB_MDST_Read()
+{
+	if (maple_dma_pending > 0 && (SB_MDEN & 1))
+	{
+		maple_dma_pending -= kMaplePollCredit;
+		if (maple_dma_pending <= 0)
+		{
+			SB_MDST = 0;
+			asic_RaiseInterrupt(holly_MAPLE_DMA);
+		}
+	}
+	return SB_MDST;
+}
+
+//Init registers :)
+void maple_Init()
+{
+	sb_regs[(SB_MDST_addr-SB_BASE)>>2].flags=REG_32BIT_READWRITE;
+	sb_regs[(SB_MDST_addr-SB_BASE)>>2].readFunction=maple_SB_MDST_Read;
+	sb_regs[(SB_MDST_addr-SB_BASE)>>2].writeFunction=maple_SB_MDST_Write;
+
+	sb_regs[(SB_MSHTCL_addr-SB_BASE)>>2].flags=REG_32BIT_READWRITE;
+	sb_regs[(SB_MSHTCL_addr-SB_BASE)>>2].writeFunction=maple_SB_MSHTCL_Write;
+}
+
+void maple_Reset(bool Manual)
+{
+	maple_ddt_pending_reset=false;
+	maple_dma_pending=0;
+	SB_MDTSEL	= 0x00000000;
+	SB_MDEN	= 0x00000000;
+	SB_MDST	= 0x00000000;
+	SB_MSYS	= 0x3A980000;
+	SB_MSHTCL	= 0x00000000;
+	SB_MDAPRO = 0x00007F00;
+	SB_MMSEL	= 0x00000001;
+}
+
+void maple_Term()
+{
+	
+}

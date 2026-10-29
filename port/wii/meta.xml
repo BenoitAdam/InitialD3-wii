@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+  <name>Speed Boy 3 (alpha)</name>
+  <coder>Xale00</coder>
+  <version>alpha 0.25</version>
+  <release_date>20261028</release_date>
+  <short_description>Initial D Arcade Stage 3 (NAOMI 2) port</short_description>
+  <long_description>Alpha port of Initial D Arcade Stage 3 (NAOMI 2, GDS-0033).
+
+Independent open-source project, not affiliated with or endorsed by Sega, Kodansha, Shuichi Shigeno or Nintendo. No game data or BIOS is included: you must supply your own legally obtained files.
+
+Put gds-0033.chd, 317-0384-com.pic and a NAOMI BIOS set (naomi.zip) together in sd:/initiald3/ or usb:/initiald3/. Press 2 in the file browser to switch device.
+
+The launcher checks the files, decrypts the game and runs it. Speed in races is still below full speed.
+The log is written next to boot.dol (idas3wii_log.txt).
+  </long_description>
+  <ahb_access/>
+</app>

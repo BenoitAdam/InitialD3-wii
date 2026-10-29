@@ -1,0 +1,5 @@
+wii/build/
+wii/dist/
+wii/*.dol
+wii/*.elf
+wii/*.map

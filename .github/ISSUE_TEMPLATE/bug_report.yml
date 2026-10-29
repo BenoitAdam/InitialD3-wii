@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a problem with the Wii (or Windows) build.
+title: "[bug] "
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach game images, BIOS/firmware dumps, PIC/CHD data, extracted assets, snapshots, or recordings of the game.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps and options
+      description: Where in the game it happens (menu, car select, race, course) and the launcher options you used.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Wii, vWii or Dolphin, SD or USB, app version or commit SHA.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The newest idas3wii_log.txt (paste the relevant part).
+  - type: checkboxes
+    id: content
+    attributes:
+      label: Content confirmation
+      options:
+        - label: This report contains no game image, BIOS, PIC/CHD data, extracted asset or recording of the game.
+          required: true

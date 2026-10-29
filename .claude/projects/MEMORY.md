@@ -1,0 +1,7 @@
+- [Wii port state](project-wii-port-state.md) — real-Wii speed loop (user sends logs); log 11: race ~40 fps all-drawn, in-car view fixed (N2 model user clip), awaiting log 12; next idea: AABB depth/cull
+- [NAOMI 2 bring-up lessons](naomi2-bringup-lessons.md) — BIOS-reboot trap, ELAN chained lists, GX buffer caps, Dolphin ignores PP bits, --press runner input
+- [Build environment quirks](build-env-quirks.md) — devkitPro make via its own bash; cmd/cmake PATH shadowing; no heredocs with backslashes
+- [Local reference sources](local-reference-sources.md) — nullDC4Wii, Flycast (NAOMI 2), WiiStation libchdr paths
+- [Dolphin setup](dolphin-setup.md) — Dolphin.exe path, WiiSDSync folder, OSReport goes to Logs\dolphin.log
+- [Ask, don't scan drives](no-drive-search.md) — never search drive roots for files/programs; ask the user for the path
+- [Repo provenance & licensing](repo-provenance-licensing.md) — legal cleanup on branch legal-cleanup (upstream files + artwork removed, GPL-2 added); history still has them

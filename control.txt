@@ -1,0 +1,83 @@
+INITIAL D ARCADE STAGE 3 - WII PORT - CONTROLS
+==============================================
+
+All connected controllers work at the same time (up to 4 of each kind).
+Wii console POWER or RESET button: quit the game.
+
+
+IN GAME
+-------
+
+GameCube controller
+  Steer ............ Control stick (left / right)
+  Accelerate ....... R trigger (analog)
+  Brake ............ L trigger (analog)
+  Shift up ......... A  or  D-pad Up
+  Shift down ....... B  or  D-pad Down
+  Change view ...... X
+  Start ............ Start
+  Insert coin ...... Z
+  Test (operator) .. D-pad Left
+  Service .......... D-pad Right
+  Quit the game .... Start + Z + Y together
+
+Wiimote + Nunchuk
+  Steer ............ Nunchuk stick (left / right)
+  Accelerate ....... A
+  Brake ............ B (trigger)
+  Shift up ......... Z (Nunchuk)
+  Shift down ....... C (Nunchuk)
+  Change view ...... 1
+  Start ............ +
+  Insert coin ...... -
+  Test (operator) .. D-pad Left
+  Service .......... D-pad Right
+  Quit the game .... Home
+
+Classic Controller
+  Steer ............ Left stick (left / right)
+  Accelerate ....... R (analog) or ZR
+  Brake ............ L (analog) or ZL
+  Shift up ......... a
+  Shift down ....... b
+  Change view ...... x
+  Start ............ +
+  Insert coin ...... -
+  Test (operator) .. D-pad Left
+  Service .......... D-pad Right
+  Quit the game .... Home
+
+Wiimote alone (held sideways, D-pad on the left)
+  Steer ............ D-pad: the arrows pointing left / right
+                     (Up = steer left, Down = steer right, as printed)
+  Accelerate ....... 2
+  Brake ............ 1
+  Shift up ......... D-pad arrow pointing up   (Right as printed)
+  Shift down ....... D-pad arrow pointing down (Left as printed)
+  Change view ...... A
+  Start ............ +
+  Insert coin ...... -
+  Quit the game .... Home
+  (No Test / Service buttons on a bare Wiimote.)
+
+
+LAUNCHER (file list and launch pages)
+-------------------------------------
+
+                   Wiimote / Classic        GameCube
+  Move ........... D-pad Up / Down          D-pad Up / Down
+  Change option .. D-pad Left / Right       D-pad Left / Right
+  Select/Launch .. A                        A
+  Back ........... B                        B
+  Previous page .. 1 (Classic: y)           Y
+  Next page ...... 2 (Classic: x)           X
+  Exit to loader . + and - together         L + R + Z (or L + R + Start)
+
+  In the file list, Left / Right turn pages and 2 (GameCube: X)
+  switches between SD and USB when both are present.
+
+
+TO START A RACE
+---------------
+  Insert coin (GameCube Z / Wiimote -), then press Start
+  (GameCube Start / Wiimote +).
