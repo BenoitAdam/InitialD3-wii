@@ -146,6 +146,7 @@ struct Light
     bool distMode = false;
     bool distAtten = false, angleAtten = false;   // distA/B, angleA/B not identity
     float distA = 1, distB = 0, angleA = 1, angleB = 0;
+    float reachSq = INFINITY;   // squared distance from which distance attenuation is 0
 };
 
 struct LightModel
@@ -272,6 +273,8 @@ void lighting(float* base, float* offs, int vol, Vec3 P, Vec3 N)
         {
             const Vec3 toLight = l.pos - P;
             const float d2 = dot(toLight, toLight);
+            if (d2 >= l.reachSq)
+                continue;                                    // attenuated to 0: adds nothing
             const float inv = d2 > 0.f ? rsqrt(d2) : 0.f;   // 1 / distance
             L = toLight * inv;
             if (l.distAtten)
@@ -414,9 +417,22 @@ TnlVtx lerp(const TnlVtx& a, const TnlVtx& b, float t)
 // ---------------------------------------------------------------------------
 // TA output
 // ---------------------------------------------------------------------------
+// At most this many vertices per polygon header. Renderers check their
+// buffers once per header (nullDC4Wii's GX renderer keeps 4K vertices of
+// headroom), so one huge strip must not arrive in a single piece. Even,
+// so each continuation starts on an even vertex and keeps its winding.
+constexpr u32 kMaxStripVertices = 1024;
+
+// This path's buffers are fixed and lists go through them a piece at a time:
+// nothing here allocates once the game runs. On a Wii the C heap has a few
+// hundred KB left beside the guest page pool, and these used to be vectors
+// sized by the longest list. In a day race the GPU path takes every list and
+// they stayed empty; the night attract demo (point lights on everything, so
+// nearly every list comes here) grows them to ~1.5 MB, more than the heap has,
+// and a failed new is abort() without exceptions.
 struct TaWriter
 {
-    std::vector<u32> words;
+    u32 words[8 + 8 * kMaxStripVertices];       // one piece: header + vertices
     u32 header[8];
     bool textured = false;
 
@@ -430,12 +446,6 @@ struct TaWriter
         textured = (pcw >> 3) & 1;
     }
 
-    // At most this many vertices per polygon header. Renderers check their
-    // buffers once per header (nullDC4Wii's GX renderer keeps 4K vertices of
-    // headroom), so one huge strip must not arrive in a single piece. Even,
-    // so each continuation starts on an even vertex and keeps its winding.
-    static constexpr u32 kMaxStripVertices = 1024;
-
     void strip(const TnlVtx* v, u32 count)
     {
         while (count > kMaxStripVertices)
@@ -447,74 +457,94 @@ struct TaWriter
         piece(v, count);
     }
 
+    // Sent as soon as it is built: the buffer holds one piece.
     void piece(const TnlVtx* v, u32 count)
     {
         if (count < 3)
             return;
         elan_Stats().tnlVertices += count;
-        words.insert(words.end(), header, header + 8);
+        memcpy(words, header, sizeof(header));
+        u32* o = words + 8;
         const float fx = s.proj[0], tx = s.proj[1], fy = s.proj[2], ty = s.proj[3];
-        for (u32 i = 0; i < count; i++)
+        for (u32 i = 0; i < count; i++, o += 8)
         {
             const float invZ = 1.f / v[i].Z;
-            const u32 pcw = 0xE0000000u | (i + 1 == count ? 0x10000000u : 0u);
-            words.push_back(pcw);
-            words.push_back(asWord(fx * v[i].X * invZ + tx));
-            words.push_back(asWord(fy * v[i].Y * invZ + ty));
-            words.push_back(asWord(invZ));
+            o[0] = 0xE0000000u | (i + 1 == count ? 0x10000000u : 0u);
+            o[1] = asWord(fx * v[i].X * invZ + tx);
+            o[2] = asWord(fy * v[i].Y * invZ + ty);
+            o[3] = asWord(invZ);
             if (textured)
             {
-                words.push_back(asWord(v[i].u));
-                words.push_back(asWord(v[i].v));
-                words.push_back(packColor(v[i].base));
-                words.push_back(packColor(v[i].offs));
+                o[4] = asWord(v[i].u);
+                o[5] = asWord(v[i].v);
+                o[6] = packColor(v[i].base);
+                o[7] = packColor(v[i].offs);
             }
             else
             {
-                words.push_back(0);
-                words.push_back(0);
-                words.push_back(packColor(v[i].base));
-                words.push_back(0);
+                o[4] = 0;
+                o[5] = 0;
+                o[6] = packColor(v[i].base);
+                o[7] = 0;
             }
         }
-    }
-
-    void flush()
-    {
-        if (!words.empty())
-        {
-            ELAN_TIME_BEGIN(tt);
-            libPvr_TaDMA(words.data(), (u32)words.size() / 8);
-            ELAN_TIME_END(taNs, tt);
-            elan_Stats().taBlocks += (u32)words.size() / 8;
-            words.clear();
-        }
+        ELAN_TIME_BEGIN(tt);
+        libPvr_TaDMA(words, count + 1);
+        ELAN_TIME_END(taNs, tt);
+        elan_Stats().taBlocks += count + 1;
     }
 };
 
 TaWriter s_out;
-std::vector<TnlVtx> s_strip;
-std::vector<TnlVtx> s_clipped;
+
+template <u32 N>
+struct VtxBuf
+{
+    TnlVtx v[N];
+    u32 n;
+    void push(const TnlVtx& t) { v[n++] = t; }
+};
+
+// A piece of a list's linked strip (at most kMaxStripVertices, plus what one
+// input vertex adds), and the same piece near-plane clipped.
+VtxBuf<kMaxStripVertices + 8> s_strip;
+constexpr u32 kClippedCap = kMaxStripVertices + 16;
+VtxBuf<kClippedCap> s_clipped;
 
 // Appends strip `v` to `out`, joined by degenerate triangles. The first real
 // vertex lands on an even index so its triangles keep their winding. One
 // polygon header per list instead of one per piece keeps the renderer's
 // strip/param tables small (the GX renderer has 8K of each per frame).
-void linkStrip(std::vector<TnlVtx>& out, const TnlVtx* v, u32 n)
+template <u32 N>
+void linkStrip(VtxBuf<N>& out, const TnlVtx* v, u32 n)
 {
-    if (!out.empty())
+    if (out.n)
     {
-        out.push_back(out.back());
-        out.push_back(v[0]);
-        if (out.size() & 1)
-            out.push_back(v[0]);
+        const TnlVtx last = out.v[out.n - 1];
+        out.push(last);
+        out.push(v[0]);
+        if (out.n & 1)
+            out.push(v[0]);
     }
-    out.insert(out.end(), v, v + n);
+    memcpy(out.v + out.n, v, n * sizeof(TnlVtx));
+    out.n += n;
+}
+
+// Room for `n` more vertices (and a link) in s_clipped: sends what it holds if
+// needed. A piece then starts afresh, at index 0, which keeps every winding.
+void clippedRoom(u32 n)
+{
+    if (s_clipped.n && s_clipped.n + n + 3 > kClippedCap)
+    {
+        s_out.strip(s_clipped.v, s_clipped.n);
+        s_clipped.n = 0;
+    }
 }
 
 // Triangle (a, b, c) clipped against Z >= nearZ, appended to s_clipped.
 void clippedTriangle(const TnlVtx& a, const TnlVtx& b, const TnlVtx& c, float nearZ)
 {
+    clippedRoom(4);
     const TnlVtx* in[3] = {&a, &b, &c};
     TnlVtx poly[4];
     u32 n = 0;
@@ -535,6 +565,67 @@ void clippedTriangle(const TnlVtx& a, const TnlVtx& b, const TnlVtx& c, float ne
         const TnlVtx quad[4] = {poly[0], poly[1], poly[3], poly[2]};
         linkStrip(s_clipped, quad, 4);
     }
+}
+
+// Sends `n` vertices of a list's linked strip (a piece starting at an even
+// index of it). Only triangles that cross the near plane are clipped; runs of
+// triangles in front of it stay strips.
+void sendStrip(const TnlVtx* v, u32 n, float nearZ)
+{
+    float minZ = 1e30f;
+    for (u32 i = 0; i < n; i++)
+        if (v[i].Z < minZ)
+            minZ = v[i].Z;
+    if (minZ >= nearZ)
+    {
+        s_out.strip(v, n);
+        return;
+    }
+    s_clipped.n = 0;
+    u32 runStart = 0;      // first triangle of the current in-front run
+    bool inRun = false;
+    auto flushRun = [&](u32 endTri) {     // triangles [runStart, endTri)
+        if (!inRun || endTri <= runStart)
+            return;
+        const TnlVtx* first = v + runStart;
+        const u32 count = endTri - runStart + 2;
+        clippedRoom(count + 1);
+        if (runStart & 1)
+        {
+            // An odd triangle starts reversed: lead with a duplicate so
+            // the run keeps its winding once placed at an even index.
+            linkStrip(s_clipped, first, 1);
+            memcpy(s_clipped.v + s_clipped.n, first, count * sizeof(TnlVtx));
+            s_clipped.n += count;
+        }
+        else
+            linkStrip(s_clipped, first, count);
+    };
+    for (u32 k = 0; k + 2 < n; k++)
+    {
+        const TnlVtx& a = v[k];
+        const TnlVtx& b = v[k + 1];
+        const TnlVtx& c = v[k + 2];
+        if (a.Z >= nearZ && b.Z >= nearZ && c.Z >= nearZ)
+        {
+            if (!inRun)
+            {
+                inRun = true;
+                runStart = k;
+            }
+            continue;
+        }
+        flushRun(k);
+        inRun = false;
+        if (k & 1)
+            clippedTriangle(b, a, c, nearZ);
+        else
+            clippedTriangle(a, b, c, nearZ);
+    }
+    if (n >= 3)
+        flushRun(n - 2);
+    s_out.strip(s_clipped.v, s_clipped.n);
+    s_clipped.n = 0;
 }
 
 // GPU lists' depth measurement (recordForGpu), per frame.
@@ -807,6 +898,14 @@ void tnl_SetLight(const u32* w)
     l.parallel = w[3] == 0 && w[4] == 0 && w[5] == 0 && w[6] == 0 && w[7] == 0;
     l.distAtten = l.distA != 1.f || l.distB != 0.f;
     l.angleAtten = l.angleA != 1.f || l.angleB != 0.f;
+    // The distance attenuation clamp(B / d + A) (or B * d + A) reaches 0 at a
+    // fixed distance and stays there: Initial D's night courses light every
+    // vertex with ~9 point lights (street lamps reach 40 units, the car's 100
+    // to 200), and most are that far from most vertices.
+    if (l.distAtten && !l.distMode && l.distA < 0.f && l.distB > 0.f)
+        l.reachSq = (l.distB / l.distA) * (l.distB / l.distA);
+    else if (l.distAtten && l.distMode && l.distA > 0.f && l.distB < 0.f)
+        l.reachSq = (l.distA / l.distB) * (l.distA / l.distB);
 #if !defined(GEKKO)
     if (!l.parallel)
     {
@@ -1071,13 +1170,14 @@ int tnl_DrawList(const u32* w, u32 vertexSize, int listType)
 
     s_out.begin(outPcw, isp, tsp, w[3]);
 
-    // Strips and fans, linked into one strip with degenerate triangles.
-    s_strip.clear();
+    // Strips and fans, linked into one strip with degenerate triangles, sent
+    // a piece at a time.
+    s_strip.n = 0;
     const u32* v = w + 8;
     TnlVtx fanCenter = {}, fanLast = {};
     bool stripStart = true;
     bool lit = false;
-    float minZ = 1e30f;
+    const float nearZ = s.matrix.nearZ > 0.f ? s.matrix.nearZ : 0.001f;
     ELAN_TIME_BEGIN(tv);
     for (u32 i = 0; i < count; i++, v += vertexSize / 4)
     {
@@ -1094,85 +1194,40 @@ int tnl_DrawList(const u32* w, u32 vertexSize, int listType)
         if (stripStart)
         {
             fanCenter = cur;
-            if (!s_strip.empty())
+            if (s_strip.n)
             {
-                s_strip.push_back(fanLast);
-                s_strip.push_back(cur);
-                if (s_strip.size() & 1)
-                    s_strip.push_back(cur);
+                s_strip.push(fanLast);
+                s_strip.push(cur);
+                if (s_strip.n & 1)
+                    s_strip.push(cur);
             }
             stripStart = false;
         }
         else if ((header >> 29 & 3) == 2)        // fan vertex
         {
-            s_strip.push_back(fanLast);
-            s_strip.push_back(fanCenter);
-            if (s_strip.size() & 1)
-                s_strip.push_back(fanCenter);
-            s_strip.push_back(fanCenter);
-            s_strip.push_back(fanLast);
+            s_strip.push(fanLast);
+            s_strip.push(fanCenter);
+            if (s_strip.n & 1)
+                s_strip.push(fanCenter);
+            s_strip.push(fanCenter);
+            s_strip.push(fanLast);
         }
-        s_strip.push_back(cur);
+        s_strip.push(cur);
         fanLast = cur;
-        if (cur.Z < minZ)
-            minZ = cur.Z;
         if (header >> 31)
             stripStart = true;
-    }
-
-    ELAN_TIME_END(convNs, tv);
-    const float nearZ = s.matrix.nearZ > 0.f ? s.matrix.nearZ : 0.001f;
-    if (minZ >= nearZ)
-        s_out.strip(s_strip.data(), (u32)s_strip.size());
-    else
-    {
-        // Only triangles that cross the near plane are clipped; runs of
-        // triangles in front of it stay strips.
-        s_clipped.clear();
-        const u32 n = (u32)s_strip.size();
-        u32 runStart = 0;      // first triangle of the current in-front run
-        bool inRun = false;
-        auto flushRun = [&](u32 endTri) {     // triangles [runStart, endTri)
-            if (!inRun || endTri <= runStart)
-                return;
-            const TnlVtx* first = &s_strip[runStart];
-            const u32 count = endTri - runStart + 2;
-            if (runStart & 1)
-            {
-                // An odd triangle starts reversed: lead with a duplicate so
-                // the run keeps its winding once placed at an even index.
-                linkStrip(s_clipped, first, 1);
-                s_clipped.insert(s_clipped.end(), first, first + count);
-            }
-            else
-                linkStrip(s_clipped, first, count);
-        };
-        for (u32 k = 0; k + 2 < n; k++)
+        if (s_strip.n >= kMaxStripVertices)
         {
-            const TnlVtx& a = s_strip[k];
-            const TnlVtx& b = s_strip[k + 1];
-            const TnlVtx& c = s_strip[k + 2];
-            if (a.Z >= nearZ && b.Z >= nearZ && c.Z >= nearZ)
-            {
-                if (!inRun)
-                {
-                    inRun = true;
-                    runStart = k;
-                }
-                continue;
-            }
-            flushRun(k);
-            inRun = false;
-            if (k & 1)
-                clippedTriangle(b, a, c, nearZ);
-            else
-                clippedTriangle(a, b, c, nearZ);
+            // A full piece: the next one repeats its last two vertices, from an
+            // even index (same winding) - the split TaWriter::strip makes.
+            sendStrip(s_strip.v, kMaxStripVertices, nearZ);
+            s_strip.n -= kMaxStripVertices - 2;
+            memmove(s_strip.v, s_strip.v + kMaxStripVertices - 2, s_strip.n * sizeof(TnlVtx));
         }
-        if (n >= 3)
-            flushRun(n - 2);
-        s_out.strip(s_clipped.data(), (u32)s_clipped.size());
     }
-    s_out.flush();
+    ELAN_TIME_END(convNs, tv);
+    sendStrip(s_strip.v, s_strip.n, nearZ);
+    s_strip.n = 0;
     ELAN_TIME_END(tnlNs, t0);
     return list;
 }

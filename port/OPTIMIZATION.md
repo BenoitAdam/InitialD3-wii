@@ -198,3 +198,10 @@ needs 100% speed, hence FRAMESKIP AUTO for now.
 10. Accuracy items with a speed cost to measure: specular on the GPU path (COLOR1 +
     GX_AF_SPEC), point lights on the GPU (ELAN uses a linear clamped distance attenuation that
     GX local lights do not match).
+11. **Night scenes (attract demo, night courses).** Every lit list carries ~9 point lights
+    (street lamps reach 40 units, the car's lights 100-200), so the GPU path refuses nearly
+    all of them: 55-89K CPU-lit vertices a frame, 30-90 ms of T&L on a PC. Done: point lights
+    beyond their reach (attenuation clamped to 0) are skipped per vertex, exactly. Left, in
+    order: (a) lists out of every point light's reach go to the GPU path unchanged (a view-space
+    box per list; ~20% of the point-lit vertices in the demo); (b) GX local lights with
+    k0/k1/k2 fitted to `clamp(B/d + A)` for the rest (approximate, behind an option).

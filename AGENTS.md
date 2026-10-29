@@ -29,6 +29,10 @@ it exists.
   (see OPTIMIZATION.md).
 - Music tempo follows emulation speed (the game streams it through the SH-4), so music is
   right only at 100%.
+- Attract mode (no coin, ~20 s after the title) runs a **night** demo race: ~9 point lights
+  per vertex keep nearly every list on the CPU T&L path. It crashed on the Wii (2026-10-29
+  report; most likely the CPU path's vectors exhausting the C heap, now fixed buffers) and is
+  far too slow there (see Open issues). Owner to confirm the crash is gone (log 12).
 
 ## Hard rules
 
@@ -183,6 +187,10 @@ probe, ELAN draw split, fetch programs/patches/ring passes); `[CC]` JIT call-out
 - Wii memory: newlib malloc never returns memory, and the guest page pool only takes what is
   above the heap's high-water mark. Never allocate big temporary buffers in the launcher; stream
   files (the BIOS zip is streamed, only 512 KB kept).
+- Nothing in the core may grow on the heap during the game: a few hundred KB are left beside
+  the page pool, and with `-fno-exceptions` a failed `new` is `abort()`. A path that a day race
+  never takes can still be hit later: the CPU T&L vectors stayed empty in races (the GPU path
+  takes every list) and grew to ~1.5 MB in the night attract demo. Use fixed buffers.
 - The GX renderer's buffers were sized for Dreamcast: ELAN output is chunked (<=1024 vertices a
   header) and the NAOMI 2 caps raised (`GX_VERTEX_CAP`, `GX_LIST_CAP`).
 - Writing the log with fflush+fsync per line cost ~10 ms spikes: keep log writes going through
@@ -194,6 +202,10 @@ probe, ELAN draw split, fetch programs/patches/ring passes); `[CC]` JIT call-out
 
 - Specular is dropped on the GPU T&L path (visible on untextured lists); point lights still go
   to the CPU path (ELAN distance attenuation differs from GX local lights).
+- Night scenes (the attract demo, night courses): 55-89K point-lit vertices a frame on the CPU
+  path, 30-90 ms a frame on a PC, so a few fps on a Wii. Point lights out of reach are skipped
+  per vertex (exact). Next: lists out of every point light's reach to the GPU path (~20% of
+  the vertices), then GX local lights with a fitted attenuation (approximate).
 - Modifier volumes, the credit-digit glyph, in-race memory headroom, a live window + keyboard
   for the Windows build.
 - Windows build has no audio; sound changes can only be heard on Wii/Dolphin.
