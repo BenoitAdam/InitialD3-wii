@@ -25,8 +25,14 @@ it exists.
 - Menus/attract/car select: 100% speed. Race: ~38-41 fps with every frame drawn
   (FRAMESKIPPING 0); ~94-103% speed with FRAMESKIP AUTO (1 frame in 4 drawn).
 - Last real-Wii log analysed: **log 11** (rear-view mirror / in-car view fixed, depth-spread
-  bug fixed). **Awaiting log 12** from the owner. Next speed idea: per-list model-space AABB
-  (see OPTIMIZATION.md).
+  bug fixed). **Awaiting log 12** from the owner (Dolphin check first, then a Wii).
+- 3D LIST CULL (RENDERING page, last row, default OUT OF VIEW; 2026-10-30, untested on a Wii or
+  Dolphin): each GPU fetch program keeps its list's model-space bounding box; when the ELAN
+  records a list, the box under the list's matrix drops lists behind the camera or out of the
+  picture and gives the depth range without measuring. Windows race: drawn per render 116.6K
+  vertices / 965 lists -> 63.5-78K / 546-705, depth measured on ~0.6-0.9K vertices a frame
+  instead of ~3.7K; night demo: point-lit lists take their lights from the box (no vertex pass).
+  Needs 3D VTX FETCH on (it is where the boxes live). Expected on a Wii: ~3 ms a race frame.
 - Music tempo follows emulation speed (the game streams it through the SH-4), so music is
   right only at 100%.
 - Attract mode (no coin, ~20 s after the title) runs a **night** demo race: 6-11 point lights
@@ -71,7 +77,7 @@ current work:
 | `port/src/run/run_main.cpp` | Windows headless runner `idas3wii_run` (all diagnostics flags) |
 | `port/emu/naomi/naomi_frontend.cpp` | Core init/run/settings, idle-loop skip (`naomi_IdleCycleScale`), assert/BIOS-entry traps |
 | `port/emu/naomi/naomi_board.cpp` | DIMM board, cart DMA, register counters |
-| `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin + GPU light sets (point lights as GX local lights), `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs |
+| `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin + GPU light sets (point lights as GX local lights), `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs (+ each list's bounding box, `cachedBox`) |
 | `port/emu/plugs/drkPvr/gxRend.cpp` | PowerVR -> GX renderer (TA lists, ELAN items, VRAM present, tile clip, buffer caps) |
 | `port/emu/plugs/drkPvr/frame_prof.cpp` | FPROF per-frame profiler |
 | `port/emu/host/soft_renderer.cpp` | Windows software renderer for the runner (snapshots, stand-ins for the `rend_*` hooks) |
@@ -130,6 +136,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--frameskip N`, `--model-skip 0/1`, `--fixes on/off` | same as the launcher options, for A/B runs |
 | `--point-lights 0/1` | NIGHT LIGHTS: 1 = point lights as GX local lights; without `--gpu-tnl` the CPU draws those lists lit the way GX would (snapshot preview) |
 | `--cull 0/1/2` | BACKFACE CULL in the snapshots: 2 = the polygons' cull modes (launcher ON), 1 = the other winding |
+| `--list-cull 0/1/2` | 3D LIST CULL with `--gpu-tnl`: 1 = behind the camera, 2 = out of view (launcher default). Prints `3D list cull per frame` and `3D list boxes ... N STALE` (every box used is checked against its list's records: must stay at 0) |
 | env `IDAS3_GX_DEPTH=N:F:rules;...` | each snapshot redrawn with the Wii's 24-bit Z (near N, far F; N 0 = exact) and other depth rules, `_diffK.png` + winning lists of the differing pixels; a config against itself with `j0.5` = pixels that flicker (rules in `soft_renderer.cpp`, `GxDepth`). Race: `0:1:geq+cull;0.00999:100100:geq+cull;0.00999:100100:geq+cull+j0.5+r1` |
 | `--histo-from F` | PC histogram from frame F (best tool when stuck without a hang) |
 | `--trace-from PC`, `--trace-pc a,b`, `--watch ADDR`, `--path-after-elan` | SH-4 tracing |
@@ -218,6 +225,13 @@ probe, ELAN draw split, fetch programs/patches/ring passes); `[CC]` JIT call-out
   the ELAN flips CullMode per model (`cwCulling`) and for the mirror's projection
   (`naomi_elan_tnl.cpp`). Translucent lists must keep writing depth: without a sort the HUD's
   layers need it.
+- With 3D LIST CULL a list's ELAN pages are checked (PTE change bit) when the ELAN records it,
+  once a render, and the draw reuses that check: a game write between the ELAN run and the render
+  would go unseen until the next render (Windows census: never happens in Initial D; the GPU
+  path always read the records at draw time anyway). The Windows runner takes its write watch
+  before each check after an ELAN run (`g_elan_exec_seq`) to see what the Wii would. A program's
+  box lives in the ring right after it: ring room matters (lining programs up on cache lines
+  as well cost ~15% and made the in-car view rebuild live programs).
 
 ## Open issues (besides speed)
 

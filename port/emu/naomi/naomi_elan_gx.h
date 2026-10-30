@@ -70,6 +70,13 @@ struct ElanGxRecord
 bool elan_gx_enabled();
 // Records one list into the renderer's stream; false = use the CPU path.
 bool elan_gx_record(const ElanGxRecord& r);
+// The list's bounding box in model space (min x y z, max x y z; empty when
+// min > max), kept with its GPU fetch program while its pages stay unwritten
+// (naomi_elan_fetch.inc). False: none now. Asked when the list is recorded.
+bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6]);
+// The renderer's canvas (screen coordinates of the ELAN's projection), from
+// its last 3D render; 0 before the first one.
+void elan_gx_canvas(float& width, float& height);
 
 #if !defined(GEKKO)
 // Windows runner: once per drawn render (soft_renderer.cpp StartRender), the
@@ -105,3 +112,7 @@ extern int g_elan_fetch_preset;
 // Launch option NIGHT LIGHTS: 0 = lists lit by point lights stay on the CPU
 // (exact), 1 = the GPU path lights them with GX local lights (approximate).
 extern int g_elan_point_preset;
+// Launch option 3D LIST CULL (GPU path, lists with a fetch program's box):
+// 0 = off (every list recorded, depth measured as before), 1 = lists behind
+// the camera dropped, 2 = also lists beside or above/below the picture.
+extern int g_elan_box_preset;

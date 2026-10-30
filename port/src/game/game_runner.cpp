@@ -184,6 +184,7 @@ NaomiFrameInfo s_lastFrame;
 // under Dolphin), so these rates show whether memory paging eats the frame.
 u32 s_prevIch = 0, s_prevGpu = 0, s_prevLit = 0;
 u64 s_prevExec = 0, s_prevTnl = 0, s_prevGpuNs = 0, s_prevConv = 0, s_prevTa = 0;
+NaomiElanStats s_prevBox = {};        // the 3D LIST CULL counters at the last line
 
 void logMemoryActivity(const NaomiFrameInfo& info)
 {
@@ -211,6 +212,12 @@ void logMemoryActivity(const NaomiFrameInfo& info)
         log::write("[prof]   ELAN model lists: %u walked, %u stepped over on dropped frames (%u polygon lists not "
                    "walked); walked again with other commands %u, of which side effects changed %u (totals)\n",
                    es.modelsWalked, es.modelsSkipped, es.modelListsSkipped, es.modelsChanged, es.modelsFlipped);
+        log::write("[prof]   3D list cull per frame: %u lists with a box, %u dropped behind the camera, %u out of "
+                   "view (%u vertices) | depth measured on %u vertices\n",
+                   (es.boxLists - s_prevBox.boxLists) / frames, (es.boxCulledBehind - s_prevBox.boxCulledBehind) / frames,
+                   (es.boxCulledSide - s_prevBox.boxCulledSide) / frames,
+                   (es.boxCulledVertices - s_prevBox.boxCulledVertices) / frames,
+                   (es.depthMeasured - s_prevBox.depthMeasured) / frames);
         const NaomiStats& ns = naomi_Stats();
         log::write("[prof]   cart DMA: %u transfers, %u KB, %u status polls while one ran (totals)\n",
                    ns.cartDmaCount, ns.cartDmaBytes >> 10, ns.cartDmaPolls);
@@ -225,6 +232,7 @@ void logMemoryActivity(const NaomiFrameInfo& info)
                    all, all - tnl, tnl, gpu, conv, tnl - gpu - conv, ta);
     }
     const NaomiElanStats& es = naomi_ElanStats();
+    s_prevBox = es;
     s_prevIch = es.ichVertices;
     s_prevGpu = es.gpuVertices;
     s_prevLit = es.litVertices;
@@ -284,7 +292,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_arm7_str_align_preset, &g_adpcm_loop_preset,  &g_arm7_reset_fix_preset, &g_aica_race_preset,
         &g_aica_ca_clamp_preset, &g_jit_link_guard_preset, &g_div32_fix_preset,  &g_interp_fix_preset,
         &g_spg_fix_preset,       &g_ta_guard_preset,     &g_inf_vtx_preset,
-        &g_elan_point_preset,    &g_isp_cull_preset};
+        &g_elan_point_preset,    &g_isp_cull_preset,     &g_elan_box_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

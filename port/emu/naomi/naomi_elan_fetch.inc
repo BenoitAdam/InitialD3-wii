@@ -18,6 +18,11 @@
 // into the program itself, a patch the GPU reads there. Strips with fan
 // vertices over a gap are CPU-fed.
 //
+// After its ops (from a 4-byte boundary) each program keeps its list's
+// bounding box: min x y z, max x y z of the records' positions (placeholders
+// aside), 6 floats. Same life as the program, and its checksum covers it: the
+// ELAN side culls and sizes the list's depth range from it (cachedBox).
+//
 // Program ops (u16):
 //   kOpSeg, pa >> 16, pa & 0xFFFF       array base: vertex b's record is at
 //                                       physical pa; the indices that follow
@@ -44,6 +49,7 @@ constexpr u32 kFetchMaxLists = 3072;           // then it starts over
 // still in use.
 constexpr u32 kProgWordsMax = 128 * 1024, kProgWordsMin = 64 * 1024;
 constexpr u32 kListPages = 512;                // pages a fetched list may span
+constexpr u32 kBoxWords = 12;                  // the box after a program, in u16 units
 
 struct PageState
 {
@@ -148,6 +154,16 @@ inline u32 progSum(const u16* p, u32 n)
     for (u32 k = 0; k < n; k++)
         s = (s << 5 | s >> 27) + p[k];
     return s;
+}
+
+// Where a program's box lies, and the words its program and box take.
+inline u32 boxPos(u32 prog, u32 len)
+{
+    return prog + ((len + 1) & ~1u);
+}
+inline u32 progSpan(const FetchList& e)
+{
+    return boxPos(e.prog, e.len) + kBoxWords - e.prog;
 }
 
 // One list's program, written at the ring's head.
@@ -334,8 +350,8 @@ bool buildProgram(const u32* vtx, u32 off, u32 count, u32 vs, FetchList& e)
     s_fetchCounts.bounds += np - 1;
     s_fetchCounts.gaps += gaps;
     // Ops: 7 words a vertex at most; each gap: one patch of 5 records at
-    // most, its alignment and the ops around it.
-    const u32 need = 7 * count + 32 + gaps * (48 + 3 * vs);
+    // most, its alignment and the ops around it. Then the box.
+    const u32 need = 7 * count + 32 + kBoxWords + gaps * (48 + 3 * vs);
     if (need > s_progWords / 2)
     {
         s_fetchCounts.tooBig++;
@@ -371,18 +387,40 @@ bool buildProgram(const u32* vtx, u32 off, u32 count, u32 vs, FetchList& e)
             b.strip(i, j, false, 0);
         i = j;
     }
-    if (b.fail)
+    const u32 box = boxPos(s_progHead, b.m);
+    if (b.fail || box + kBoxWords > s_progWords)
     {
         s_fetchCounts.aborted++;
         return false;
     }
+    // The box, from the records just walked (still in the cache).
+    float bb[6] = {1e30f, 1e30f, 1e30f, -1e30f, -1e30f, -1e30f};
+    for (u32 i = 0; i < count; i++)
+    {
+        const u32* v = vtx + i * b.words;
+        if (placeholder(v))
+            continue;
+        for (int c = 0; c < 3; c++)
+        {
+            float f;
+            memcpy(&f, &v[1 + c], 4);
+            bb[c] = f < bb[c] ? f : bb[c];
+            bb[3 + c] = f > bb[3 + c] ? f : bb[3 + c];
+        }
+    }
+    if (b.m & 1)
+        b.out[b.m] = 0;                         // padding, under the checksum
+    memcpy(s_prog + box, bb, sizeof(bb));
     e.prog = s_progHead;
     e.len = b.m;
     e.gen = s_progGen;
     e.built = s_render;
-    e.sum = progSum(b.out, b.m);
+    e.sum = progSum(b.out, box + kBoxWords - s_progHead);
     e.valid = 1;
-    s_progHead += (b.m + 15) & ~15u;            // next program on a cache line
+    // Next program right after (on 4 bytes, for its box and patches): lining
+    // programs up on cache lines took ~15% more of the ring, which the in-car
+    // view (the mirror's lists too) then overran, rebuilding live programs.
+    s_progHead = box + kBoxWords;
     s_fetchCounts.builds++;
     return true;
 }
@@ -431,7 +469,7 @@ const FetchList* fetchProgram(const u32* vtx, u32 off, u32 count, u32 vs, FetchO
     }
     else if (newest <= e->built && programValid(*e))
     {
-        if (progSum(s_prog + e->prog, e->len) == e->sum)
+        if (progSum(s_prog + e->prog, progSpan(*e)) == e->sum)
         {
             how = kFetchCached;
             return e;
@@ -446,6 +484,27 @@ const FetchList* fetchProgram(const u32* vtx, u32 off, u32 count, u32 vs, FetchO
     }
     how = kFetchBuilt;
     return e;
+}
+
+// The ELAN side, when it records a list (before this render's draw): the box
+// kept with the list's program, if the program is still good. Checks the
+// list's pages for this render, which the draw then does not repeat; a page
+// written since the program was built makes the list go without a box (and
+// be drawn directly), as at the draw. Never builds anything.
+bool cachedBox(u32 off, u32 count, u32 vs, float* box)
+{
+    const u32 bytes = count * vs;
+    if (!s_prog || !count || off >= kElanBytes || bytes > kElanBytes - off)
+        return false;
+    bool found;
+    const FetchList* e = findList(off + 1, count, vs, found);
+    if (!found || !programValid(*e))
+        return false;
+    u32 newest;
+    if (!pagesSettled(off >> 12, (off + bytes - 1) >> 12, newest) || newest > e->built)
+        return false;
+    memcpy(box, s_prog + boxPos(e->prog, e->len), 6 * sizeof(float));
+    return true;
 }
 
 // Walks a program: sink.base(pa, patch), sink.run(s, n, odd),

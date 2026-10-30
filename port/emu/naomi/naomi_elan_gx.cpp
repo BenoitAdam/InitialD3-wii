@@ -7,6 +7,7 @@
 int g_elan_gx_preset = 0;
 int g_elan_fetch_preset = 1;
 int g_elan_point_preset = 0;
+int g_elan_box_preset = 0;
 
 // ---- Strip structure of an ICH list (Wii draw and Windows census) ----------
 // Vertex records: word 0 header (bit 31 ends the strip, bits 29-30 == 2 make
@@ -254,7 +255,9 @@ static void stripCensusCounts(const ElanGxRecord& r)
 // physical frames: pages mostly in order, every third one elsewhere, a few
 // moved now and then (the pager). Each program is drawn into triangles read
 // through that layout and compared with the CPU draw of its list. Pages
-// written between renders come from the host's write watch on ELAN RAM.
+// written come from the host's write watch on ELAN RAM, taken before a page
+// is checked whenever the ELAN has run since (the game writes between its
+// command runs): what the Wii's page change bits would show at that check.
 namespace {
 
 constexpr u32 kSimFrames = 1u << 16;            // 256 MB of simulated physical memory
@@ -263,7 +266,9 @@ constexpr u32 kRingGuard = 256;                 // words past the ring checked a
 
 std::vector<u32> s_simFrame;                    // per ELAN page: its frame, 0 = none yet
 std::vector<int> s_frameOwner;                  // per frame: its ELAN page, -1 = free
-std::vector<u32> s_pageWritten, s_pageChecked;  // per ELAN page: render a write was seen at, last check
+std::vector<u32> s_pageWritten, s_pageChecked;  // per ELAN page: take a write was seen at, take of the last check
+u32 s_take = 1;                                 // write-watch takes so far (orders writes and checks)
+u32 s_takeExec = ~0u;                           // g_elan_exec_seq at the last take
 u32 s_simNext = 16, s_rng = 0x1234567u;
 u32 s_scatterPct = 33;                          // pages put in a random frame (IDAS3_FETCH_SCATTER)
 
@@ -298,8 +303,23 @@ void fetchFlush(const void*, u32)
 
 #include "naomi_elan_fetch.inc"
 
+const u8* s_ram = nullptr;
+
+// The pages written since the last take.
+void takeWrites()
+{
+    static u32 pages[8192];
+    const u32 n = host_GuestTakeWritten(s_ram, (u32)s_pageWritten.size() << 12, pages, 8192);
+    s_take++;
+    for (u32 k = 0; k < n; k++)
+        s_pageWritten[pages[k]] = s_take;
+    s_takeExec = g_elan_exec_seq;
+}
+
 u32 fetchPagePhys(u32 page, int* written)
 {
+    if (s_takeExec != g_elan_exec_seq)
+        takeWrites();
     bool moved = false;
     if (!s_simFrame[page])
     {
@@ -307,7 +327,7 @@ u32 fetchPagePhys(u32 page, int* written)
         moved = true;
     }
     *written = moved || s_pageWritten[page] > s_pageChecked[page];
-    s_pageChecked[page] = s_render;
+    s_pageChecked[page] = s_take;
     return s_simFrame[page] << 12;
 }
 
@@ -315,8 +335,6 @@ u32 fetchRingPhys(const void* p)
 {
     return kSimRingPa + (u32)((const u8*)p - (const u8*)s_prog);
 }
-
-const u8* s_ram = nullptr;
 
 u8 physByte(u32 pa)
 {
@@ -454,6 +472,7 @@ struct CheckTotals
     u64 lightSets;          // light sets the Wii's arena would hold
     u32 lightSetsMax;       // ...in its fullest render
     u32 draws, mismatches, overruns;
+    u32 boxAsked, boxes, boxStale;  // lists recorded with 3D LIST CULL on, boxes found, boxes not holding the records
 };
 
 std::vector<FetchRec> s_fetchRecs;
@@ -489,6 +508,7 @@ void fetchNote(const ElanGxRecord& r)
 
 bool fetchCheckInit(u32 size)
 {
+    s_ram = naomi_ElanRam();
     if (s_prog)
         return true;
     s_pages = (PageState*)calloc(kElanPages, sizeof(PageState));
@@ -517,26 +537,12 @@ void elan_gx_census_render()
     const u32 size = naomi_ElanRamSize();
     if (!ram || !g_elan_gx_preset || size > kElanBytes || !fetchCheckInit(size))
         return;
-    s_ram = ram;
     s_check.lightSets += s_renderSets.size();
     if (s_renderSets.size() > s_check.lightSetsMax)
         s_check.lightSetsMax = (u32)s_renderSets.size();
     s_renderSets.clear();
     s_lastSetKey = 0;
-    static u32 pages[8192];
-    const u32 n = host_GuestTakeWritten(ram, size, pages, 8192);
-    for (u32 k = 0; k < n; k++)
-        s_pageWritten[pages[k]] = s_render;
-    if (s_render % 16 == 0)
-        for (u32 tries = 0, moved = 0; tries < 64 && moved < 2; tries++)
-        {
-            const u32 p = rnd() % (size >> 12);
-            if (s_simFrame[p])
-            {
-                simAssign(p);                   // the pager moved it
-                moved++;
-            }
-        }
+    takeWrites();                               // up to the draw, for pages not checked yet this render
 
     static std::vector<Tri3> fromProgram, fromCpu;
     for (const FetchRec& r : s_fetchRecs)
@@ -585,8 +591,21 @@ void elan_gx_census_render()
     std::sort(s_drawnPrograms.begin(), s_drawnPrograms.end());
     s_drawnPrograms.erase(std::unique(s_drawnPrograms.begin(), s_drawnPrograms.end()), s_drawnPrograms.end());
     for (const FetchList* e : s_drawnPrograms)
-        s_check.liveWords += (e->len + 15) & ~15u;
+        s_check.liveWords += progSpan(*e);
     s_drawnPrograms.clear();
+    // The pager moves pages while the game runs, i.e. after the draw: a page
+    // checked when its list was recorded stays put until that list is drawn
+    // (on the Wii the check holds the pager off it for a while).
+    if (s_render % 16 == 0)
+        for (u32 tries = 0, moved = 0; tries < 64 && moved < 2; tries++)
+        {
+            const u32 p = rnd() % (size >> 12);
+            if (s_simFrame[p])
+            {
+                simAssign(p);
+                moved++;
+            }
+        }
     s_render++;
     if (++s_checkRenders == 64)
     {
@@ -606,9 +625,58 @@ void elan_gx_census_render()
                s_check.draws, s_check.mismatches, s_check.overruns, c.builds, c.patches,
                c.patches ? (double)c.patchRecords / c.patches : 0.0, c.wraps, c.tooBig, c.aborted, c.staleCaught,
                c.resets);
+        if (s_check.boxAsked)
+            printf("[run]   3D list boxes: %u lists asked, %u had a box (%.0f%%), every box checked against the "
+                   "list's records: %u STALE\n",
+                   s_check.boxAsked, s_check.boxes, 100.0 * s_check.boxes / s_check.boxAsked, s_check.boxStale);
         s_check = {};
         s_checkRenders = 0;
     }
+}
+
+bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6])
+{
+    u8* ram = naomi_ElanRam();
+    const u32 size = naomi_ElanRamSize();
+    if (!ram || !g_elan_gx_preset || size > kElanBytes || !fetchCheckInit(size))
+        return false;
+    const u32 off = (u32)((const u8*)vtx - ram);
+    if (off >= size)
+        return false;
+    s_check.boxAsked++;
+    if (!cachedBox(off, count, vsize, box))
+        return false;
+    s_check.boxes++;
+    // Built from the records at an earlier render, a box is only good while
+    // they are unchanged: every record must still lie inside it.
+    using namespace elan_strips;
+    const u32 words = vsize / 4;
+    for (u32 i = 0; i < count; i++)
+    {
+        const u32* v = vtx + i * words;
+        if (placeholder(v))
+            continue;
+        float p[3];
+        memcpy(p, v + 1, sizeof(p));
+        int c = 0;
+        while (c < 3 && p[c] >= box[c] && p[c] <= box[3 + c])
+            c++;
+        if (c < 3)
+        {
+            if (++s_check.boxStale <= 8)
+                printf("[run]   3D list box STALE: list at ELAN +%X, %u vertices: vertex %u (%g %g %g) outside "
+                       "(%g %g %g)..(%g %g %g)\n",
+                       off, count, i, p[0], p[1], p[2], box[0], box[1], box[2], box[3], box[4], box[5]);
+            break;
+        }
+    }
+    return true;
+}
+
+void elan_gx_canvas(float& width, float& height)
+{
+    width = 640.f;                              // the snapshots' canvas
+    height = 480.f;
 }
 
 bool elan_gx_record(const ElanGxRecord& r)
@@ -1261,7 +1329,21 @@ bool fetchDraw(const Item& it, u32 fmtKey, u32 alphaOr)
     return true;
 }
 
+// gxRend's canvas, as the last item drawn saw it.
+float s_canvasW = 0.f, s_canvasH = 0.f;
+
 } // namespace
+
+bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6])
+{
+    return s_fetchOn && cachedBox((u32)vtx - WII_GUEST_ELAN_EA, count, vsize, box);
+}
+
+void elan_gx_canvas(float& width, float& height)
+{
+    width = s_canvasW;
+    height = s_canvasH;
+}
 
 void elan_gx_restore(const ElanGxFrame& f)
 {
@@ -1292,6 +1374,8 @@ void elan_gx_draw(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
     // PROFILER: [HW] line, the ELAN share of a render on the CPU.
     FP_T0(t);
     prefetchAhead(index);
+    s_canvasW = f.width;
+    s_canvasH = f.height;
     drawItem(index, f, forceOpaqueAlpha);
     if (FRAME_PROF_ON())
     {

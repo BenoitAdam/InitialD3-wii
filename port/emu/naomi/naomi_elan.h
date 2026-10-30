@@ -26,6 +26,10 @@ struct NaomiElanStats
     u32 modelsChanged;      // walked again with different commands (same address)
     u32 modelsFlipped;      // ...of which went from no side effects to some, or back
     u32 gpuVertices;    // vertices handed untransformed to the GPU path (naomi_elan_gx)
+    // 3D LIST CULL (GPU path): lists recorded with their fetch program's box,
+    // lists (and vertices) dropped by it behind the camera or out of the
+    // picture, and vertices whose depth was measured one by one instead.
+    u32 boxLists, boxCulledBehind, boxCulledSide, boxCulledVertices, depthMeasured;
     // Host census of those lists' strips (what the GPU path's index builder makes of them).
     u32 gpuIndices, gpuStrips, gpuFanVertices, gpuStripsWithFans, gpuPlaceholders;
     u32 gpuTriangles, gpuTriangleMismatches;    // ...and the per-strip draw checked against the joined strip
@@ -104,6 +108,8 @@ extern "C" int g_elan_model_skip_preset;
 // Executes a command stream (the 32-byte FIFO entry, or a display list in
 // ELAN RAM). `words` are host-order 32-bit values, as both buffers hold them.
 void elan_Execute(const u32* words, u32 bytes);
+// elan_Execute calls so far: the game only writes ELAN RAM between them.
+extern u32 g_elan_exec_seq;
 void elan_CmdReset();
 // A texture DMA has started; status bit 0 is raised `cycles` later.
 void elan_StartDma(u32 cycles);

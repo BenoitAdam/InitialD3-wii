@@ -580,8 +580,11 @@ void execute(const u8* data, u32 size, u32 depth)
 
 } // namespace
 
+u32 g_elan_exec_seq = 0;
+
 void elan_Execute(const u32* words, u32 bytes)
 {
+    g_elan_exec_seq++;
     execute((const u8*)words, bytes, 0);
 }
 

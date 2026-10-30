@@ -89,6 +89,7 @@ enum CoreOptionId
     // Rendering, added last so that no saved or autolaunch position moves
     OPT_ELAN_POINT,
     OPT_ISP_CULL,
+    OPT_ELAN_BOX,
     kCoreOptionCount
 };
 
@@ -237,6 +238,10 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // right way for this renderer's projection, 1 the other way round.
     {"BACKFACE CULL ", "drops polygons facing away like the arcade: fixes flickering trees", PAGE_DEPTH, 1, 3,
      {"OFF (LEGACY)", "ON", "ON, OTHER SIDE"}, {0, 2, 1}},
+    // GPU T&L with 3D VTX FETCH: each list's bounding box (kept with its fetch
+    // program) drops the lists out of the picture before they are drawn.
+    {"3D LIST CULL  ", "3D T&L GPU: skips 3D models out of the picture, and most depth measuring (faster)",
+     PAGE_DEPTH, 2, 3, {"OFF (LEGACY)", "BEHIND CAMERA", "OUT OF VIEW"}, {0, 1, 2}},
 };
 
 } // namespace idas3

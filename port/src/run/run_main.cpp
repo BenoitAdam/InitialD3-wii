@@ -469,6 +469,21 @@ void host_on_vblank()
             lastSF = es.gpuStripsWithFans;
             lastP = es.gpuPlaceholders;
         }
+        {
+            static NaomiElanStats last = {};
+            if (es.boxLists != last.boxLists || es.depthMeasured != last.depthMeasured)
+            {
+                snprintf(line, sizeof(line),
+                         "[run]   3D list cull per frame: %u lists with a box, %u dropped behind the camera, %u out of "
+                         "view (%u vertices) | depth measured on %u vertices\n",
+                         (es.boxLists - last.boxLists) / 60, (es.boxCulledBehind - last.boxCulledBehind) / 60,
+                         (es.boxCulledSide - last.boxCulledSide) / 60,
+                         (es.boxCulledVertices - last.boxCulledVertices) / 60,
+                         (es.depthMeasured - last.depthMeasured) / 60);
+                logLine(line);
+            }
+            last = es;
+        }
         if (g_host_render.depthFrames)
         {
             HostRenderStats& h = g_host_render;
@@ -674,6 +689,14 @@ int main(int argc, char** argv)
         // the lists stay on the CPU, lit the way GX would (a preview).
         extern int g_elan_point_preset;
         g_elan_point_preset = atoi(pl);
+    }
+    if (const char* lc = argValue(argc, argv, "--list-cull"))
+    {
+        // 3D LIST CULL (with --gpu-tnl): 1 = lists behind the camera dropped by
+        // their fetch program's box, 2 = also those out of the picture. Every
+        // box used is checked against its list's records ("3D list boxes").
+        extern int g_elan_box_preset;
+        g_elan_box_preset = atoi(lc);
     }
     if (const char* cu = argValue(argc, argv, "--cull"))
     {

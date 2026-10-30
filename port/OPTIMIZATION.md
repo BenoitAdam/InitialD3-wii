@@ -68,6 +68,7 @@ than half the budget.
 | 10-28 | Black lights dropped: car select fully on the GPU | car select 28 -> 60 fps |
 | 10-28 | Depth measuring spread over 32 renders (log 10 bug, fixed in log 11) | 35 -> 38-41 fps |
 | 10-30 | BACKFACE CULL (flickering trees fix): back faces no longer rasterised, ~350-400 GX cull changes a frame | awaiting log 12 (expect equal or a little less GP time) |
+| 10-30 | 3D LIST CULL: list bounding boxes kept with the fetch programs; lists out of the picture dropped, depth range from the box | Windows: drawn 116.6K -> 63.5-78K vertices, 965 -> 546-705 lists a render; awaiting Dolphin, then log 12 (expect ~3 ms) |
 
 ## What was done
 
@@ -109,6 +110,32 @@ vertices, which Broadway cannot transform in software at 60 fps (even a PC took 
    the GPU path.
 8. Prefetch (`dcbt`) in the strip walk (8 vertices ahead), the depth loop and the ELAN command
    walk (next command header).
+9. **List bounding boxes** (option 3D LIST CULL: OFF / BEHIND CAMERA / OUT OF VIEW, default
+   OUT OF VIEW; runner `--list-cull`). Each fetch program keeps its list's model-space box (6
+   floats right after it in the ring, under its checksum; same life as the program). When the
+   ELAN records a list (`recordForGpu`), `cachedBox` checks the list's pages for this render
+   (the draw reuses the check) and returns the box; its range under the instance matrix
+   (`boxRange`, interval arithmetic) then:
+   - drops the list if the box is behind the near plane or, OUT OF VIEW, wholly beyond one of
+     the 4 planes through the eye and the canvas edges (`outOfPicture`, 8 px margin; canvas =
+     gxRend's at the last draw). The list never reaches the renderer: no strip, no state, no
+     page checks at draw, no indices. Windows race: ~210-230 lists behind and ~60-200 out of
+     view a frame, ~40-54K vertices (of ~116K);
+   - pinned (a race), gives the list's depth range instead of the planes, and a box that cannot
+     reach its near plane (`zlo > 1.5 near`) needs no measuring at all: only lists that may
+     reach it keep their 1-in-32 slice, so the window logic is unchanged. Depth measured
+     ~3.7K -> ~0.6-0.9K vertices a frame. Unpinned (menus), lists are still measured exactly:
+     a box is looser than its vertices and the frame's near plane is the precision there;
+   - point-lit lists (NIGHT LIGHTS = GPU) take their light cull from the box
+     (`ModelBoxDistance`: the light taken into model space, its distance to the box times the
+     least the matrix can shrink a length; exact for rotation + uniform scale, never above the
+     true distance), not a vertex pass. Night demo: 13-37 light sets a render (most 50, arena 64).
+   Lists without a box (colour lists, pages written, no program yet) keep the old path. Checks:
+   the runner verifies every box it hands out against the list's records (0 stale over the race
+   and the night demo), the fetch check stays at 0 mismatches, and OFF draws exactly what the
+   old code drew (same vertices and lists per render). Ring room: programs now follow each
+   other on 4 bytes instead of cache lines (the box would otherwise cost ~15% of the ring and
+   the in-car view rebuilt live programs); ring passes over the race route as before (3).
 
 ### SH-4 dynarec and memory access
 
@@ -170,36 +197,45 @@ needs 100% speed, hence FRAMESKIP AUTO for now.
 
 ## What is left, best first
 
-1. **Per-list model-space bounding box in the fetch program.** 8 corners a list a render give
-   the depth range almost free (removes most of the per-render measuring: ~0.7 ms of `elan`)
-   and allow culling lists entirely behind the camera before drawing. Log 10 showed that not
-   drawing those lists saved ~3 ms of render. Biggest expected win (~3-4 ms).
+1. **Read log 12 for 3D LIST CULL** (done item 9): `[prof] 3D list cull per frame` and the
+   `rend` / `elan` buckets against log 11. The page checks of boxed lists moved from `rend`
+   to `elan` (when the ELAN records the list), so judge the sum.
 2. **Cheaper fetch validation.** ~1000 page checks a render (PTE lookup + `dcbf` + `sync`,
-   ~5 cache misses each). A write-tracking bitmap set by the pager/trampolines would replace
-   them. Keep a fallback: Dolphin ignores read-only page bits.
-3. **The rest of the ELAN draw.** Of 6.0-6.5 ms of GPU lists, only 2.2-2.5 ms is spent sending
-   cached programs; 3.6-4.3 ms is per-list overhead over ~960 lists (state, matrices, light
-   sets, validation) plus 3-4.6K CPU-fed colour vertices. Batch by state, move colour lists to
-   fetch.
-4. **GX display lists** for cached programs, if the "ELAN draw a render" line still shows send
-   time dominating after 3: an INDEX8 display-list ring (~400 KB for a race) would replace the
-   256 KB program ring; `SetArray` is not allowed inside a display list, so one list per array
-   segment.
-5. **SH-4 side (~9.5 ms, largest bucket).** It is the game's own work: IPC ~0.6 with many L1
+   ~5 cache misses each; fewer pages now that culled lists are not drawn, but culled lists
+   with a box still check theirs). A write-tracking bitmap set by the pager/trampolines would
+   replace them. Keep a fallback: Dolphin ignores read-only page bits.
+3. **Colour lists through the GPU fetch, with a TEV swap table.** They stay CPU-fed (3-4.6K
+   vertices a render, ~220 ns each against ~55 fetched) because their colour word is ARGB and
+   GX reads RGBA: in the records it is A,R,G,B in memory, so GX gets R=A, G=R, B=G, A=B, a
+   rotation that `GX_SetTevSwapModeTable` (ras side, R<-G, G<-B, B<-A, A<-R) undoes; gxRend
+   uses no swap table yet. Unlit lists: the swap alone. Lit lists: the guest alpha is in GX's
+   red, so light and ambient colours rotate the same way, red light 0 with red ambient 255
+   (alpha unlit, as on the ELAN), ALPHA0 lit with the same lights. Forced-opaque lists: alpha
+   from KONST, or keep them CPU-fed. ~0.5 ms; they would also get boxes (item 9).
+4. **The rest of the ELAN draw.** Of 6.0-6.5 ms of GPU lists (log 11, before item 9), only
+   2.2-2.5 ms is spent sending cached programs; 3.6-4.3 ms is per-list overhead over ~960
+   lists (state, matrices, light sets, validation). Item 9 takes ~40% of the lists away;
+   batch the rest by state.
+5. **GX display lists** for cached programs, if the "ELAN draw a render" line still shows send
+   time dominating: an INDEX8 display-list ring (~400 KB for a race) would replace the 256 KB
+   program ring (and hold the boxes); `SetArray` is not allowed inside a display list, so one
+   list per array segment. The GP has the time (idle ~60% of a race frame).
+6. **SH-4 side (~9.5 ms, largest bucket).** It is the game's own work: IPC ~0.6 with many L1
    instruction misses. Directions: block layout (hot/cold, cache-line aligned chains), fewer
    call-outs (timeslice ~1.9K, sync_fpscr ~1.5K, readmem ~700, writemem ~750 a frame), and the
    5% of frames where sh4 jumps to 27-48 ms even on skipped frames (cause unknown; look at them
    with HOTBLOCKS).
-6. **Overlap CPU and GPU.** The GP is still drawing ~2.5 ms after the CPU finishes the render;
+7. **Overlap CPU and GPU.** The GP is still drawing ~2.5 ms after the CPU finishes the render;
    async render is on, but the next frame's SH-4 work could start earlier.
-7. **Sound side (~2.5-3 ms: ARM7 + AICA).** Not profiled yet.
-8. **Texture decode bursts**: tail frames with ~110 decodes (~10 ms). Spread or pre-decode.
-9. **Loading screens (35-60% speed)**: AICA wave RAM uploads over the G2 bus (SB_FFST polls,
-   suspend registers): the same poll-credit trick as the cart DMA would help.
-10. Accuracy items with a speed cost to measure: specular on the GPU path (COLOR1 +
-    GX_AF_SPEC), point lights on the GPU (ELAN uses a linear clamped distance attenuation that
-    GX local lights do not match).
-11. **Night scenes (attract demo, night courses).** Every lit list carries 6-11 point lights
+8. **Sound side (~2.5-3 ms: ARM7 + AICA).** Not profiled yet.
+9. **Texture decode bursts**: tail frames with ~110 decodes (~10 ms). Spread or pre-decode.
+10. **Loading screens (35-60% speed)**: AICA wave RAM uploads over the G2 bus (SB_FFST polls,
+    suspend registers): the same poll-credit trick as the cart DMA would help.
+11. Accuracy items with a speed cost to measure: specular on the GPU path (COLOR1 +
+    GX_AF_SPEC and one TEV add stage; the GP has the time), point lights on the GPU (ELAN uses
+    a linear clamped distance attenuation that GX local lights do not match). Per-pixel TEV
+    work is not a speed lever: the frame waits on the CPU, not the GP.
+12. **Night scenes (attract demo, night courses).** Every lit list carries 6-11 point lights
     (street lamps reach 40 units, the car's lights 100-200; a car's headlight is sent up to 4
     times), no parallel light: ~600 lists, 55K vertices a frame. On the CPU path that was
     30-90 ms of T&L on a PC, a few fps on a Wii. Done: (a) point lights beyond their reach are
@@ -208,5 +244,7 @@ needs 100% speed, hence FRAMESKIP AUTO for now.
     k0/k2, a parabola for saturating spots, duplicates merged, a light cull against each list's
     box). On Windows (`--gpu-tnl`) the demo leaves 0 vertices to the CPU (T&L 25 ms -> ~4 ms a
     frame on a PC, host census included); `--point-lights 1` without `--gpu-tnl` previews the
-    look in snapshots. Left: the box costs every point-lit list a full vertex pass each drawn
-    render (~55K reads a night frame); item 1's cached model-space box would remove it.
+    look in snapshots. The box used to cost every point-lit list a full vertex pass each drawn
+    render (~55K reads a night frame): with 3D LIST CULL the lights come from the cached
+    model-space box (done item 9); only renders right after a camera cut (unpinned) still
+    measure, ~10-17K vertices for a few renders.

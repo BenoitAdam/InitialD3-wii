@@ -829,13 +829,15 @@ bool sameLight(const Light& a, const Light& b)
            a.angleA == b.angleA && a.angleB == b.angleB && a.distMode == b.distMode && a.routing == b.routing;
 }
 
-// The GX lights of a list lit by point lights, from its box. Lights out of
+// The GX lights of a list lit by point lights, from its box: distSq(p) is a
+// lighting-space point's squared distance to it, or less. Lights out of
 // reach of the whole box add nothing to it and are left out (exact). Copies
 // of one light (the game sends a car's headlight up to 4 times) become one
 // light that many times as bright. Past 8 lights, the parallel ones and the
 // point lights nearest the box (against their reach) are kept. False when a
 // light needs the CPU path.
-bool pointLightSet(ElanGxLightSet& out, const Box& box)
+template <class DistSq>
+bool pointLightSet(ElanGxLightSet& out, DistSq distSq)
 {
     const LightModel& lm = s.lightModel;
     memset(&out, 0, sizeof(out));                // padding too: sets are compared with memcmp
@@ -860,7 +862,7 @@ bool pointLightSet(ElanGxLightSet& out, const Box& box)
         float near = -1.f;
         if (!l.parallel)
         {
-            const float d2 = distanceSq(box, l.pos);
+            const float d2 = distSq(l.pos);
             if (d2 >= l.reachSq)
                 continue;
             near = d2 / l.reachSq;
@@ -906,6 +908,120 @@ bool pointLightSet(ElanGxLightSet& out, const Box& box)
     }
     return true;
 }
+
+// ---- 3D LIST CULL: a list's model-space box (min x y z, max x y z, kept with
+// its GPU fetch program) under the instance matrix, instead of its vertices.
+
+// The range over the box of a x + b y + c z + d.
+void boxRange(const float* box, float a, float b, float c, float d, float& lo, float& hi)
+{
+    const float k[3] = {a, b, c};
+    lo = hi = d;
+    for (int i = 0; i < 3; i++)
+    {
+        const float p = k[i] * box[i], q = k[i] * box[3 + i];
+        lo += p < q ? p : q;
+        hi += p < q ? q : p;
+    }
+}
+
+// Whether the box lies wholly beside, above or below the picture. On screen,
+// x = fx X / Z + tx is within [0, width] (y likewise): for Z > 0 that is
+// fx X + tx Z >= 0 and fx X + (tx - width) Z <= 0, planes through the eye.
+// A box wholly on the far side of one of them has no point in the picture
+// (in front of the camera or not), and neither has any triangle between its
+// points. A few pixels of margin.
+bool outOfPicture(const float* box, const float* t)
+{
+    float width, height;
+    elan_gx_canvas(width, height);
+    if (width <= 0.f || height <= 0.f)
+        return false;
+    constexpr float kMargin = 8.f;
+    const float fx = s.proj[0], tx = s.proj[1], fy = s.proj[2], ty = s.proj[3];
+    const struct
+    {
+        float f, e;     // f X + e Z (or f Y + e Z)
+        int row;        // 0: X, 1: Y
+        bool ge;        // the picture is where it is >= 0 (else <= 0)
+    } planes[4] = {{fx, tx + kMargin, 0, true}, {fx, tx - width - kMargin, 0, false},
+                   {fy, ty + kMargin, 1, true}, {fy, ty - height - kMargin, 1, false}};
+    for (const auto& p : planes)
+    {
+        float lo, hi;
+        boxRange(box, p.f * t[p.row] + p.e * t[2], p.f * t[3 + p.row] + p.e * t[5], p.f * t[6 + p.row] + p.e * t[8],
+                 p.f * t[9 + p.row] + p.e * t[11], lo, hi);
+        if (p.ge ? hi < 0.f : lo > 0.f)
+            return true;
+    }
+    return false;
+}
+
+// Point lights against the model-space box: the light taken into model
+// space, its distance to the box there, times the least the instance matrix
+// can shrink a length (exact for a rotation with a uniform scale). Never more
+// than the true distance, so a light found out of reach is.
+struct ModelBoxDistance
+{
+    Box box;
+    float inv[9], t[3], minScaleSq;
+
+    bool init(const float* b, const float* tm)
+    {
+        memcpy(&box, b, sizeof(box));
+        // View space = A p + t, A's rows (tm0 tm3 tm6), (tm1 tm4 tm7), (tm2 tm5 tm8).
+        const float a[9] = {tm[0], tm[3], tm[6], tm[1], tm[4], tm[7], tm[2], tm[5], tm[8]};
+        const float c0 = a[4] * a[8] - a[5] * a[7], c1 = a[5] * a[6] - a[3] * a[8], c2 = a[3] * a[7] - a[4] * a[6];
+        const float det = a[0] * c0 + a[1] * c1 + a[2] * c2;
+        if (!(std::fabs(det) > 1e-12f))
+            return false;
+        const float r = 1.f / det;
+        inv[0] = c0 * r;
+        inv[1] = (a[2] * a[7] - a[1] * a[8]) * r;
+        inv[2] = (a[1] * a[5] - a[2] * a[4]) * r;
+        inv[3] = c1 * r;
+        inv[4] = (a[0] * a[8] - a[2] * a[6]) * r;
+        inv[5] = (a[2] * a[3] - a[0] * a[5]) * r;
+        inv[6] = c2 * r;
+        inv[7] = (a[1] * a[6] - a[0] * a[7]) * r;
+        inv[8] = (a[0] * a[4] - a[1] * a[3]) * r;
+        t[0] = tm[9];
+        t[1] = tm[10];
+        t[2] = tm[11];
+        // Always true: |A d| >= |d| / |A^-1|, |A^-1| <= its Frobenius norm.
+        float f2 = 0.f;
+        for (float v : inv)
+            f2 += v * v;
+        minScaleSq = 1.f / f2;
+        // Columns (images of the model axes) square to each other within e:
+        // |A d|^2 >= (1 - 2e) min |column|^2 |d|^2.
+        float n[3];
+        for (int j = 0; j < 3; j++)
+            n[j] = a[j] * a[j] + a[3 + j] * a[3 + j] + a[6 + j] * a[6 + j];
+        bool square = true;
+        for (int i = 0; i < 3; i++)
+            for (int j = i + 1; j < 3; j++)
+            {
+                const float d = a[i] * a[j] + a[3 + i] * a[3 + j] + a[6 + i] * a[6 + j];
+                square = square && d * d <= 1e-6f * n[i] * n[j];
+            }
+        if (square)
+        {
+            const float m = std::fmin(n[0], std::fmin(n[1], n[2])) * 0.998f;
+            minScaleSq = m > minScaleSq ? m : minScaleSq;
+        }
+        return true;
+    }
+
+    // p in lighting space (-X, Y, -Z).
+    float operator()(Vec3 p) const
+    {
+        const float v[3] = {-p.x - t[0], p.y - t[1], -p.z - t[2]};
+        const Vec3 q = {inv[0] * v[0] + inv[1] * v[1] + inv[2] * v[2], inv[3] * v[0] + inv[4] * v[1] + inv[5] * v[2],
+                        inv[6] * v[0] + inv[7] * v[1] + inv[8] * v[2]};
+        return distanceSq(box, q) * minScaleSq;
+    }
+};
 
 // GPU lists' depth measurement (recordForGpu), per frame.
 struct DepthPin
@@ -977,27 +1093,69 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     //
     // Lists lit by point lights (NIGHT LIGHTS = GPU) are measured every time,
     // in X and Y too: their box decides which lights reach them.
+    //
+    // 3D LIST CULL: a list with a GPU fetch program has its model-space box
+    // (built with the program, good while its pages are unwritten). Its 8
+    // corners under the matrix bound every vertex, so a box behind the near
+    // plane (or, OUT OF VIEW, beside the picture) is a list that draws nothing:
+    // dropped before it costs the renderer anything (in a race ~40% of the
+    // lists: the track behind the camera). Pinned, the box's depth range
+    // stands in for the planes and a box that cannot reach its near plane
+    // needs no measuring: only lists that may reach it keep their slice of
+    // the window (which keeps the pin), and point-lit lists take their lights
+    // from the box. Unpinned (menus) every list is still measured: a box is
+    // looser than its vertices, and the frame's near plane there is precision.
     const float nearZ = s.matrix.nearZ > 0.f ? s.matrix.nearZ : 0.001f;
     const bool pointLit = g_elan_point_preset && litByPointLights();
-    Box box;
+    NaomiElanStats& st = elan_Stats();
     // Every list takes an index, dropped ones too: otherwise each list after a
     // measured one found behind the camera got the same index and was measured
     // as well, i.e. the whole stretch of track behind the camera every render.
     const u32 index = s_depth.lists++;
-    if (!pointLit && s_depth.pinnedLastFrame && nearZ >= s_depth.pinPlaneLastFrame &&
-        (index + s_depth.frames) % kDepthWindow != 0)
+    const bool pinned = s_depth.pinnedLastFrame && nearZ >= s_depth.pinPlaneLastFrame;
+    const bool due = (index + s_depth.frames) % kDepthWindow == 0;
+    float mbox[6];
+    const bool boxed = g_elan_box_preset && elan_gx_list_box(r.vtx, count, vertexSize, mbox);
+    bool measure = pointLit || !pinned || due;
+    ModelBoxDistance lightDistance;                  // point-lit, not measured: lights against the box
+    if (boxed)
+    {
+        st.boxLists++;
+        const float* t = s.matrix.tm;
+        float zlo, zhi;
+        boxRange(mbox, t[2], t[5], t[8], t[11], zlo, zhi);
+        const bool empty = mbox[0] > mbox[3];        // placeholders only
+        if (empty || zhi < nearZ || (g_elan_box_preset >= 2 && outOfPicture(mbox, t)))
+        {
+            (empty || zhi < nearZ ? st.boxCulledBehind : st.boxCulledSide)++;
+            st.boxCulledVertices += count;
+            return true;
+        }
+        const bool reach = zlo <= nearZ * 1.5f;
+        measure = !pinned || (reach && due) || (pointLit && !lightDistance.init(mbox, t));
+        if (!measure)
+        {
+            r.nearW = zlo > nearZ ? zlo : nearZ;
+            r.farW = zhi;
+            if (reach)
+                s_depth.pinned = true;               // still assumed, as with the planes
+        }
+    }
+    else if (!measure)
     {
         r.nearW = nearZ;
         r.farW = s.matrix.farZ > nearZ && s.matrix.farZ < 100000.f ? s.matrix.farZ : 100000.f;
         s_depth.pinned = true;                       // still assumed, until the next measured frame
     }
-    else
+    Box box;
+    if (measure)
     {
         float minZ, maxZ;
         if (pointLit)
             measureList<true>(w + 8, count, vertexSize, s.matrix.tm, minZ, maxZ, &box);
         else
             measureList<false>(w + 8, count, vertexSize, s.matrix.tm, minZ, maxZ, nullptr);
+        st.depthMeasured += count;
         if (maxZ < nearZ)
             return true;                             // entirely behind the near plane
         r.nearW = minZ > nearZ ? minZ : nearZ;
@@ -1013,7 +1171,9 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
         // Built for every list (its box). An unchanged set keeps its key, so
         // the renderer shares it without comparing; keys with the top bit set
         // never meet a light generation.
-        if (!pointLightSet(r.lights, box))
+        const bool built = measure ? pointLightSet(r.lights, [&](Vec3 p) { return distanceSq(box, p); })
+                                   : pointLightSet(r.lights, lightDistance);
+        if (!built)
         {
             r.lightKey = 0;
             return false;
@@ -1471,7 +1631,7 @@ int tnl_DrawList(const u32* w, u32 vertexSize, int listType)
         Box box;
         float minZ, maxZ;
         measureList<true>(w + 8, count, vertexSize, s.matrix.tm, minZ, maxZ, &box);
-        if (pointLightSet(preview, box))
+        if (pointLightSet(preview, [&](Vec3 p) { return distanceSq(box, p); }))
             s_gxPreview = &preview;
     }
 #endif
