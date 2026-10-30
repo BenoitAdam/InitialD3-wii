@@ -212,12 +212,14 @@ void logMemoryActivity(const NaomiFrameInfo& info)
         log::write("[prof]   ELAN model lists: %u walked, %u stepped over on dropped frames (%u polygon lists not "
                    "walked); walked again with other commands %u, of which side effects changed %u (totals)\n",
                    es.modelsWalked, es.modelsSkipped, es.modelListsSkipped, es.modelsChanged, es.modelsFlipped);
+        float canvasW, canvasH;
+        elan_gx_canvas(canvasW, canvasH);
         log::write("[prof]   3D list cull per frame: %u lists with a box, %u dropped behind the camera, %u out of "
-                   "view (%u vertices) | depth measured on %u vertices\n",
+                   "view (%u vertices) | depth measured on %u vertices | canvas %.0fx%.0f\n",
                    (es.boxLists - s_prevBox.boxLists) / frames, (es.boxCulledBehind - s_prevBox.boxCulledBehind) / frames,
                    (es.boxCulledSide - s_prevBox.boxCulledSide) / frames,
                    (es.boxCulledVertices - s_prevBox.boxCulledVertices) / frames,
-                   (es.depthMeasured - s_prevBox.depthMeasured) / frames);
+                   (es.depthMeasured - s_prevBox.depthMeasured) / frames, canvasW, canvasH);
         const NaomiStats& ns = naomi_Stats();
         log::write("[prof]   cart DMA: %u transfers, %u KB, %u status polls while one ran (totals)\n",
                    ns.cartDmaCount, ns.cartDmaBytes >> 10, ns.cartDmaPolls);

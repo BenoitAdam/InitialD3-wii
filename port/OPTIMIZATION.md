@@ -124,8 +124,13 @@ vertices, which Broadway cannot transform in software at 60 fps (even a PC took 
    - pinned (a race), gives the list's depth range instead of the planes, and a box that cannot
      reach its near plane (`zlo > 1.5 near`) needs no measuring at all: only lists that may
      reach it keep their 1-in-32 slice, so the window logic is unchanged. Depth measured
-     ~3.7K -> ~0.6-0.9K vertices a frame. Unpinned (menus), lists are still measured exactly:
-     a box is looser than its vertices and the frame's near plane is the precision there;
+     ~3.7K -> ~0.7-1.6K vertices a frame. A list dropped out of view that may reach its near
+     plane (the road under the camera lies below the picture) still counts for the pin as if
+     drawn (assumed, or measured in its slice). Unpinned (menus, replays), only lists whose box
+     may be the frame's nearest (`zlo` under 2x the last frame's near plane) are measured; the
+     others take their box's range (they cannot set the near plane, which is the precision
+     there: the runner's menu near planes are unchanged). Car select 13.7K -> 6.1K measured
+     vertices, night demo after a camera cut 10-17K -> 4-8K;
    - point-lit lists (NIGHT LIGHTS = GPU) take their light cull from the box
      (`ModelBoxDistance`: the light taken into model space, its distance to the box times the
      least the matrix can shrink a length; exact for rotation + uniform scale, never above the
@@ -199,7 +204,15 @@ needs 100% speed, hence FRAMESKIP AUTO for now.
 
 1. **Read log 12 for 3D LIST CULL** (done item 9): `[prof] 3D list cull per frame` and the
    `rend` / `elan` buckets against log 11. The page checks of boxed lists moved from `rend`
-   to `elan` (when the ELAN records the list), so judge the sum.
+   to `elan` (when the ELAN records the list), so judge the sum. Owner, first build
+   (2026-10-30): Wii "both work, ~+5-10%"; Dolphin: BEHIND CAMERA faster everywhere (over
+   100% at times), OUT OF VIEW faster in the demo and race intro but **~10% speed once the
+   player has control** (in-car and chase views). Not reproduced by the runner (driving with
+   gas held, views cycled: pin held, ~0.7-1K vertices measured, nothing unusual). Suspected
+   the pin falling (every list then measured; Dolphin's page-table memory reads are slow):
+   culled lists now hold the pin and unpinned frames measure only the nearest lists. If the
+   rebuilt OUT OF VIEW is still slow on Dolphin, its PROFILER log decides (FPROF buckets,
+   `depth measured`, `canvas`).
 2. **Cheaper fetch validation.** ~1000 page checks a render (PTE lookup + `dcbf` + `sync`,
    ~5 cache misses each; fewer pages now that culled lists are not drawn, but culled lists
    with a box still check theirs). A write-tracking bitmap set by the pager/trampolines would

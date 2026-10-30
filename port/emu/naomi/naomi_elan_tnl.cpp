@@ -1034,8 +1034,10 @@ struct DepthPin
     u32 frames;             // renders that recorded GPU lists
     u32 lists;              // GPU lists recorded this render (dropped ones too)
     u32 windowRenders;      // pinned: renders in the current window (kDepthWindow)
+    float nearest;          // the frame's near plane: least nearW of the lists recorded
+    float nearestLastFrame;
 };
-DepthPin s_depth = {false, false, false, 1e30f, 1e30f, 0, 0, 0};
+DepthPin s_depth = {false, false, false, 1e30f, 1e30f, 0, 0, 0, 1e30f, 1e30f};
 
 // While pinned, each list is still measured one render in this many.
 constexpr u32 kDepthWindow = 32;
@@ -1103,8 +1105,14 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     // stands in for the planes and a box that cannot reach its near plane
     // needs no measuring: only lists that may reach it keep their slice of
     // the window (which keeps the pin), and point-lit lists take their lights
-    // from the box. Unpinned (menus) every list is still measured: a box is
-    // looser than its vertices, and the frame's near plane there is precision.
+    // from the box. A list dropped out of the picture that may reach its near
+    // plane still counts for the pin as if drawn: in a race that is the road
+    // under the camera, below the picture; without it the pin fell as soon as
+    // the race camera took over, and every list was measured (Dolphin: 10%
+    // speed). Unpinned (menus, replays), a box is looser than its vertices and
+    // the frame's near plane is its precision: lists whose box may be the
+    // nearest (under twice the last frame's near plane) are measured, the
+    // others cannot set it and take their box's range.
     const float nearZ = s.matrix.nearZ > 0.f ? s.matrix.nearZ : 0.001f;
     const bool pointLit = g_elan_point_preset && litByPointLights();
     NaomiElanStats& st = elan_Stats();
@@ -1125,14 +1133,35 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
         float zlo, zhi;
         boxRange(mbox, t[2], t[5], t[8], t[11], zlo, zhi);
         const bool empty = mbox[0] > mbox[3];        // placeholders only
-        if (empty || zhi < nearZ || (g_elan_box_preset >= 2 && outOfPicture(mbox, t)))
+        const bool behind = empty || zhi < nearZ;
+        const bool reach = zlo <= nearZ * 1.5f;
+        if (behind || (g_elan_box_preset >= 2 && outOfPicture(mbox, t)))
         {
-            (empty || zhi < nearZ ? st.boxCulledBehind : st.boxCulledSide)++;
+            (behind ? st.boxCulledBehind : st.boxCulledSide)++;
             st.boxCulledVertices += count;
+            if (!behind && reach)
+            {
+                bool hit = pinned && !due;               // assumed, as if drawn
+                if (!hit)
+                {
+                    float minZ, maxZ;
+                    measureList<false>(w + 8, count, vertexSize, t, minZ, maxZ, nullptr);
+                    st.depthMeasured += count;
+                    hit = maxZ >= nearZ && minZ <= nearZ * 1.5f;
+                    if (hit)
+                        s_depth.windowHit = true;
+                }
+                if (hit)
+                {
+                    s_depth.pinned = true;
+                    if (nearZ < s_depth.pinPlane)
+                        s_depth.pinPlane = nearZ;
+                }
+            }
             return true;
         }
-        const bool reach = zlo <= nearZ * 1.5f;
-        measure = !pinned || (reach && due) || (pointLit && !lightDistance.init(mbox, t));
+        measure = (pinned ? reach && due : reach || zlo < 2.f * s_depth.nearestLastFrame) ||
+                  (pointLit && !lightDistance.init(mbox, t));
         if (!measure)
         {
             r.nearW = zlo > nearZ ? zlo : nearZ;
@@ -1165,6 +1194,8 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     }
     if (r.nearW <= nearZ * 1.5f && nearZ < s_depth.pinPlane)
         s_depth.pinPlane = nearZ;
+    if (r.nearW < s_depth.nearest)
+        s_depth.nearest = r.nearW;
 
     if (pointLit)
     {
@@ -1514,10 +1545,12 @@ void tnl_OnStartRender()
         }
         s_depth.pinnedLastFrame = pinned;
         s_depth.pinPlaneLastFrame = s_depth.pinPlane;
+        s_depth.nearestLastFrame = s_depth.nearest;
         s_depth.frames++;
     }
     s_depth.pinned = false;
     s_depth.pinPlane = 1e30f;
+    s_depth.nearest = 1e30f;
     s_depth.lists = 0;
 }
 

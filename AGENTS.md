@@ -33,6 +33,9 @@ it exists.
   vertices / 965 lists -> 63.5-78K / 546-705, depth measured on ~0.6-0.9K vertices a frame
   instead of ~3.7K; night demo: point-lit lists take their lights from the box (no vertex pass).
   Needs 3D VTX FETCH on (it is where the boxes live). Expected on a Wii: ~3 ms a race frame.
+  Owner's first test: Wii both modes work (~+5-10%); Dolphin BEHIND CAMERA faster everywhere,
+  OUT OF VIEW dropped to ~10% once the player had control (not reproduced on Windows; see
+  OPTIMIZATION.md "What is left" 1). Rebuilt with a pin fix, awaiting the retest.
 - Music tempo follows emulation speed (the game streams it through the SH-4), so music is
   right only at 100%.
 - Attract mode (no coin, ~20 s after the title) runs a **night** demo race: 6-11 point lights
@@ -149,7 +152,10 @@ The runner uses the **compiled-in preset defaults**, not the launcher's (e.g. CP
 `--gpu-tnl`). Reference timeline at `--cpi 2`: first renders ~frame 1000, WARNING ~2400, SEGA
 ROSSO ~3500, title ~4100, attract manufacturer screen ~13000. Race route: coin at 5000, then
 start every 300 frames up to 11000; `view` presses at 9950, 10250 and 10550 cycle the camera
-(in-car view from ~10300).
+(in-car view from ~10300). That route stops before the player gets control (the scene freezes
+from ~11700): to drive, keep pressing start up to 13100 and `gas` every 10 frames from 11500 (a
+press lasts 10 frames); the car then races in the in-car view (no steering: it ends up against
+the guardrail), and `view` presses during it (e.g. 12000, 12500) cycle the cameras.
 
 **Real Wii (the reference):** the owner runs the build with SPEED OVERLAY + PROFILER and sends
 `idas3wii_log.txt` (numbered "REAL WII LOG n"). Hand them a short list of what to test and which
