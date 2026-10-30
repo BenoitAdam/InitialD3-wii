@@ -215,10 +215,13 @@ void logMemoryActivity(const NaomiFrameInfo& info)
         float canvasW, canvasH;
         elan_gx_canvas(canvasW, canvasH);
         log::write("[prof]   3D list cull per frame: %u lists with a box, %u dropped behind the camera, %u out of "
-                   "view (%u vertices) | depth measured on %u vertices | canvas %.0fx%.0f\n",
+                   "view (%u vertices), whole models %u (%u lists) | depth measured on %u vertices | "
+                   "canvas %.0fx%.0f\n",
                    (es.boxLists - s_prevBox.boxLists) / frames, (es.boxCulledBehind - s_prevBox.boxCulledBehind) / frames,
                    (es.boxCulledSide - s_prevBox.boxCulledSide) / frames,
                    (es.boxCulledVertices - s_prevBox.boxCulledVertices) / frames,
+                   (es.modelsCulled - s_prevBox.modelsCulled) / frames,
+                   (es.modelListsCulled - s_prevBox.modelListsCulled) / frames,
                    (es.depthMeasured - s_prevBox.depthMeasured) / frames, canvasW, canvasH);
         const NaomiStats& ns = naomi_Stats();
         log::write("[prof]   cart DMA: %u transfers, %u KB, %u status polls while one ran (totals)\n",

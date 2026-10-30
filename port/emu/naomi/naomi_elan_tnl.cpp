@@ -912,49 +912,79 @@ bool pointLightSet(ElanGxLightSet& out, DistSq distSq)
 // ---- 3D LIST CULL: a list's model-space box (min x y z, max x y z, kept with
 // its GPU fetch program) under the instance matrix, instead of its vertices.
 
-// The range over the box of a x + b y + c z + d.
-void boxRange(const float* box, float a, float b, float c, float d, float& lo, float& hi)
+// a x + b y + c z + d over a box, with the box corner giving its largest and
+// smallest value already chosen: three multiplications a list.
+struct BoxRow
 {
-    const float k[3] = {a, b, c};
-    lo = hi = d;
-    for (int i = 0; i < 3; i++)
-    {
-        const float p = k[i] * box[i], q = k[i] * box[3 + i];
-        lo += p < q ? p : q;
-        hi += p < q ? q : p;
-    }
-}
+    float k[4];
+    u8 hi[3], lo[3];
 
-// Whether the box lies wholly beside, above or below the picture. On screen,
-// x = fx X / Z + tx is within [0, width] (y likewise): for Z > 0 that is
-// fx X + tx Z >= 0 and fx X + (tx - width) Z <= 0, planes through the eye.
-// A box wholly on the far side of one of them has no point in the picture
-// (in front of the camera or not), and neither has any triangle between its
-// points. A few pixels of margin.
-bool outOfPicture(const float* box, const float* t)
+    void set(float a, float b, float c, float d)
+    {
+        k[0] = a;
+        k[1] = b;
+        k[2] = c;
+        k[3] = d;
+        for (int i = 0; i < 3; i++)
+        {
+            hi[i] = (u8)(k[i] > 0.f ? 3 + i : i);
+            lo[i] = (u8)(k[i] > 0.f ? i : 3 + i);
+        }
+    }
+    float top(const float* box) const { return k[3] + k[0] * box[hi[0]] + k[1] * box[hi[1]] + k[2] * box[hi[2]]; }
+    float bottom(const float* box) const { return k[3] + k[0] * box[lo[0]] + k[1] * box[lo[1]] + k[2] * box[lo[2]]; }
+};
+
+// What the current matrix and projection make of a box, rebuilt when they
+// change (a matrix serves ~3 lists). View Z, and the picture's edges. On
+// screen x = fx X / Z + tx is within [0, width] (y likewise): for Z > 0 that
+// is fx X + tx Z >= 0 and fx X + (tx - width) Z <= 0, planes through the eye,
+// written so that the picture is on the side >= 0. A box wholly on the other
+// side of one of them has no point in the picture (in front of the camera or
+// not), and neither has any triangle between its points. A few pixels of margin.
+struct BoxView
 {
+    u32 gen;                // s_xformGen it was built at
+    float width, height;
+    BoxRow z, edge[4];
+    bool edges;
+};
+BoxView s_boxView = {};
+
+const BoxView& boxView()
+{
+    BoxView& v = s_boxView;
     float width, height;
     elan_gx_canvas(width, height);
-    if (width <= 0.f || height <= 0.f)
-        return false;
+    if (v.gen == s_xformGen && v.width == width && v.height == height)
+        return v;
+    v.gen = s_xformGen;
+    v.width = width;
+    v.height = height;
+    v.edges = width > 0.f && height > 0.f;
+    const float* t = s.matrix.tm;
+    v.z.set(t[2], t[5], t[8], t[11]);
     constexpr float kMargin = 8.f;
     const float fx = s.proj[0], tx = s.proj[1], fy = s.proj[2], ty = s.proj[3];
     const struct
     {
         float f, e;     // f X + e Z (or f Y + e Z)
         int row;        // 0: X, 1: Y
-        bool ge;        // the picture is where it is >= 0 (else <= 0)
-    } planes[4] = {{fx, tx + kMargin, 0, true}, {fx, tx - width - kMargin, 0, false},
-                   {fy, ty + kMargin, 1, true}, {fy, ty - height - kMargin, 1, false}};
-    for (const auto& p : planes)
+    } planes[4] = {{fx, tx + kMargin, 0}, {-fx, width + kMargin - tx, 0}, {fy, ty + kMargin, 1},
+                   {-fy, height + kMargin - ty, 1}};
+    for (int i = 0; i < 4; i++)
     {
-        float lo, hi;
-        boxRange(box, p.f * t[p.row] + p.e * t[2], p.f * t[3 + p.row] + p.e * t[5], p.f * t[6 + p.row] + p.e * t[8],
-                 p.f * t[9 + p.row] + p.e * t[11], lo, hi);
-        if (p.ge ? hi < 0.f : lo > 0.f)
-            return true;
+        const auto& p = planes[i];
+        v.edge[i].set(p.f * t[p.row] + p.e * t[2], p.f * t[3 + p.row] + p.e * t[5], p.f * t[6 + p.row] + p.e * t[8],
+                      p.f * t[9 + p.row] + p.e * t[11]);
     }
-    return false;
+    return v;
+}
+
+inline bool outOfPicture(const BoxView& v, const float* box)
+{
+    return v.edges && (v.edge[0].top(box) < 0.f || v.edge[1].top(box) < 0.f || v.edge[2].top(box) < 0.f ||
+                       v.edge[3].top(box) < 0.f);
 }
 
 // Point lights against the model-space box: the light taken into model
@@ -1022,6 +1052,15 @@ struct ModelBoxDistance
         return distanceSq(box, q) * minScaleSq;
     }
 };
+
+// The list being drawn, for its model's box (naomi_elan_cmd.cpp).
+float s_listBox[6];
+int s_listBoxState = kListNoBox;
+
+inline bool listIsLit()
+{
+    return s.lightModel.set && !(s.material.set && (s.material.select >> 9 & 1));
+}
 
 // GPU lists' depth measurement (recordForGpu), per frame.
 struct DepthPin
@@ -1129,13 +1168,15 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     if (boxed)
     {
         st.boxLists++;
+        memcpy(s_listBox, mbox, sizeof(mbox));
+        s_listBoxState = kListBoxed;
         const float* t = s.matrix.tm;
-        float zlo, zhi;
-        boxRange(mbox, t[2], t[5], t[8], t[11], zlo, zhi);
+        const BoxView& view = boxView();
+        const float zlo = view.z.bottom(mbox), zhi = view.z.top(mbox);
         const bool empty = mbox[0] > mbox[3];        // placeholders only
         const bool behind = empty || zhi < nearZ;
         const bool reach = zlo <= nearZ * 1.5f;
-        if (behind || (g_elan_box_preset >= 2 && outOfPicture(mbox, t)))
+        if (behind || (g_elan_box_preset >= 2 && outOfPicture(view, mbox)))
         {
             (behind ? st.boxCulledBehind : st.boxCulledSide)++;
             st.boxCulledVertices += count;
@@ -1218,12 +1259,15 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
         }
         r.lightKey = key;
     }
-    else if (r.lightKey != s_lightGen)
+    else if (r.lightKey != s_lightGen * 2u + (u32)listIsLit())
     {
+        // The material only decides whether a list is lit at all, hence the
+        // key: most lists have a material of their own, and a set rebuilt for
+        // each was ~900 times a frame 500 bytes cleared, filled and compared.
         r.lightKey = 0;                              // until built: a refused set is rebuilt next time
         memset(&r.lights, 0, sizeof(r.lights));
         const LightModel& lm = s.lightModel;
-        r.lights.lit = lm.set && !(s.material.set && (s.material.select >> 9 & 1));
+        r.lights.lit = listIsLit();
         if (r.lights.lit)
         {
             if (s.lightsDirty)
@@ -1248,7 +1292,7 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
             for (int c = 0; c < 3; c++)
                 r.lights.ambient[c] = clamp01(lm.ambientBase[0][c]);
         }
-        r.lightKey = s_lightGen;
+        r.lightKey = s_lightGen * 2u + (u32)r.lights.lit;
     }
     return elan_gx_record(r);
 }
@@ -1269,6 +1313,10 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
 // see state that was skipped: those are dropped too (ichHeldBack), never
 // drawn with stale matrices.
 static bool s_stateSkippedSinceReset = false;
+
+// The last material of a model stepped over because it is out of the picture
+// (tnl_ModelHidden): decoded only if a list comes before the next material.
+static const u32* s_deferredMaterial = nullptr;
 
 static bool skipStateCommand()
 {
@@ -1414,7 +1462,7 @@ void tnl_SetLight(const u32* w)
 
 void tnl_SetMaterial(const u32* w)
 {
-    s_lightGen++;
+    s_deferredMaterial = nullptr;
     if (skipStateCommand())
         return;
     Material& m = s.material;
@@ -1461,11 +1509,40 @@ void tnl_SkipModelState(u32 stateCommands)
     elan_Stats().stateSkipped += stateCommands;
 }
 
+bool tnl_BoxHidden(const float* box)
+{
+    const float nearZ = s.matrix.nearZ > 0.f ? s.matrix.nearZ : 0.001f;
+    const BoxView& view = boxView();
+    if (box[0] > box[3] || view.z.top(box) < nearZ)
+        return true;
+    return view.z.bottom(box) > nearZ * 1.5f && outOfPicture(view, box);
+}
+
+void tnl_ModelHidden(const u32* lastMaterial, u32 listsIndexed)
+{
+    if (lastMaterial)
+        s_deferredMaterial = lastMaterial;
+    s_depth.lists += listsIndexed;
+}
+
+u32 tnl_ListsIndexed()
+{
+    return s_depth.lists;
+}
+
+int tnl_ListBox(float* box)
+{
+    if (s_listBoxState == kListBoxed)
+        memcpy(box, s_listBox, sizeof(s_listBox));
+    return s_listBoxState;
+}
+
 void tnl_ResetState()
 {
     s_xformGen++;
     s_lightGen++;
     s_stateSkippedSinceReset = false;
+    s_deferredMaterial = nullptr;
     const float proj[4] = {s.proj[0], s.proj[1], s.proj[2], s.proj[3]};
     s = State();
     memcpy(s.proj, proj, sizeof(proj));
@@ -1562,12 +1639,18 @@ int tnl_DrawList(const u32* w, u32 vertexSize, int listType)
         s_frameData.push_back({w + 8, words, hashWords(w + 8, words), w[7]});
     }
 #endif
+    if (s_deferredMaterial)
+        tnl_SetMaterial(s_deferredMaterial);
+    s_listBoxState = kListNoBox;
     const u32 pcw = w[0];
     const u32 layout = w[6];
     const u32 count = w[7];
     const int list = listType >= 0 ? listType : (int)(pcw >> 24 & 7);
     if (list & 1)
+    {
+        s_listBoxState = kListNotDrawn;
         return listType;                          // NAOMI 2 modifier volumes: not drawn yet
+    }
     // The renderer will drop this frame (frame skipping): its geometry is
     // never seen, so don't transform it. Most of a race frame's cost.
     if (rend_NextFrameSkipped())

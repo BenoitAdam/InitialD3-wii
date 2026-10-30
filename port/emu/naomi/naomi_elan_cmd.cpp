@@ -23,7 +23,9 @@
 #include "plugins/plugin_manager.h"
 #include "naomi.h"
 #include "naomi_elan.h"
+#include "naomi_elan_gx.h"
 
+#include <cmath>
 #include <cstring>
 
 #if !defined(BUILD_NAOMI2)
@@ -95,19 +97,38 @@ inline u32 word(const u8* p, u32 index)
 // refresh the summaries, so one is at most a few dropped frames old; the
 // skeleton hash counts models walked again with other commands at the same
 // address (modelsChanged / modelsFlipped), the case this relies on being rare.
+//
+// Drawn frames (3D LIST CULL = VIEW + MODELS): a model's polygon lists lie
+// inline in its block of ELAN RAM and it holds no matrices or lights (the
+// per-frame list that calls it does), only materials. So its lists' boxes, from
+// their GPU fetch programs, add up to one box under the matrix current at the
+// call: wholly out of the picture, the model is stepped over before any of its
+// commands is read, and its block's pages stand for all its lists. ~1400 lists
+// a race frame cost ~4 us each to walk and record; ~23% are in such models.
 struct ModelWalk
 {
     u32 skel;           // hash of the command words that decide the walk
     u32 cmds, ich, verts, lists, states;
     bool pure;          // nothing but state commands, polygon lists, pure models
+    bool boxOk;         // every list has a box; no matrix or light commands
+    float box[6];       // their union (min x y z, max x y z)
+    const u8* base;     // the block
+    u32 lastGmp;        // offset of its last material + 1, 0: none
+    u32 indexed;        // lists that took a depth slice (tnl_ListsIndexed)
 };
 
-struct ModelEntry
+// Two cache lines, the first enough to tell a model that stays visible.
+struct alignas(32) ModelEntry
 {
-    u32 offset, size, skel, verts;
+    u32 offset, size;
+    float box[6];       // valid when boxed
+    u32 skel, verts;
     u16 cmds, ich, lists, states;
     s8 typeIn, typeOut; // TA list type open before / after the walk
     u8 pure, used;
+    u8 boxed;           // the block unwritten since boxRender: the box holds
+    u16 indexed;
+    u32 lastGmp, boxRender;
 };
 constexpr u32 kModelSlots = 2048;
 ModelEntry s_models[kModelSlots];
@@ -138,6 +159,22 @@ void mergeWalk(ModelWalk& outer, const ModelWalk& inner)
     outer.lists += inner.lists + 1;
     outer.states += inner.states;
     outer.pure = outer.pure && inner.pure;
+    outer.boxOk = false;                // no box across a nested model
+}
+
+// After a list of the model being walked was drawn.
+void noteListBox(ModelWalk& w)
+{
+    float b[6];
+    const int state = tnl_ListBox(b);
+    if (state == kListNoBox)
+        w.boxOk = false;
+    else if (state == kListBoxed)
+        for (int c = 0; c < 3; c++)
+        {
+            w.box[c] = b[c] < w.box[c] ? b[c] : w.box[c];
+            w.box[3 + c] = b[3 + c] > w.box[3 + c] ? b[3 + c] : w.box[3 + c];
+        }
 }
 
 void rememberModel(u32 offset, u32 size, const ModelWalk& w, int typeIn, int typeOut)
@@ -165,6 +202,14 @@ void rememberModel(u32 offset, u32 size, const ModelWalk& w, int typeIn, int typ
     m.typeOut = (s8)typeOut;
     m.pure = pure;
     m.used = 1;
+    m.boxed = pure && w.boxOk && w.ich && w.indexed <= 0xFFFF;
+    if (m.boxed)
+    {
+        memcpy(m.box, w.box, sizeof(m.box));
+        m.boxRender = elan_gx_render();
+        m.lastGmp = w.lastGmp;
+        m.indexed = (u16)w.indexed;
+    }
 }
 
 // On a dropped frame: what walking the model at `offset` would have left
@@ -192,7 +237,116 @@ bool stepOverModel(const u8* data, u32 offset, u32 size)
     st.modelListsSkipped += m.ich;
     if (s_walk)
     {
-        const ModelWalk w = {m.skel, m.cmds, m.ich, m.verts, m.lists, m.states, true};
+        ModelWalk w = {};
+        w.skel = m.skel;
+        w.cmds = m.cmds;
+        w.ich = m.ich;
+        w.verts = m.verts;
+        w.lists = m.lists;
+        w.states = m.states;
+        w.pure = true;
+        mergeWalk(*s_walk, w);
+    }
+    return true;
+}
+
+#if !defined(GEKKO)
+inline bool isNaomi2(u32 pcw);
+u32 ichVertexSize(u32 flags);
+
+// Runner: walks a model about to be stepped over. Its block must hold what its
+// summary says: every vertex drawn inside the box, the same last material, and
+// nothing a skip would lose.
+void checkHiddenModel(const u8* list, u32 listSize, const ModelEntry& m)
+{
+    u32 lastGmp = 0;
+    bool bad = false;
+    for (u32 at = 0; at + 32 <= listSize && !bad;)
+    {
+        const u8* p = list + at;
+        const u32 pcw = word(p, 0);
+        u32 used = 32;
+        if (!isNaomi2(pcw))
+            bad = true;
+        else
+            switch (pcw >> 8 & 0xF)
+            {
+            case N2_NULL:
+                break;
+            case N2_REGISTER_WAIT:
+                bad = word(p, 1) != 0xFFFFFFFF && word(p, 3) != 0;
+                break;
+            case N2_GMP:
+                used = 64;
+                lastGmp = at + 1;
+                break;
+            case N2_ICH:
+            {
+                const u32 vsize = ichVertexSize(word(p, 6)), count = word(p, 7);
+                used = 32 + vsize * count;
+                const int type = m.typeIn >= 0 ? m.typeIn : (int)(pcw >> 24 & 7);
+                if (type & 1)
+                    break;                      // modifier volumes are not drawn
+                for (u32 i = 0; i < count && !bad; i++)
+                {
+                    float v[3];
+                    memcpy(v, p + 32 + i * vsize + 4, sizeof(v));
+                    if (!std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2]))
+                        continue;
+                    for (int c = 0; c < 3; c++)
+                        bad = bad || v[c] < m.box[c] || v[c] > m.box[3 + c];
+                }
+                break;
+            }
+            default:
+                bad = true;
+                break;
+            }
+        at += used;
+    }
+    if (lastGmp != m.lastGmp)
+        bad = true;
+    if (bad && elan_Stats().modelCheckStale++ < 8)
+        naomi_Log("[elan] hidden model at ELAN +%X, %u bytes: its block no longer matches its summary\n", m.offset,
+                  m.size);
+}
+#endif
+
+// On a drawn frame: the model is out of the picture and has left its block
+// unwritten, so walking it would have dropped each of its lists. False: walk it.
+bool hiddenModel(const u8* list, u32 listSize, u32 offset, u32 size)
+{
+    if (g_elan_box_preset != 3 || s_ta.secondHalfPending || rend_NextFrameSkipped())
+        return false;
+    const ModelEntry& m = modelSlot(offset, size);
+    if (m.offset != offset || m.size != size || !tnl_BoxHidden(m.box) || !m.boxed || m.typeIn != s_ta.listType ||
+        !elan_gx_unwritten_since(list, listSize, m.boxRender))
+        return false;
+#if !defined(GEKKO)
+    checkHiddenModel(list, listSize, m);
+#endif
+    tnl_ModelHidden(m.lastGmp ? (const u32*)(list + m.lastGmp - 1) : nullptr, m.indexed);
+    s_ta.listType = m.typeOut;
+    if (m.ich)
+        s_ta.vertexSize = 32;
+    NaomiElanStats& st = elan_Stats();
+    st.lists += 1u + m.lists;
+    st.n2Commands += m.cmds;
+    st.ichLists += m.ich;
+    st.ichVertices += m.verts;
+    st.boxCulledVertices += m.verts;
+    st.modelsCulled++;
+    st.modelListsCulled += m.ich;
+    if (s_walk)
+    {
+        ModelWalk w = {};
+        w.skel = m.skel;
+        w.cmds = m.cmds;
+        w.ich = m.ich;
+        w.verts = m.verts;
+        w.lists = m.lists;
+        w.states = m.states;
+        w.pure = true;
         mergeWalk(*s_walk, w);
     }
     return true;
@@ -443,7 +597,10 @@ void execute(const u8* data, u32 size, u32 depth)
 
         case N2_MATRIX_OR_LIGHT:
             if (s_walk)
+            {
                 s_walk->states++;
+                s_walk->boxOk = false;
+            }
             if (word(data, 1) == 0xF && word(data, 2) == 0x7F)
             {
                 used = 160;                      // instance matrix
@@ -458,7 +615,10 @@ void execute(const u8* data, u32 size, u32 depth)
 
         case N2_GMP:
             if (s_walk)
+            {
                 s_walk->states++;
+                s_walk->lastGmp = (u32)(data - s_walk->base) + 1;
+            }
             used = 64;
             if (used <= size)
                 tnl_SetMaterial((const u32*)data);
@@ -494,6 +654,8 @@ void execute(const u8* data, u32 size, u32 depth)
             {
                 s_ta.listType = tnl_DrawList((const u32*)data, vsize, s_ta.listType);
                 s_ta.vertexSize = 32;
+                if (s_walk)
+                    noteListBox(*s_walk);
             }
             break;
         }
@@ -511,17 +673,30 @@ void execute(const u8* data, u32 size, u32 depth)
                 break;
             u32 listSize = modelSize;
             const u8* list = elanRamPtr(modelOffset, listSize);
+            if (list && hiddenModel(list, listSize, modelOffset, modelSize))
+                break;
             if (list)
             {
                 st.lists++;
-                ModelWalk walk = {0x811C9DC5u, 0, 0, 0, 0, 0, !s_ta.secondHalfPending};
+                ModelWalk walk = {};
+                walk.skel = 0x811C9DC5u;
+                walk.pure = !s_ta.secondHalfPending;
+                walk.boxOk = true;
+                for (int c = 0; c < 3; c++)
+                {
+                    walk.box[c] = 1e30f;
+                    walk.box[3 + c] = -1e30f;
+                }
+                walk.base = list;
                 ModelWalk* const outer = s_walk;
                 const int typeIn = s_ta.listType;
+                const u32 indexed = tnl_ListsIndexed();
                 s_walk = &walk;
                 tnl_BeginModel((const u32*)data);
                 execute(list, listSize, depth + 1);
                 tnl_EndModel();
                 s_walk = outer;
+                walk.indexed = tnl_ListsIndexed() - indexed;
                 if (s_ta.secondHalfPending)
                     walk.pure = false;
                 rememberModel(modelOffset, modelSize, walk, typeIn, s_ta.listType);

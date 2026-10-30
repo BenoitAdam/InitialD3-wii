@@ -50,6 +50,7 @@ constexpr u32 kFetchMaxLists = 3072;           // then it starts over
 constexpr u32 kProgWordsMax = 128 * 1024, kProgWordsMin = 64 * 1024;
 constexpr u32 kListPages = 512;                // pages a fetched list may span
 constexpr u32 kBoxWords = 12;                  // the box after a program, in u16 units
+constexpr u32 kSumWindow = 32;                 // a cached program's checksum: one render in this many
 
 struct PageState
 {
@@ -469,7 +470,9 @@ const FetchList* fetchProgram(const u32* vtx, u32 off, u32 count, u32 vs, FetchO
     }
     else if (newest <= e->built && programValid(*e))
     {
-        if (progSum(s_prog + e->prog, progSpan(*e)) == e->sum)
+        // A slice of the lists each render: this safety net has never fired on
+        // a Wii, and summing every program read the whole ring (~0.3 ms).
+        if (((key >> 4) + s_render) % kSumWindow != 0 || progSum(s_prog + e->prog, progSpan(*e)) == e->sum)
         {
             how = kFetchCached;
             return e;
@@ -505,6 +508,16 @@ bool cachedBox(u32 off, u32 count, u32 vs, float* box)
         return false;
     memcpy(box, s_prog + boxPos(e->prog, e->len), 6 * sizeof(float));
     return true;
+}
+
+// Whether ELAN RAM [off, off + bytes) saw no write since render `since`. Checks
+// its pages for this render, like cachedBox.
+bool unwrittenSince(u32 off, u32 bytes, u32 since)
+{
+    if (!s_prog || !bytes || off >= kElanBytes || bytes > kElanBytes - off)
+        return false;
+    u32 newest;
+    return pagesSettled(off >> 12, (off + bytes - 1) >> 12, newest) && newest <= since;
 }
 
 // Walks a program: sink.base(pa, patch), sink.run(s, n, odd),

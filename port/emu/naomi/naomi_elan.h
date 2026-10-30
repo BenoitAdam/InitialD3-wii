@@ -30,6 +30,8 @@ struct NaomiElanStats
     // lists (and vertices) dropped by it behind the camera or out of the
     // picture, and vertices whose depth was measured one by one instead.
     u32 boxLists, boxCulledBehind, boxCulledSide, boxCulledVertices, depthMeasured;
+    u32 modelsCulled, modelListsCulled;     // ...and whole models stepped over on drawn frames
+    u32 modelCheckStale;                    // host: ...that walking them shows were wrongly summarised
     // Host census of those lists' strips (what the GPU path's index builder makes of them).
     u32 gpuIndices, gpuStrips, gpuFanVertices, gpuStripsWithFans, gpuPlaceholders;
     u32 gpuTriangles, gpuTriangleMismatches;    // ...and the per-strip draw checked against the joined strip
@@ -128,6 +130,17 @@ void tnl_ResetState();                       // end of frame (register wait)
 // A model list stepped over on a dropped frame held this many matrix / light /
 // material commands: what skipping them one by one would have left behind.
 void tnl_SkipModelState(u32 stateCommands);
+// 3D LIST CULL, whole models on a drawn frame (naomi_elan_cmd.cpp). Whether a
+// model-space box is out of the picture under the current matrix and cannot
+// reach its near plane (it then has no say in the depth pin), and what stepping
+// over such a model leaves behind: its last material, its slots in the depth
+// slices (tnl_ListsIndexed counts them).
+bool tnl_BoxHidden(const float* box);
+void tnl_ModelHidden(const u32* lastMaterial, u32 listsIndexed);
+u32 tnl_ListsIndexed();
+// What tnl_DrawList knew of its list's box: copied to box[6] when kListBoxed.
+enum { kListNoBox, kListBoxed, kListNotDrawn };
+int tnl_ListBox(float* box);
 // Transforms one polygon list and feeds the result to the TA. `listType` is
 // the TA's open list (-1 if none); returns the list type now open.
 int tnl_DrawList(const u32* w, u32 vertexSize, int listType);

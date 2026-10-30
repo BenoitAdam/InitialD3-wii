@@ -479,6 +479,7 @@ std::vector<FetchRec> s_fetchRecs;
 std::vector<const FetchList*> s_drawnPrograms;  // this render's
 CheckTotals s_check = {};
 u32 s_checkRenders = 0;
+u64 s_recordDigest = 14695981039346656037ull;   // recordDigest()
 
 // This render's light sets, shared as the Wii's elan_gx_record shares them:
 // same key as the last list, or a copy among the last kDedupDepth (4) sets.
@@ -629,6 +630,7 @@ void elan_gx_census_render()
             printf("[run]   3D list boxes: %u lists asked, %u had a box (%.0f%%), every box checked against the "
                    "list's records: %u STALE\n",
                    s_check.boxAsked, s_check.boxes, 100.0 * s_check.boxes / s_check.boxAsked, s_check.boxStale);
+        printf("[run]   record digest at render %u: %016llX\n", s_render, (unsigned long long)s_recordDigest);
         s_check = {};
         s_checkRenders = 0;
     }
@@ -679,12 +681,45 @@ void elan_gx_canvas(float& width, float& height)
     height = 480.f;
 }
 
+u32 elan_gx_render()
+{
+    return s_render;
+}
+
+bool elan_gx_unwritten_since(const void* p, u32 bytes, u32 since)
+{
+    u8* ram = naomi_ElanRam();
+    const u32 size = naomi_ElanRamSize();
+    return ram && g_elan_gx_preset && size <= kElanBytes && fetchCheckInit(size) &&
+           unwrittenSince((u32)((const u8*)p - ram), bytes, since);
+}
+
+// Digest of everything the renderer is handed (printed every 64 renders): an
+// optimisation of the recording side must leave it exactly the same.
+static void recordDigest(const ElanGxRecord& r)
+{
+    const u32 off = (u32)((const u8*)r.vtx - naomi_ElanRam());
+    const u32 words[10] = {off, r.count, r.vsize, r.layout, r.pcw, r.isp, r.tsp, r.tcw, r.colorFromVertex, r.envMap};
+    auto mix = [](const void* p, size_t n) {
+        const u8* b = (const u8*)p;
+        for (size_t k = 0; k < n; k++)
+            s_recordDigest = (s_recordDigest ^ b[k]) * 1099511628211ull;
+    };
+    mix(words, sizeof(words));
+    mix(r.base, sizeof(r.base));
+    mix(&r.nearW, sizeof(r.nearW));
+    mix(&r.farW, sizeof(r.farW));
+    mix(&r.xform, sizeof(r.xform));
+    mix(&r.lights, sizeof(r.lights));
+}
+
 bool elan_gx_record(const ElanGxRecord& r)
 {
     stripCensusCounts(r);
     stripCensus(r);
     fetchNote(r);
     lightSetNote(r);
+    recordDigest(r);
     return rend_AddElanItem(r.pcw, r.isp, r.tsp, r.tcw, 0, r.nearW, r.farW);
 }
 
@@ -1343,6 +1378,16 @@ void elan_gx_canvas(float& width, float& height)
 {
     width = s_canvasW;
     height = s_canvasH;
+}
+
+u32 elan_gx_render()
+{
+    return s_render;
+}
+
+bool elan_gx_unwritten_since(const void* p, u32 bytes, u32 since)
+{
+    return s_fetchOn && unwrittenSince((u32)p - WII_GUEST_ELAN_EA, bytes, since);
 }
 
 void elan_gx_restore(const ElanGxFrame& f)

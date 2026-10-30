@@ -77,6 +77,10 @@ bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6]);
 // The renderer's canvas (screen coordinates of the ELAN's projection), from
 // its last 3D render; 0 before the first one.
 void elan_gx_canvas(float& width, float& height);
+// The render the ELAN is recording, and whether ELAN RAM [p, p + bytes) was
+// left unwritten since render `since` (checks its pages for this render).
+u32 elan_gx_render();
+bool elan_gx_unwritten_since(const void* p, u32 bytes, u32 since);
 
 #if !defined(GEKKO)
 // Windows runner: once per drawn render (soft_renderer.cpp StartRender), the
@@ -114,5 +118,6 @@ extern int g_elan_fetch_preset;
 extern int g_elan_point_preset;
 // Launch option 3D LIST CULL (GPU path, lists with a fetch program's box):
 // 0 = off (every list recorded, depth measured as before), 1 = lists behind
-// the camera dropped, 2 = also lists beside or above/below the picture.
+// the camera dropped, 2 = also lists beside or above/below the picture, 3 =
+// also whole models stepped over before their commands are walked.
 extern int g_elan_box_preset;

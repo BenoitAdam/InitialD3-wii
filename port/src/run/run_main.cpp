@@ -481,11 +481,12 @@ void host_on_vblank()
             {
                 snprintf(line, sizeof(line),
                          "[run]   3D list cull per frame: %u lists with a box, %u dropped behind the camera, %u out of "
-                         "view (%u vertices) | depth measured on %u vertices\n",
+                         "view (%u vertices), whole models %u (%u lists, %u STALE so far) | depth measured on %u vertices\n",
                          (es.boxLists - last.boxLists) / 60, (es.boxCulledBehind - last.boxCulledBehind) / 60,
                          (es.boxCulledSide - last.boxCulledSide) / 60,
                          (es.boxCulledVertices - last.boxCulledVertices) / 60,
-                         (es.depthMeasured - last.depthMeasured) / 60);
+                         (es.modelsCulled - last.modelsCulled) / 60, (es.modelListsCulled - last.modelListsCulled) / 60,
+                         es.modelCheckStale, (es.depthMeasured - last.depthMeasured) / 60);
                 logLine(line);
             }
             last = es;
@@ -699,8 +700,12 @@ int main(int argc, char** argv)
     if (const char* lc = argValue(argc, argv, "--list-cull"))
     {
         // 3D LIST CULL (with --gpu-tnl): 1 = lists behind the camera dropped by
-        // their fetch program's box, 2 = also those out of the picture. Every
-        // box used is checked against its list's records ("3D list boxes").
+        // their fetch program's box, 2 = also those out of the picture, 3 = also
+        // whole models stepped over. Every box used is checked against its
+        // list's records ("3D list boxes"), each model stepped over against
+        // its block ("STALE so far"). The "record digest" lines of two runs at
+        // the same value must match; 3 may differ from 2 (a hidden list that
+        // lost its own box is then not drawn at all).
         extern int g_elan_box_preset;
         g_elan_box_preset = atoi(lc);
     }

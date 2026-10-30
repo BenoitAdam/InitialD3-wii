@@ -1,0 +1,10 @@
+Enemy car problem status
+========================
+
+Claude :
+
+For the enemy car's lights, I need a bit more:
+
+What looks wrong: missing, wrong colour, always on, or blocky? Are they headlights, tail lights or a glow around them? A photo would help a lot.
+Is it a day or a night race, and does it also happen on Dolphin?
+Does it change with BACKFACE CULL = OFF, NIGHT LIGHTS = CPU or 3D LIST CULL = OFF? Try one at a time. Whichever fixes it points to the cause.

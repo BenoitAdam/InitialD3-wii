@@ -241,7 +241,7 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // GPU T&L with 3D VTX FETCH: each list's bounding box (kept with its fetch
     // program) drops the lists out of the picture before they are drawn.
     {"3D LIST CULL  ", "3D T&L GPU: skips 3D models out of the picture, and most depth measuring (faster)",
-     PAGE_DEPTH, 2, 3, {"OFF (LEGACY)", "BEHIND CAMERA", "OUT OF VIEW"}, {0, 1, 2}},
+     PAGE_DEPTH, 3, 4, {"OFF (LEGACY)", "BEHIND CAMERA", "OUT OF VIEW", "VIEW + MODELS"}, {0, 1, 2, 3}},
 };
 
 } // namespace idas3

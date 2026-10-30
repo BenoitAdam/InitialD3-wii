@@ -7,15 +7,26 @@ the profiler logs the owner sent from a real Wii ("REAL WII LOG n") and from Dol
 ## The target
 
 A race frame must fit in **16.7 ms** (60 fps). On a real Wii, with every frame drawn
-(FRAMESKIPPING 0), the race is at **~24-25 ms** (log 11, 38-41 fps):
+(FRAMESKIPPING 0), the race is at **~24-25 ms** (log 12, Akina uphill, 36-41 fps, p50 24.8):
 
-| Bucket | ms per frame | What it is |
-| --- | --- | --- |
-| sh4 | 9.4-9.6 | the game's own code through the dynarec |
-| rend | 7.2-7.45 | GX draw of the frame, mostly ELAN GPU lists |
-| elan | 4.1-4.2 | ELAN command walk + per-render depth measuring |
-| arm | 1.4 | ARM7 sound CPU |
-| aica | 1.0-1.7 | AICA sound synthesis |
+| Bucket | log 11 | log 12 | What it is |
+| --- | --- | --- | --- |
+| sh4 | 9.4-9.6 | 10.4 | the game's own code through the dynarec (5% of frames: ~20 ms) |
+| rend | 7.2-7.45 | 3.15 | GX draw of the frame, mostly ELAN GPU lists |
+| elan | 4.1-4.2 | 8.0 | ELAN command walk (2.7) + recording lists for the GPU (5.4) |
+| arm | 1.4 | 1.25 | ARM7 sound CPU |
+| aica | 1.0-1.7 | 1.1 | AICA sound synthesis |
+
+Log 12 is the first with 3D LIST CULL (OUT OF VIEW): `rend` lost 4.2 ms but `elan` gained 3.9,
+so the frame barely moved (the ~3 ms expected did not come). Dropping ~750 of ~1430 lists a
+frame works (drawn: ~60K vertices, ~650 lists), but the lookups moved to record time cost ~3.8
+ms: ~2.7 us a list, on every list, dropped ones included. At the draw the same work is cheap
+because `prefetchAhead` fetches it ahead; the ELAN walk has no such thing, and it runs between
+stretches of SH-4 work that evict everything (load-miss cycles 19-22% in the race against 3-5%
+in menus). The GP takes ~9 ms a frame whether it draws 60K or 116K vertices, so it is limited
+by pixels, not vertices; at ~36% busy it is not the limit yet. In the race's first ~400 frames
+the FIFO fills once a render, which costs ~1.3 ms of CPU stall (`cached programs` 2.3 against
+0.9 ms): `GX FIFO full` line. The night attract demo runs at ~57-60 fps (was a few fps).
 
 With **FRAMESKIP AUTO** (1 frame in 4 drawn) the game logic runs at 94-103%: an undrawn frame
 costs ~13.5 ms (sh4 9.7, arm 1.35, aica 1.1, ELAN commands 1.2), a drawn one adds 6-8 ms of
@@ -68,7 +79,8 @@ than half the budget.
 | 10-28 | Black lights dropped: car select fully on the GPU | car select 28 -> 60 fps |
 | 10-28 | Depth measuring spread over 32 renders (log 10 bug, fixed in log 11) | 35 -> 38-41 fps |
 | 10-30 | BACKFACE CULL (flickering trees fix): back faces no longer rasterised, ~350-400 GX cull changes a frame | awaiting log 12 (expect equal or a little less GP time) |
-| 10-30 | 3D LIST CULL: list bounding boxes kept with the fetch programs; lists out of the picture dropped, depth range from the box | Windows: drawn 116.6K -> 63.5-78K vertices, 965 -> 546-705 lists a render; awaiting Dolphin, then log 12 (expect ~3 ms) |
+| 10-30 | 3D LIST CULL: list bounding boxes kept with the fetch programs; lists out of the picture dropped, depth range from the box | log 12: drawn ~60K vertices, `rend` 7.3 -> 3.15 but `elan` 4.1 -> 8.0: race unchanged (36-41 fps); night demo a few fps -> ~57-60 |
+| 10-30 | Whole hidden models stepped over, light sets not rebuilt per material, box rows per matrix, sampled checksums | awaiting log 13 (expect ~2.5 ms of `elan`) |
 
 ## What was done
 
@@ -202,17 +214,28 @@ needs 100% speed, hence FRAMESKIP AUTO for now.
 
 ## What is left, best first
 
-1. **Read log 12 for 3D LIST CULL** (done item 9): `[prof] 3D list cull per frame` and the
-   `rend` / `elan` buckets against log 11. The page checks of boxed lists moved from `rend`
-   to `elan` (when the ELAN records the list), so judge the sum. Owner, first build
-   (2026-10-30): Wii "both work, ~+5-10%"; Dolphin: BEHIND CAMERA faster everywhere (over
-   100% at times), OUT OF VIEW faster in the demo and race intro but **~10% speed once the
-   player has control** (in-car and chase views). Not reproduced by the runner (driving with
-   gas held, views cycled: pin held, ~0.7-1K vertices measured, nothing unusual). Suspected
-   the pin falling (every list then measured; Dolphin's page-table memory reads are slow):
-   culled lists now hold the pin and unpinned frames measure only the nearest lists. If the
-   rebuilt OUT OF VIEW is still slow on Dolphin, its PROFILER log decides (FPROF buckets,
-   `depth measured`, `canvas`).
+1. **The cost of recording lists** (`elan`, log 12: 5.4 ms over ~1430 lists, ~2.7 us of it
+   per list new with item 9). Built after log 12, awaiting log 13 (`[prof] 3D list cull per
+   frame`, `ELAN ms per frame`, the `elan` bucket):
+   - 3D LIST CULL = VIEW + MODELS (value 3, default): whole models stepped over before their
+     commands are read (`hiddenModel`, naomi_elan_cmd.cpp). Models are 100% pure, hold no
+     matrix or light (census) and ~3.1 lists inline in their block, so the union of their
+     lists' boxes under the current matrix and one range check of the block replace the walk.
+     Only ~23% of lists are in wholly hidden models (~29% more are dropped singly in models that
+     stay partly in view), expected ~1.5 ms. What a skip must leave: the model's last material
+     (deferred, decoded only if a list comes first), its depth slices (`tnl_ListsIndexed`).
+     A model that may reach its near plane is walked, for the pin.
+   - Light sets keyed on the light generation and the lit bit: a material no longer rebuilds
+     them (~900 times a frame: 500 bytes cleared, filled, compared). Expected ~0.5 ms.
+   - Box tests against rows built once per matrix (`BoxView`), three multiplications a row.
+   - Program checksums one render in 32 (`kSumWindow`): summing read the whole ring.
+   Checks: `record digest` (everything handed to the renderer) identical to the previous code
+   at OUT OF VIEW over the race and the night demo; every model stepped over is walked by the
+   runner against its summary (0 stale). Value 3 is not comparable by digest with value 2: a
+   hidden list that lost its own box (its program overwritten) is then not drawn at all.
+   If `elan` stays high, the next steps: prefetch the next list's table entries in the walk,
+   a per-page PTE pointer with an uncached read for page checks (item 2), compiled models
+   (list descriptors kept per model, no ELAN RAM read for a model that did not change).
 2. **Cheaper fetch validation.** ~1000 page checks a render (PTE lookup + `dcbf` + `sync`,
    ~5 cache misses each; fewer pages now that culled lists are not drawn, but culled lists
    with a box still check theirs). A write-tracking bitmap set by the pager/trampolines would
