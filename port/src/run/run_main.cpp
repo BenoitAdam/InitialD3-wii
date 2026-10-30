@@ -28,6 +28,7 @@
 #include "naomi/naomi_elan.h"
 #include "host/host_hooks.h"
 #include "dc/sh4/sh4_registers.h"
+#include "dc/sh4/sh4_opcode_list.h"
 #include "dc/mem/sb.h"
 #include "dc/mem/sh4_mem.h"
 #include "dc/aica/aica_if.h"
@@ -223,9 +224,14 @@ static void printHisto()
         }
     std::sort(hot.begin(), hot.end(), [](auto& a, auto& b) { return a.first > b.first; });
     printf("[histo] %llu instructions sampled\n", (unsigned long long)total);
-    for (size_t i = 0; i < hot.size() && i < 24; i++)
-        printf("[histo]   %08X-%08X  %5.1f%%\n", 0x0C000000 | (hot[i].second << 6), 0x0C000000 | ((hot[i].second << 6) + 63),
-               100.0 * hot[i].first / (double)total);
+    u64 running = 0;
+    for (size_t i = 0; i < hot.size() && i < 64; i++)
+    {
+        running += hot[i].first;
+        printf("[histo]   %08X-%08X  %5.1f%%  (%5.1f%% so far)\n", 0x0C000000 | (hot[i].second << 6),
+               0x0C000000 | ((hot[i].second << 6) + 63), 100.0 * hot[i].first / (double)total,
+               100.0 * running / (double)total);
+    }
 }
 
 // --path-after-elan: once the ELAN has received its first command, print
@@ -715,6 +721,27 @@ int main(int argc, char** argv)
     if (!s_histo.empty())
         printHisto();
     naomi_BoardLogCounters();
+
+    if (const char* d = argValue(argc, argv, "--disasm"))
+    {
+        // Guest code at the end of the run, for --histo-from's hot ranges:
+        // --disasm 0C048E80:0C0491C0[,START:END...]
+        for (const char* c = d; *c;)
+        {
+            char* end = nullptr;
+            const u32 from = (u32)strtoul(c, &end, 16);
+            if (!end || *end != ':')
+                break;
+            const u32 to = (u32)strtoul(end + 1, &end, 16);
+            printf("[disasm] %08X-%08X\n", from, to);
+            for (u32 pc = from & ~1u; pc < to; pc += 2)
+            {
+                const u16 op = ReadMem16(pc);
+                printf("[disasm] %08X %04X  %s\n", pc, op, OpDesc[op]->diss);
+            }
+            c = *end == ',' ? end + 1 : end;
+        }
+    }
 
     if (const char* dump = argValue(argc, argv, "--dump-ram"))
     {

@@ -226,15 +226,24 @@ needs 100% speed, hence FRAMESKIP AUTO for now.
    (alpha unlit, as on the ELAN), ALPHA0 lit with the same lights. Forced-opaque lists: alpha
    from KONST, or keep them CPU-fed. ~0.5 ms; they would also get boxes (item 9).
 4. **The rest of the ELAN draw.** Of 6.0-6.5 ms of GPU lists (log 11, before item 9), only
-   2.2-2.5 ms is spent sending cached programs; 3.6-4.3 ms is per-list overhead over ~960
-   lists (state, matrices, light sets, validation). Item 9 takes ~40% of the lists away;
-   batch the rest by state.
+   2.2-2.5 ms is spent sending cached programs; 3.6-4.3 ms is everything else inside
+   `drawItem`, over ~960 lists: the CPU-fed colour vertices (item 3), matrices, light sets,
+   the list lookup, and each list's whole program read for its checksum (`progSum` in
+   `fetchProgram`, every list every render; the check has never fired on hardware: sample it,
+   one list in 32). Item 9 takes ~40% of the lists away. The lookup is done twice now (record
+   and draw): keep the slot in the item. Cheaper page checks without a bitmap (item 2): a
+   per-page pointer to the PTE and an uncached read of it needs no `pte_find`, `dcbf`, `sync`.
 5. **GX display lists** for cached programs, if the "ELAN draw a render" line still shows send
    time dominating: an INDEX8 display-list ring (~400 KB for a race) would replace the 256 KB
    program ring (and hold the boxes); `SetArray` is not allowed inside a display list, so one
    list per array segment. The GP has the time (idle ~60% of a race frame).
 6. **SH-4 side (~9.5 ms, largest bucket).** It is the game's own work: IPC ~0.6 with many L1
-   instruction misses. Directions: block layout (hot/cold, cache-line aligned chains), fewer
+   instruction misses. PC histogram while driving (runner, interpreter instruction counts, not
+   Wii time; wait-for-frame loop left out): 0C048E80-0C0491BF ~20% (integer: a switch on a byte,
+   24 `mul.l`, no FPU), 0C1DA1C0-0C1DA57F ~10%, 0C207D80-0C2081FF ~9%, 0C1D4C40-0C1D4FBF ~7%,
+   then a long flat tail. All of it is plain compiled code, 40-50% `mov.l` and ~0% floating
+   point, some with `pref` (store-queue copies): there is no matrix kernel to replace with
+   native code. Directions: block layout (hot/cold, cache-line aligned chains), fewer
    call-outs (timeslice ~1.9K, sync_fpscr ~1.5K, readmem ~700, writemem ~750 a frame), and the
    5% of frames where sh4 jumps to 27-48 ms even on skipped frames (cause unknown; look at them
    with HOTBLOCKS).
