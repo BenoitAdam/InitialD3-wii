@@ -14,10 +14,12 @@
 #include "dc/mem/sh4_mem.h"
 #include "dc/asic/asic.h"
 #include "naomi.h"
+#include "plugs/drkPvr/frame_prof.h"
 
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <unistd.h>
 
 #if !defined(BUILD_NAOMI)
 #error "naomi_board.cpp is only part of the NAOMI 2 build (DC_PLATFORM=2)"
@@ -53,9 +55,16 @@ enum : u32
 // Cart image + logging (set by the host)
 // ---------------------------------------------------------------------------
 static NaomiCartReadFn s_cartRead = nullptr;
+static NaomiCartBusyFn s_cartBusy = nullptr;
 static void* s_cartUser = nullptr;
 static u32 s_cartSize = 0;
 static NaomiLogFn s_log = nullptr;
+
+// The emulation steps aside this long per vblank while the host decodes cart
+// data in the background. Below 100% speed it never sleeps on its own, so a
+// thread under its priority gets no time otherwise: a decode spreads over
+// several frames instead of stopping one.
+constexpr u32 kCartSliceUs = 1000;
 static NaomiStats s_stats;
 
 // The DIMM board decodes offsets within its RAM window, a power of two at
@@ -73,6 +82,21 @@ void naomi_SetCart(NaomiCartReadFn read, void* user, u32 size)
     while (window < size && window < (1u << 31))
         window <<= 1;
     s_cartMask = window - 1;
+}
+
+void naomi_SetCartBusy(NaomiCartBusyFn busy)
+{
+    s_cartBusy = busy;
+}
+
+void naomi_CartSlice()
+{
+    if (s_cartBusy && s_cartBusy(s_cartUser))
+    {
+        FP_T0(t0);
+        usleep(kCartSliceUs);
+        FP_ACC(cart, t0);
+    }
 }
 
 bool naomi_CartRead(u32 offset, u32 length, u8* dst)
@@ -219,7 +243,9 @@ static void cartDmaStart(u32 data)
     while (done < len)
     {
         const u32 chunk = (len - done) < sizeof(buffer) ? (len - done) : (u32)sizeof(buffer);
+        FP_T0(t0);
         naomi_CartRead(s_dmaOffset + done, chunk, (u8*)buffer);
+        FP_ACC(cart, t0);
         WriteMemBlock_nommu_ptr_le32(dst + done, buffer, chunk);
         done += chunk;
     }

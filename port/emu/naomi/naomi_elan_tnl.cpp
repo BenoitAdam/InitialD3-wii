@@ -23,6 +23,7 @@
 #include "naomi_elan.h"
 #include "naomi_elan_gx.h"
 
+int g_depth_plane_preset = 0;     // DEPTH MEASURE, 1 = RACE PLANE (launch page)
 extern int g_trans_sort_preset;   // renderer presets (launch page)
 extern int g_autosort_preset;
 
@@ -31,6 +32,8 @@ extern int g_autosort_preset;
 #include <utility>
 #include <vector>
 #if !defined(GEKKO)
+#include <cstdio>
+#include <cstdlib>
 #include <unordered_map>
 #include <unordered_set>
 #endif
@@ -1081,6 +1084,96 @@ DepthPin s_depth = {false, false, false, 1e30f, 1e30f, 0, 0, 0, 1e30f, 1e30f};
 // While pinned, each list is still measured one render in this many.
 constexpr u32 kDepthWindow = 32;
 
+// The near plane of the game's 3D matrices, where a race is pinned.
+constexpr float kRacePlane = 0.0099f;
+
+#if !defined(GEKKO)
+struct
+{
+    u32 reach, close;       // unpinned, vertices measured: box reaches its near plane, or may be the nearest
+    u32 slice, hidden;      // pinned, the same list's slice; out of the picture, for the pin
+    u32 noBoxLit, noBox;    // no box: point-lit, others
+    u32 noBoxLists;
+} s_nearTrace;
+#endif
+
+// A list wholly behind the camera and with no box is dropped before it reaches
+// the renderer, so it gets no fetch program, so no box: it was measured again
+// every render it had to be (point-lit lists always, any list without a pin).
+// Night demo: 160-230 lists, 12-22K vertices a frame while their stretch of
+// road stayed behind the camera. The box is kept here instead, under the same
+// rule as a program's: good while the list's pages stay unwritten.
+struct DroppedList
+{
+    const u32* vtx;
+    u32 count, vertexSize, render;
+    float box[6];
+};
+constexpr u32 kDroppedSets = 256, kDroppedWays = 4;    // a power of two sets
+DroppedList s_dropped[kDroppedSets][kDroppedWays];
+
+inline DroppedList* droppedSet(const u32* vtx, u32 count)
+{
+    return s_dropped[(((u32)(size_t)vtx >> 2) * 2654435761u >> 24 ^ count) & (kDroppedSets - 1)];
+}
+
+void keepDroppedBox(const u32* vtx, u32 count, u32 vertexSize)
+{
+    // The way used longest ago goes: free ones have render 0.
+    DroppedList* set = droppedSet(vtx, count);
+    DroppedList* oldest = set;
+    for (u32 w = 0; w < kDroppedWays; w++)
+    {
+        if (set[w].vtx == vtx && set[w].count == count)
+        {
+            oldest = &set[w];
+            break;
+        }
+        if (set[w].render < oldest->render)
+            oldest = &set[w];
+    }
+    DroppedList& d = *oldest;
+    d.vtx = vtx;
+    d.count = count;
+    d.vertexSize = vertexSize;
+    d.render = elan_gx_render();
+    for (int c = 0; c < 3; c++)
+    {
+        d.box[c] = 1e30f;
+        d.box[3 + c] = -1e30f;
+    }
+    for (u32 i = 0; i < count; i++, vtx += vertexSize / 4)
+    {
+        const float p[3] = {asFloat(vtx[1]), asFloat(vtx[2]), asFloat(vtx[3])};
+        if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2]))
+            continue;                                // a placeholder
+        for (int c = 0; c < 3; c++)
+        {
+            d.box[c] = p[c] < d.box[c] ? p[c] : d.box[c];
+            d.box[3 + c] = p[c] > d.box[3 + c] ? p[c] : d.box[3 + c];
+        }
+    }
+}
+
+bool droppedBox(const u32* vtx, u32 count, u32 vertexSize, float* box)
+{
+    DroppedList* set = droppedSet(vtx, count);
+    for (u32 w = 0; w < kDroppedWays; w++)
+    {
+        const DroppedList& d = set[w];
+        if (d.vtx != vtx || d.count != count || d.vertexSize != vertexSize)
+            continue;
+        if (!elan_gx_unwritten_since(vtx, count * vertexSize, d.render))
+            return false;
+        memcpy(box, d.box, sizeof(d.box));
+#if !defined(GEKKO)
+        elan_gx_box_check(vtx, count, vertexSize, box);
+#endif
+        return true;
+    }
+    return false;
+}
+
 // The list's state as an ElanGxRecord for the GPU path, or false when the
 // GX hardware cannot reproduce its lighting (point lights unless NIGHT
 // LIGHTS = GPU, unusual routing, more than 8 parallel lights, a layout
@@ -1152,6 +1245,13 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     // the frame's near plane is its precision: lists whose box may be the
     // nearest (under twice the last frame's near plane) are measured, the
     // others cannot set it and take their box's range.
+    //
+    // DEPTH MEASURE = RACE PLANE: a box is looser than its vertices, so in
+    // fly-bys and replays many boxes cross the near plane though no vertex does
+    // (road lists): measuring them all cost 11-35K vertices a frame (Wii, 5-11
+    // ms). It is all or nothing, one such list left unmeasured holds the frame's
+    // near plane at its box anyway. So those frames keep the plane as a race
+    // does, with the race's precision and its 1-in-32 slices.
     const float nearZ = s.matrix.nearZ > 0.f ? s.matrix.nearZ : 0.001f;
     const bool pointLit = g_elan_point_preset && litByPointLights();
     NaomiElanStats& st = elan_Stats();
@@ -1160,9 +1260,11 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     // as well, i.e. the whole stretch of track behind the camera every render.
     const u32 index = s_depth.lists++;
     const bool pinned = s_depth.pinnedLastFrame && nearZ >= s_depth.pinPlaneLastFrame;
+    const bool keepPlane = pinned || (g_depth_plane_preset && nearZ >= kRacePlane);
     const bool due = (index + s_depth.frames) % kDepthWindow == 0;
     float mbox[6];
-    const bool boxed = g_elan_box_preset && elan_gx_list_box(r.vtx, count, vertexSize, mbox);
+    const bool boxed = g_elan_box_preset && (elan_gx_list_box(r.vtx, count, vertexSize, mbox) ||
+                                             droppedBox(r.vtx, count, vertexSize, mbox));
     bool measure = pointLit || !pinned || due;
     ModelBoxDistance lightDistance;                  // point-lit, not measured: lights against the box
     if (boxed)
@@ -1182,12 +1284,15 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
             st.boxCulledVertices += count;
             if (!behind && reach)
             {
-                bool hit = pinned && !due;               // assumed, as if drawn
+                bool hit = keepPlane && !due;            // assumed, as if drawn
                 if (!hit)
                 {
                     float minZ, maxZ;
                     measureList<false>(w + 8, count, vertexSize, t, minZ, maxZ, nullptr);
                     st.depthMeasured += count;
+#if !defined(GEKKO)
+                    s_nearTrace.hidden += count;
+#endif
                     hit = maxZ >= nearZ && minZ <= nearZ * 1.5f;
                     if (hit)
                         s_depth.windowHit = true;
@@ -1201,8 +1306,12 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
             }
             return true;
         }
-        measure = (pinned ? reach && due : reach || zlo < 2.f * s_depth.nearestLastFrame) ||
+        measure = (keepPlane ? reach && due : reach) || (!pinned && zlo < 2.f * s_depth.nearestLastFrame) ||
                   (pointLit && !lightDistance.init(mbox, t));
+#if !defined(GEKKO)
+        if (measure)
+            (pinned ? s_nearTrace.slice : reach ? s_nearTrace.reach : s_nearTrace.close) += count;
+#endif
         if (!measure)
         {
             r.nearW = zlo > nearZ ? zlo : nearZ;
@@ -1220,6 +1329,13 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     Box box;
     if (measure)
     {
+#if !defined(GEKKO)
+        if (!boxed)
+        {
+            (pointLit ? s_nearTrace.noBoxLit : s_nearTrace.noBox) += count;
+            s_nearTrace.noBoxLists++;
+        }
+#endif
         float minZ, maxZ;
         if (pointLit)
             measureList<true>(w + 8, count, vertexSize, s.matrix.tm, minZ, maxZ, &box);
@@ -1227,7 +1343,11 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
             measureList<false>(w + 8, count, vertexSize, s.matrix.tm, minZ, maxZ, nullptr);
         st.depthMeasured += count;
         if (maxZ < nearZ)
+        {
+            if (g_elan_box_preset && !boxed)
+                keepDroppedBox(r.vtx, count, vertexSize);
             return true;                             // entirely behind the near plane
+        }
         r.nearW = minZ > nearZ ? minZ : nearZ;
         r.farW = maxZ;
         if (r.nearW <= nearZ * 1.5f)
@@ -1605,6 +1725,16 @@ void tnl_OnStartRender()
     // on a Wii, where each vertex is a cache miss).
     if (s_depth.lists)
     {
+#if !defined(GEKKO)
+        static const bool nearTrace = getenv("IDAS3_NEAR_TRACE") != nullptr;
+        if (nearTrace)
+            printf("[near] render %u: pinned %d near %.4f plane %.4f | unpinned measured: reach %u, close %u | slice %u, "
+                   "hidden %u, no box lit %u, no box %u (%u lists)\n",
+                   s_depth.frames, s_depth.pinnedLastFrame ? 1 : 0, s_depth.nearest, s_depth.pinPlane, s_nearTrace.reach,
+                   s_nearTrace.close, s_nearTrace.slice, s_nearTrace.hidden, s_nearTrace.noBoxLit, s_nearTrace.noBox,
+                   s_nearTrace.noBoxLists);
+        memset(&s_nearTrace, 0, sizeof(s_nearTrace));
+#endif
         bool pinned = s_depth.pinned;
         if (!s_depth.pinnedLastFrame)
         {

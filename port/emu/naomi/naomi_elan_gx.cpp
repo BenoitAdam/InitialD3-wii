@@ -648,9 +648,15 @@ bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6])
     s_check.boxAsked++;
     if (!cachedBox(off, count, vsize, box))
         return false;
+    elan_gx_box_check(vtx, count, vsize, box);
+    return true;
+}
+
+// Built from the records at an earlier render, a box is only good while they
+// are unchanged: every record must still lie inside it.
+void elan_gx_box_check(const u32* vtx, u32 count, u32 vsize, const float box[6])
+{
     s_check.boxes++;
-    // Built from the records at an earlier render, a box is only good while
-    // they are unchanged: every record must still lie inside it.
     using namespace elan_strips;
     const u32 words = vsize / 4;
     for (u32 i = 0; i < count; i++)
@@ -668,11 +674,11 @@ bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6])
             if (++s_check.boxStale <= 8)
                 printf("[run]   3D list box STALE: list at ELAN +%X, %u vertices: vertex %u (%g %g %g) outside "
                        "(%g %g %g)..(%g %g %g)\n",
-                       off, count, i, p[0], p[1], p[2], box[0], box[1], box[2], box[3], box[4], box[5]);
+                       (u32)((const u8*)vtx - naomi_ElanRam()), count, i, p[0], p[1], p[2], box[0], box[1], box[2],
+                       box[3], box[4], box[5]);
             break;
         }
     }
-    return true;
 }
 
 void elan_gx_canvas(float& width, float& height)

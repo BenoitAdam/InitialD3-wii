@@ -343,10 +343,14 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 	// Update high-water mark
 	if (LastAddr > cache_high_water_mark)
 	{
+		const u32 last_percent = (cache_high_water_mark * 100u) / CODE_SIZE;
 		cache_high_water_mark = LastAddr;
 
+		// Once a percent: every compile above the mark printed it (1128 lines
+		// in one real-Wii log).
 		if (cache_high_water_mark >= CACHE_WARN_THRESHOLD &&
-		    cache_high_water_mark < CACHE_FLUSH_THRESHOLD)
+		    cache_high_water_mark < CACHE_FLUSH_THRESHOLD &&
+		    (cache_high_water_mark * 100u) / CODE_SIZE != last_percent)
 		{
 			printf("recSh4: cache %u%% full (warning zone)\n",
 			       (cache_high_water_mark * 100u) / CODE_SIZE);

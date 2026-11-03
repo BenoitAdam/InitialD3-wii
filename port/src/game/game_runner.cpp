@@ -28,6 +28,8 @@ extern int g_punch_through_preset;
 extern int g_autosort_preset;
 extern int g_split_screen_preset;
 extern int g_isp_cull_preset;
+extern int g_reflection_rate_preset;  // emu/naomi/naomi_frontend.cpp
+extern int g_depth_plane_preset;      // emu/naomi/naomi_elan_tnl.cpp
 extern int g_vram_present_preset;     // emu/plugs/drkPvr/gxRend.cpp
 extern int g_show_fps_overlay;
 extern int g_speed_limiter_preset;
@@ -58,6 +60,10 @@ extern "C" int g_jit_ccalls_preset;   // emu/dc/sh4/rec_v2/shil.cpp
 extern "C" int g_idle_skip_preset;    // emu/naomi/naomi_frontend.cpp
 extern "C" int g_vram32_fast_preset;
 extern "C" int g_sq_fast_preset;
+extern "C" int g_cold_entry_preset;
+extern "C" int g_fifo_wake_preset;
+extern "C" int g_mem_sweep_preset;
+extern "C" int g_fifo_size_preset;
 extern "C" int g_sound_realtime_preset;
 extern int g_audio_buffers_preset;    // emu/host/presets_generated.cpp (wii/wii_audio.cpp)
 extern int g_audio_block_preset;
@@ -94,6 +100,25 @@ bool cartRead(void* user, u32 offset, u32 length, u8* dst)
     return static_cast<DimmImage*>(user)->read(offset, length, dst);
 }
 
+bool cartBusy(void* user)
+{
+    return static_cast<DimmImage*>(user)->readAheadBusy();
+}
+
+int g_dimm_ahead_preset = 1;
+const DimmImage* s_dimm = nullptr;      // for the profiler's lines
+
+NaomiFrameInfo s_lastFrame;
+
+// One tap of TEST restarts the game into the BIOS SYSTEM MENU, which reads as a
+// hang in a log (log 16): name the press.
+void logPress(const char* name, bool now, bool& was)
+{
+    if (now && !was)
+        log::write("[game] %s button pressed at frame %u\n", name, s_lastFrame.vblanks);
+    was = now;
+}
+
 // 0..1 to the JVS 16-bit range, 0.5 -> 0x8000 (the wheel's centre).
 u16 analog(float v)
 {
@@ -128,6 +153,9 @@ void pollControls(NaomiInputs& in)
         in.players[1] |= NAOMI_JVS_DOWN;
     in.coin[0] = c.coin;
     in.test = c.test;
+    static bool s_testHeld, s_serviceHeld;
+    logPress("TEST", c.test, s_testHeld);
+    logPress("SERVICE", c.service, s_serviceHeld);
     if (c.quit)
     {
 #if defined(GEKKO)
@@ -175,8 +203,6 @@ void logStatus(const char* why, const NaomiFrameInfo& info)
                recSh4_CodeCacheSize() / 1024);
 #endif
 }
-
-NaomiFrameInfo s_lastFrame;
 
 #if defined(GEKKO)
 // With PROFILER on: guest memory activity per real second, every 300 frames.
@@ -226,6 +252,12 @@ void logMemoryActivity(const NaomiFrameInfo& info)
         const NaomiStats& ns = naomi_Stats();
         log::write("[prof]   cart DMA: %u transfers, %u KB, %u status polls while one ran (totals)\n",
                    ns.cartDmaCount, ns.cartDmaBytes >> 10, ns.cartDmaPolls);
+        if (s_dimm)
+        {
+            const DimmImage::ReadStats& rs = s_dimm->readStats();
+            log::write("[prof]   DIMM runs (totals): %u read on demand, %u decoded ahead, %u of those late, %u started\n",
+                       rs.runsAsked, rs.runsAhead, rs.runsLate, rs.runsStarted);
+        }
         // Where the profiler's "elan" milliseconds go (per emulated frame).
         const double tnl = elan_TimeMs(es.tnlNs - s_prevTnl) / frames;
         const double gpu = elan_TimeMs(es.gpuNs - s_prevGpuNs) / frames;
@@ -297,7 +329,9 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_arm7_str_align_preset, &g_adpcm_loop_preset,  &g_arm7_reset_fix_preset, &g_aica_race_preset,
         &g_aica_ca_clamp_preset, &g_jit_link_guard_preset, &g_div32_fix_preset,  &g_interp_fix_preset,
         &g_spg_fix_preset,       &g_ta_guard_preset,     &g_inf_vtx_preset,
-        &g_elan_point_preset,    &g_isp_cull_preset,     &g_elan_box_preset};
+        &g_elan_point_preset,    &g_isp_cull_preset,     &g_elan_box_preset,     &g_reflection_rate_preset,
+        &g_depth_plane_preset,   &g_cold_entry_preset,   &g_dimm_ahead_preset,   &g_fifo_wake_preset,
+        &g_mem_sweep_preset,     &g_fifo_size_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {
@@ -319,6 +353,9 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
     }
     naomi_SetLog(coreLog);
     naomi_SetCart(cartRead, &session.dimm(), session.dimm().size());
+    naomi_SetCartBusy(cartBusy);
+    session.dimm().setReadAhead(g_dimm_ahead_preset != 0);
+    s_dimm = &session.dimm();
     naomi_SetBiosImage(bios.data.data(), (u32)bios.data.size());
     naomi_SetInputPoll(pollControls);
     naomi_SetFrameHook(frameCheck, 30);

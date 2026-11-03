@@ -59,6 +59,7 @@ public:
     uint32_t programCrc32() const { return programCrc_; }
     uint32_t loadMicroseconds() const { return loadUs_; }
     DimmImage& dimm() { return dimm_; }
+    const ChdGdrom& gdrom() const { return gdrom_; }
     GuestMemory& memory() { return memory_; }
 
     // Locates the security PIC for a CHD: 317-0384-com.pic next to it, any

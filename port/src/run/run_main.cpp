@@ -109,8 +109,9 @@ static u32 s_pcPos;
 // --trace-pc <addr>: dump the registers each time the guest reaches addr.
 static u32 s_tracePcs[8];
 static u32 s_tracePcCount;
-static u32 s_traceHits;
+static u32 s_traceHits[8];   // per address: a tight loop must not use up the others' lines
 static u32 s_traceFrom;      // --trace-from <addr>: arm the trace when reached
+static u32 s_traceAtFrame;   // --trace-at <frame>: arm the trace at that frame
 static bool s_traceArmed = true;
 
 static void watchHook(u32 pc, u32)
@@ -121,10 +122,13 @@ static void watchHook(u32 pc, u32)
         s_traceArmed = true;
     bool traced = false;
     for (u32 i = 0; i < s_tracePcCount; i++)
-        traced |= pc == s_tracePcs[i];
-    if (traced && s_traceArmed && s_traceHits < 40)
+        if (pc == s_tracePcs[i] && s_traceArmed && s_traceHits[i] < 40)
+        {
+            s_traceHits[i]++;
+            traced = true;
+        }
+    if (traced)
     {
-        s_traceHits++;
         printf("[trace] pc %08X pr %08X ssr %08X spc %08X sr %08X\n        r0-7  %08X %08X %08X %08X %08X %08X %08X %08X\n"
                "        r8-15 %08X %08X %08X %08X %08X %08X %08X %08X\n",
                pc, pr, ssr, spc, sr.GetFull(), r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11],
@@ -224,6 +228,14 @@ static void printHisto()
         }
     std::sort(hot.begin(), hot.end(), [](auto& a, auto& b) { return a.first > b.first; });
     printf("[histo] %llu instructions sampled\n", (unsigned long long)total);
+    // Every bucket, to compare two parts of the game.
+    if (const char* path = getenv("IDAS3_HISTO_FILE"))
+        if (FILE* f = fopen(path, "w"))
+        {
+            for (const auto& h : hot)
+                fprintf(f, "%08X %u\n", 0x0C000000 | (h.second << 6), h.first);
+            fclose(f);
+        }
     u64 running = 0;
     for (size_t i = 0; i < hot.size() && i < 64; i++)
     {
@@ -232,6 +244,89 @@ static void printHisto()
                0x0C000000 | ((hot[i].second << 6) + 63), 100.0 * hot[i].first / (double)total,
                100.0 * running / (double)total);
     }
+}
+
+// --reflection N: the launcher's REFLECTIONS, one reflection map build in N
+// (default 1 here, the game's own behaviour; the launcher's is 4).
+extern int g_reflection_rate_preset;
+extern void (*g_sh4_pc_hook)();
+
+static void reflectionHook()
+{
+    if ((next_pc & 0x1FFFFFFF) == 0x0C048E86)
+        if (const u32 out = naomi_ReflectionExit(next_pc))
+            if (naomi_ReflectionSkip(r[4]))
+                next_pc = out;
+}
+
+// --work-from F[:T]: from frame F on, a [work] line per frame with its SH-4
+// instructions outside the wait-for-frame loop: the game's real work, what is
+// left on a Wii after the idle skip. With T, frames over T instructions and
+// the others get a PC histogram each, to see what a heavy frame does more of.
+static u32 s_workFrom;
+static u32 s_workSpike;
+static u32 s_workTotal;              // this frame, outside the wait loop
+static u32 s_workRanges[2];          // of it: 0C048E80 routine, 0C20A2A0 copy loop
+static u32 s_workFrames[2];          // normal frames, heavy frames
+static std::vector<u32> s_workHisto[3];   // this frame, normal frames, heavy frames
+static const ChdGdrom* s_workGdrom;  // hunks decoded, for the [work] line
+static u32 s_workHunks;
+
+static void workHook(u32 pc, u32 op)
+{
+    const u32 a = pc & 0x1FFFFFFF;
+    if ((a >= 0x0C20C840 && a < 0x0C20C880) || (a >= 0x0C211880 && a < 0x0C2118C0))
+        return;
+    s_workTotal++;
+    s_workRanges[0] += a >= 0x0C048E80 && a < 0x0C049240;
+    s_workRanges[1] += a >= 0x0C20A2A0 && a < 0x0C20A2B0;
+    if (s_workSpike)
+    {
+        const u32 bucket = (pc & 0x01FFFFFF) >> 6;
+        if (bucket < s_workHisto[0].size())
+            s_workHisto[0][bucket]++;
+    }
+    if (s_watchAddr || s_tracePcCount)
+        watchHook(pc, op);
+}
+
+static void workFrame(u32 frame)
+{
+    const u32 hunks = s_workGdrom ? s_workGdrom->hunksDecoded() : 0;
+    printf("[work] f%u %u instructions, routine %u, copy %u, hunks %u\n", frame, s_workTotal, s_workRanges[0],
+           s_workRanges[1], hunks - s_workHunks);
+    s_workHunks = hunks;
+    if (s_workSpike)
+    {
+        const u32 heavy = s_workTotal > s_workSpike;
+        s_workFrames[heavy]++;
+        for (size_t i = 0; i < s_workHisto[0].size(); i++)
+            s_workHisto[1 + heavy][i] += s_workHisto[0][i];
+        std::fill(s_workHisto[0].begin(), s_workHisto[0].end(), 0u);
+    }
+    s_workTotal = s_workRanges[0] = s_workRanges[1] = 0;
+}
+
+// Per 64-byte range, instructions a frame in the heavy frames against the
+// normal ones, biggest difference first.
+static void printWork()
+{
+    if (!s_workSpike || !s_workFrames[0] || !s_workFrames[1])
+        return;
+    struct Row
+    {
+        double normal, heavy;
+        u32 bucket;
+    };
+    std::vector<Row> rows;
+    for (u32 i = 0; i < s_workHisto[1].size(); i++)
+        if (s_workHisto[1][i] || s_workHisto[2][i])
+            rows.push_back({s_workHisto[1][i] / (double)s_workFrames[0], s_workHisto[2][i] / (double)s_workFrames[1], i});
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.heavy - a.normal > b.heavy - b.normal; });
+    printf("[work] %u normal frames, %u heavy frames; instructions a frame by range:\n", s_workFrames[0], s_workFrames[1]);
+    for (size_t i = 0; i < rows.size() && i < 48; i++)
+        printf("[work]   %08X-%08X  normal %8.0f  heavy %8.0f\n", 0x0C000000 | (rows[i].bucket << 6),
+               0x0C000000 | ((rows[i].bucket << 6) + 63), rows[i].normal, rows[i].heavy);
 }
 
 // --path-after-elan: once the ELAN has received its first command, print
@@ -541,6 +636,19 @@ void host_on_vblank()
         s_histo.assign(RAM_SIZE >> 6, 0);
         g_sh4_step_hook = histoHook;
     }
+    if (s_workFrom && frame >= s_workFrom)
+    {
+        if (frame == s_workFrom)
+        {
+            for (auto& h : s_workHisto)
+                h.assign(s_workSpike ? RAM_SIZE >> 6 : 0, 0);
+            g_sh4_step_hook = workHook;
+        }
+        else
+            workFrame(frame);
+    }
+    if (s_traceAtFrame && frame == s_traceAtFrame)
+        s_traceArmed = true;
     if (frame >= s_frameLimit)
         naomi_Stop();
 }
@@ -582,6 +690,13 @@ int main(int argc, char** argv)
             g_area1_write_hook = area1Hook;
     if (const char* h = argValue(argc, argv, "--histo-from"))
         s_histoFrom = (u32)strtoul(h, nullptr, 0);
+    if (const char* w = argValue(argc, argv, "--work-from"))
+    {
+        char* end = nullptr;
+        s_workFrom = (u32)strtoul(w, &end, 0);
+        if (*end == ':')
+            s_workSpike = (u32)strtoul(end + 1, nullptr, 0);
+    }
     if (const char* dir = argValue(argc, argv, "--snap-dir"))
     {
         // Software-rendered PNG of the frame every N emulated frames.
@@ -618,9 +733,26 @@ int main(int argc, char** argv)
     naomi_SetLog(logLine);
     naomi_SetCart(
         [](void* user, u32 offset, u32 length, u8* dst) {
+            static const bool trace = getenv("IDAS3_CART_TRACE") != nullptr;
+            if (trace)
+                printf("[cart] %08X +%X\n", offset, length);
             return static_cast<DimmImage*>(user)->read(offset, length, dst);
         },
         &session.dimm(), session.dimm().size());
+    if (const char* a = argValue(argc, argv, "--dimm-ahead"))
+        session.dimm().setReadAhead(strtol(a, nullptr, 0) != 0);
+    g_reflection_rate_preset = 1;       // the game's own behaviour unless asked
+    if (const char* d = argValue(argc, argv, "--depth-plane"))
+    {
+        extern int g_depth_plane_preset;
+        g_depth_plane_preset = atoi(d);
+    }
+    if (const char* n = argValue(argc, argv, "--reflection"))
+    {
+        g_reflection_rate_preset = (int)strtol(n, nullptr, 0);
+        g_sh4_pc_hook = reflectionHook;
+    }
+    s_workGdrom = &session.gdrom();
     if (const char* p = argValue(argc, argv, "--press"))
     {
         for (const char* c = p; *c;)
@@ -668,6 +800,11 @@ int main(int argc, char** argv)
     if (const char* t = argValue(argc, argv, "--trace-from"))
     {
         s_traceFrom = (u32)strtoul(t, nullptr, 16);
+        s_traceArmed = false;
+    }
+    if (const char* t = argValue(argc, argv, "--trace-at"))
+    {
+        s_traceAtFrame = (u32)strtoul(t, nullptr, 0);
         s_traceArmed = false;
     }
     if (const char* t = argValue(argc, argv, "--trace-pc"))
@@ -725,6 +862,7 @@ int main(int argc, char** argv)
     naomi_Run();
     if (!s_histo.empty())
         printHisto();
+    printWork();
     naomi_BoardLogCounters();
 
     if (const char* d = argValue(argc, argv, "--disasm"))

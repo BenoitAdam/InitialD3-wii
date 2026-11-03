@@ -8,6 +8,7 @@
 #include "core/naomi_des.h"
 #include "core/naomi_pic.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -157,6 +158,23 @@ static void testEndToEnd(const std::string& dir, bool useDescriptor)
             }
         }
     }
+
+    // Read-ahead: a stream of small reads gets the same bytes, its runs come
+    // from the read-ahead, and leaving the stream drops nothing.
+    session.dimm().setReadAhead(true);
+    bool sameBytes = true;
+    for (uint32_t at = 0x4000; at + 0x1000 <= std::min<uint32_t>(size, 0x4000 + 0x1000 * 40); at += 0x1000)
+    {
+        std::vector<uint8_t> got(0x1000);
+        sameBytes &= session.dimm().read(at, 0x1000, got.data()) && !memcmp(got.data(), &fx.plainImage[at], 0x1000);
+    }
+    CHECK(sameBytes);
+    CHECK(session.dimm().readStats().runsAhead > 0);
+    {
+        std::vector<uint8_t> got(16);
+        CHECK(session.dimm().read(0, 16, got.data()) && !memcmp(got.data(), fx.plainImage.data(), 16));
+    }
+    session.dimm().setReadAhead(false);
 
     CHECK(session.load(MemoryPlan::RamOnly, nullptr));
     CHECK(session.loaded());

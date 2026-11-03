@@ -55,15 +55,15 @@ FrameProfAcc g_fp;
 // subtracted out of rend when the sample is built, so the ten columns sum to
 // the frame time and their percentages are real shares.
 enum { FPB_SH4, FPB_REND, FPB_TEX, FPB_GXW, FPB_TA, FPB_ARM,
-       FPB_AICA, FPB_SND, FPB_JIT, FPB_DISC, FPB_MEM, FPB_PAD, FP_NB };
+       FPB_AICA, FPB_SND, FPB_JIT, FPB_DISC, FPB_MEM, FPB_PAD, FPB_CART, FP_NB };
 
 // NAOMI 2 has no GD-ROM: its "disc" bucket times the ELAN instead (command
 // walk + T&L + the TA decode of its output, naomi_elan.cpp).
 static const char *const kFpName[FP_NB] =
 #if defined(BUILD_NAOMI2)
-  { "sh4", "rend", "tex", "gxw", "ta", "arm", "aica", "snd", "jit", "elan", "mem", "pad" };
+  { "sh4", "rend", "tex", "gxw", "ta", "arm", "aica", "snd", "jit", "elan", "mem", "pad", "cart" };
 #else
-  { "sh4", "rend", "tex", "gxw", "ta", "arm", "aica", "snd", "jit", "disc", "mem", "pad" };
+  { "sh4", "rend", "tex", "gxw", "ta", "arm", "aica", "snd", "jit", "disc", "mem", "pad", "cart" };
 #endif
 
 struct FpSample
@@ -556,6 +556,7 @@ void frame_prof_vblank()
   s->b[FPB_DISC] = g_fp.disc;
   s->b[FPB_MEM]  = g_fp.mem;
   s->b[FPB_PAD]  = g_fp.pad;
+  s->b[FPB_CART] = g_fp.cart;
 
   // sh4 is the residual, so a bracket that double-counts shows up as a
   // shrinking sh4 rather than as a frame time that does not add up. Clamped at

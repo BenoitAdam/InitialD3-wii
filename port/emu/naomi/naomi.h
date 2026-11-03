@@ -22,6 +22,11 @@ typedef bool (*NaomiCartReadFn)(void* user, u32 offset, u32 length, u8* dst);
 void naomi_SetCart(NaomiCartReadFn read, void* user, u32 size);
 bool naomi_CartRead(u32 offset, u32 length, u8* dst);
 u32 naomi_CartSize();
+// Host work on the cart image running in the background: while `busy` says so,
+// each vblank gives it a slice of the frame (naomi_CartSlice).
+typedef bool (*NaomiCartBusyFn)(void* user);
+void naomi_SetCartBusy(NaomiCartBusyFn busy);
+void naomi_CartSlice();
 
 // ---- Diagnostics -----------------------------------------------------------
 struct NaomiStats
@@ -59,6 +64,10 @@ struct NaomiFrameInfo
 };
 typedef void (*NaomiFrameHook)(const NaomiFrameInfo& info);
 void naomi_SetFrameHook(NaomiFrameHook fn, u32 period);
+// REFLECTIONS: where a skipped reflection build leaves from pc (0: not its
+// block, or every build is made), and whether the build at that row is skipped.
+extern "C" u32 naomi_ReflectionExit(u32 pc);
+extern "C" u32 naomi_ReflectionSkip(u32 row);
 void naomi_VBlank();
 void naomi_OnStartRender();
 // Called from the update cascade: logs the CPU state once if execution ever

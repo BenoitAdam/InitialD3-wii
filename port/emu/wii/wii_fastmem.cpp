@@ -215,6 +215,7 @@ static u32 s_zero_page  = 0;                  // shared read-only zero page (phy
 // read-only protection (real hardware). Dolphin ignores the PP bits, so there
 // every first access, read or write, gets its own frame.
 static bool s_zero_page_ro = true;
+extern "C" int g_mem_sweep_preset;            // naomi_frontend.cpp / launch page
 static u32 s_reclaims   = 0;
 static u32 s_reclaimed  = 0;                  // pages freed by all reclaims
 static u32 s_alloc_fails = 0;
@@ -718,9 +719,18 @@ static void clock_run(u32 want, u32 max_evict, u32 max_scan)
     free_lowest_first(first_free);
 }
 
-// Below this many free frames the fault handler sweeps synchronously.
+// Below this many free frames the fault handler sweeps synchronously, with
+// interrupts off, so a sweep has to stay short. Until 2 MB were free again it
+// took 191 ms in one frame on a real Wii (log 15: 511 pages), and past a full
+// turn of the clock it takes hot pages as well, which fault straight back. MEM
+// SWEEP = SHORT frees SWEEP_PAGES and looks at SWEEP_MAX_SCAN pages at most, and
+// the next fault that finds too few frames does the next bit. Only with next to
+// nothing left does it look for as long as it takes.
 #define POOL_LOW_PAGES     64u                // 256 KB
-#define POOL_REFILL_PAGES  512u               // ...until 2 MB are free again
+#define POOL_REFILL_PAGES  512u               // 2 MB (LEGACY): ...until 2 MB are free again
+#define SWEEP_PAGES        32u                // ~12 ms at 0.37 ms a page
+#define SWEEP_MAX_SCAN     2048u
+#define POOL_EMPTY_PAGES   8u
 // The per-vblank tick keeps this many free so the handler rarely has to.
 #define POOL_SOFT_PAGES    1024u              // 4 MB
 #define TICK_MAX_EVICT     24u
@@ -733,7 +743,14 @@ static u32 page_alloc(void)
     {
         s_reclaims++;
         const u32 before = s_free_count;
-        clock_run(POOL_REFILL_PAGES, ~0u, ~0u);
+        if (!g_mem_sweep_preset)
+            clock_run(POOL_REFILL_PAGES, ~0u, ~0u);
+        else
+        {
+            clock_run(s_free_count + SWEEP_PAGES, SWEEP_PAGES, SWEEP_MAX_SCAN);
+            if (s_free_count < POOL_EMPTY_PAGES)
+                clock_run(POOL_LOW_PAGES, ~0u, ~0u);
+        }
         s_reclaimed += s_free_count > before ? s_free_count - before : 0;
     }
     if (s_free_count == 0)

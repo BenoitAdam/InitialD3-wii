@@ -90,6 +90,14 @@ enum CoreOptionId
     OPT_ELAN_POINT,
     OPT_ISP_CULL,
     OPT_ELAN_BOX,
+    OPT_REFLECTIONS,
+    OPT_DEPTH_MEASURE,
+    // Their pages show them last, wherever they are here.
+    OPT_JIT_COLD_ENTRY,
+    OPT_DIMM_AHEAD,
+    OPT_FIFO_WAKE,
+    OPT_MEM_SWEEP,
+    OPT_FIFO_SIZE,
     kCoreOptionCount
 };
 
@@ -242,6 +250,23 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // program) drops the lists out of the picture before they are drawn.
     {"3D LIST CULL  ", "3D T&L GPU: skips 3D models out of the picture, and most depth measuring (faster)",
      PAGE_DEPTH, 3, 4, {"OFF (LEGACY)", "BEHIND CAMERA", "OUT OF VIEW", "VIEW + MODELS"}, {0, 1, 2, 3}},
+    // The game rebuilds the car's reflection map in software. 1 in 4 is the Wii's
+    // default (owner, log 15: looks fine from the outside cameras).
+    {"REFLECTIONS   ", "how often the car body's reflection map is rebuilt: less often is faster", PAGE_DEPTH, 3, 4,
+     {"EVERY FRAME", "1 FRAME IN 2", "1 FRAME IN 3", "1 FRAME IN 4"}, {1, 2, 3, 4}},
+    // Frames with no pin (fly-bys, replays): see recordForGpu.
+    {"DEPTH MEASURE ", "fly-bys and replays: keep the race's near plane (faster) or measure the exact one", PAGE_DEPTH,
+     1, 2, {"EXACT (LEGACY)", "RACE PLANE"}, {0, 1}},
+    {"JIT COLD ENTRY", "timeslice exit after the block: no taken branch at each entry, 12 B less", PAGE_RECOMPILER,
+     1, 2, {"OFF (LEGACY)", "ON (AFTER BLOCK)"}, {0, 1}},
+    {"DIMM AHEAD    ", "decode streamed game data (the music) ahead on a thread: small slices, no stutter", PAGE_AUDIO,
+     1, 2, {"OFF (ON DEMAND)", "ON (THREAD)"}, {0, 1}},
+    {"GX FIFO WAKE  ", "FIFO full: the CPU goes on after 32 KB were read, not 112 KB (heavy scenes)", PAGE_DEPTH, 1, 2,
+     {"HALF (LEGACY)", "NEAR FULL"}, {0, 1}},
+    {"MEM SWEEP     ", "guest memory nearly full: free a little at a time, or 2 MB at once (a 200 ms stall)",
+     PAGE_RECOMPILER, 1, 2, {"2 MB (LEGACY)", "SHORT"}, {0, 1}},
+    {"GX FIFO SIZE  ", "room for what the CPU sends the GPU: heavy scenes wait less for it to catch up", PAGE_DEPTH, 1,
+     2, {"256 KB (LEGACY)", "512 KB"}, {0, 1}},
 };
 
 } // namespace idas3

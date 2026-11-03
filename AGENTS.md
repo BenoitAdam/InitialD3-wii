@@ -22,12 +22,16 @@ it exists.
 ### Status (2026-10-30)
 
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
-- Menus/attract/car select: 100% speed. Race: ~38-41 fps with every frame drawn
-  (FRAMESKIPPING 0); ~94-103% speed with FRAMESKIP AUTO (1 frame in 4 drawn).
-- Last real-Wii log analysed: **log 12** (2026-10-30, race Akina uphill): 36-41 fps, p50 24.8
-  ms, `rend` 3.15 but `elan` 8.0: 3D LIST CULL only moved the time, recording lists is now the
-  target (OPTIMIZATION.md "What is left" 1, built, **awaiting log 13**). Night attract demo
-  ~57-60 fps. Open bug: owner says the enemy car's lights display wrong (no detail yet).
+- Menus/attract/car select: 100% speed. Race: ~42-47 fps with every frame drawn
+  (FRAMESKIPPING 0); FRAMESKIP AUTO last measured at ~94-103% speed (1 frame in 4 drawn).
+- Last real-Wii log analysed: **log 16** (2026-11-01, race Akina uphill, no diagnostics, MEM SWEEP
+  2 MB): at 80-86K vertices 48-51 fps, p50 20.2-21 ms (`sh4` 9.3, `rend` 2.7, `elan` 5.0, sound
+  2.2), p99 25; heavy start of the race 41-46 fps. Night demo 55.5-60.8 fps, every frame drawn.
+  The owner's "MEM SWEEP SHORT hangs" run was a TEST press (reproduced on Windows); the sweep code
+  never ran, so **SHORT is still untested**. Built after it, **awaiting log 17**: GX FIFO SIZE,
+  `[game] TEST button pressed` log line. REFLECTIONS default 1 in 4 is the owner's choice for the
+  Wii (a Wii U could keep every frame, to decide later).
+  Open bug: owner says the enemy car's lights display wrong (to look at in a later session).
 - 3D LIST CULL (RENDERING page, last row, default VIEW + MODELS; 2026-10-30): each GPU fetch program keeps its list's model-space bounding box; when the ELAN
   records a list, the box under the list's matrix drops lists behind the camera or out of the
   picture and gives the depth range without measuring. Windows race: drawn per render 116.6K
@@ -37,8 +41,9 @@ it exists.
   models. Owner's first test: Dolphin OUT OF VIEW dropped to ~10% once the player had control;
   with the pin fix (out-of-view lists that reach the near plane hold the pin, unpinned frames
   measure only the nearest lists) the owner confirms it fixed.
-- Music tempo follows emulation speed (the game streams it through the SH-4), so music is
-  right only at 100%.
+- Music tempo follows emulation speed with SOUND CLOCK EMULATED (the game streams it through the
+  SH-4), so it is right only at 100%. REAL TIME sounds right to the owner: it becomes the default
+  once the speed tests are over (owner, 2026-11-01). Do not ask about its cost.
 - Attract mode (no coin, ~20 s after the title) runs a **night** demo race: 6-11 point lights
   per list. Its crash on the Wii is fixed (CPU T&L fixed buffers; owner: "demo works now",
   2026-10-29) but it ran at a few fps, every list lit on the CPU. NIGHT LIGHTS = GPU (APPROX)
@@ -78,6 +83,7 @@ current work:
 | `port/src/game/game_runner.cpp` | Runs the core on the Wii: options -> `g_*_preset` globals (array in `CoreOptionId` order, static_assert), pads -> JVS, `[prof]` blocks, async log |
 | `port/src/ui/launcher.cpp` | Menus; `options.txt` saved as `LABEL=VALUE`, matched by label |
 | `port/src/core/log.cpp` | Log file, async ring mode (`log::setAsync`) |
+| `port/src/core/dimm_image.cpp` | Decrypted reads of the game image from the CHD: run cache, stream read-ahead (Wii: thread under the emulation's priority, given 1 ms slices at vblank by `naomi_CartSlice`) |
 | `port/src/run/run_main.cpp` | Windows headless runner `idas3wii_run` (all diagnostics flags) |
 | `port/emu/naomi/naomi_frontend.cpp` | Core init/run/settings, idle-loop skip (`naomi_IdleCycleScale`), assert/BIOS-entry traps |
 | `port/emu/naomi/naomi_board.cpp` | DIMM board, cart DMA, register counters |
@@ -142,9 +148,15 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--cull 0/1/2` | BACKFACE CULL in the snapshots: 2 = the polygons' cull modes (launcher ON), 1 = the other winding |
 | `--list-cull 0/1/2/3` | 3D LIST CULL with `--gpu-tnl`: 1 = behind the camera, 2 = out of view, 3 = also whole models (launcher default). Prints `3D list cull per frame` and `3D list boxes ... N STALE` (every box used is checked against its list's records, every model stepped over against its block: must stay at 0) and `record digest` (all that the renderer is handed: for a refactor of the recording side, two runs at the same value must match line for line; run them one at a time, four at once lost one) |
 | env `IDAS3_GX_DEPTH=N:F:rules;...` | each snapshot redrawn with the Wii's 24-bit Z (near N, far F; N 0 = exact) and other depth rules, `_diffK.png` + winning lists of the differing pixels; a config against itself with `j0.5` = pixels that flicker (rules in `soft_renderer.cpp`, `GxDepth`). Race: `0:1:geq+cull;0.00999:100100:geq+cull;0.00999:100100:geq+cull+j0.5+r1` |
-| `--histo-from F` | PC histogram from frame F, top 64 ranges of 64 bytes (best tool when stuck without a hang); the wait-for-frame loop 0C20C840 + 0C211880 is ~half of it here (the runner has no idle skip) |
+| `--histo-from F` | PC histogram from frame F, top 64 ranges of 64 bytes (best tool when stuck without a hang); the wait-for-frame loop 0C20C840 + 0C211880 is ~half of it here (the runner has no idle skip). Env `IDAS3_HISTO_FILE=path` writes every bucket, to compare two parts of the game |
 | `--disasm A:B[,C:D]` | SH-4 code of those hex ranges at the end of the run (opcode + format string; run past ~frame 4600 for the game's code) |
-| `--trace-from PC`, `--trace-pc a,b`, `--watch ADDR`, `--path-after-elan` | SH-4 tracing |
+| `--work-from F[:T]` | a `[work]` line per frame from F: SH-4 instructions outside the wait loop (what a Wii frame really has to run), the reflection routine, the copy loop, CHD hunks decoded. With T, frames over T instructions and the others get a PC histogram each, heaviest difference first |
+| `--trace-from PC`, `--trace-at F`, `--trace-pc a,b`, `--watch ADDR`, `--path-after-elan` | SH-4 tracing (`--trace-at`: arm at frame F; 40 hits per address) |
+| `--dimm-ahead 0/1` | DIMM AHEAD (default 0 here, the launcher's is on): run cache + stream read-ahead; on Windows the decode is done on the spot |
+| `--reflection N` | REFLECTIONS: one reflection map build in N (default every one, the launcher's is 4) |
+| `--depth-plane 0/1` | DEPTH MEASURE: 1 = RACE PLANE, frames with no pin keep the race's near plane |
+| env `IDAS3_NEAR_TRACE=1` | a `[near]` line per render: pin, frame near plane, vertices measured and why |
+| env `IDAS3_CART_TRACE=1` | a `[cart]` line per read of the game image (offset, length) |
 | `--area1-census` | who writes the 32-bit VRAM interface |
 | `--dump-ram/-vram/-aica/-elan FILE` | memory dumps at the end (never commit them) |
 | env `IDAS3_RENDER_TRACE=FROM:TO` | print each render's FB registers |
@@ -194,7 +206,10 @@ probe, ELAN draw split, fetch programs/patches/ring passes); `[CC]` JIT call-out
 
 - If the game reads the main-board TEST button as pressed (MIE maple 0x86 sub 0x31, reply
   byte in(5) bit 4, active low) it enters the BIOS SYSTEM MENU, which looks like progress.
-  in(5)=0xF9 is the safe value.
+  in(5)=0xF9 is the safe value. On the Wii, TEST is D-pad LEFT (GC pad, Classic, Wiimote with a
+  Nunchuk) and one tap is enough. In a log it reads like a crash: `[elan] write unhandled
+  00800018`, `CCN: I-cache disabled (pc=AC0193D6)`, `[naomi] write BOARDID`, no more cart DMA, then
+  ~40 s later `005F7050` writes and a text screen. Check for `[game] TEST button pressed` first.
 - ELAN reg 0x74: bit0 = texture DMA done, bit1 = command done. Missing bit0 = hang after
   WARNING.
 - ELAN display lists are **chained** (a buffer's last command links to the next): follow a tail
@@ -233,6 +248,15 @@ probe, ELAN draw split, fetch programs/patches/ring passes); `[CC]` JIT call-out
   the ELAN flips CullMode per model (`cwCulling`) and for the mirror's projection
   (`naomi_elan_tnl.cpp`). Translucent lists must keep writing depth: without a sort the HUD's
   layers need it.
+- FPROF's `sh4` is the residual: whatever nothing brackets lands in it. Spikes there are not
+  game work if the runner's `--work-from` line is flat. Blocking host work on the emulation
+  thread needs its own bucket (`cart` is the latest).
+- The race streams its music from the image as **two channels at once** (8 KB each every ~44
+  frames): a one-run cache threw out the other channel's run on every read and detected no
+  sequence. Think in streams, not in "the last read".
+- The launcher's `options.txt` is by label but `autolaunch.txt` holds preset values **by
+  position**: add new rows at the end of `CoreOptionId`, whatever their page (a page shows its
+  rows in table order, so they land last on it).
 - With 3D LIST CULL a list's ELAN pages are checked (PTE change bit) when the ELAN records it,
   once a render, and the draw reuses that check: a game write between the ELAN run and the render
   would go unseen until the next render (Windows census: never happens in Initial D; the GPU
@@ -249,9 +273,9 @@ probe, ELAN draw split, fetch programs/patches/ring passes); `[CC]` JIT call-out
   `naomi_elan_tnl.cpp`): fitted distance attenuation (dimmer core, faint tail past the reach),
   parabola for saturating spots, duplicates merged, lights out of a list's reach left out, at
   most 8. Unverified on hardware: GX attenuation above 1 (merged headlights) and the
-  spot-direction sign (from libogc's disassembly: `GX_InitLightDir` negates). Each point-lit
-  list is measured every render (box for the light cull): ~55K vertex reads a night frame.
-  NIGHT LIGHTS = CPU keeps the exact CPU path (a few fps at night on a Wii).
+  spot-direction sign (from libogc's disassembly: `GX_InitLightDir` negates). A point-lit
+  list's light cull uses its bounding box; with no box (3D LIST CULL OFF) each such list is
+  measured every render, ~55K vertex reads a night frame. NIGHT LIGHTS = CPU keeps the exact CPU path (a few fps at night on a Wii).
 - Modifier volumes, the credit-digit glyph, in-race memory headroom, a live window + keyboard
   for the Windows build.
 - Windows build has no audio; sound changes can only be heard on Wii/Dolphin.

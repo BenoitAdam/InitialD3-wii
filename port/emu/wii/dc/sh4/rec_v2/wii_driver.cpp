@@ -294,6 +294,15 @@ extern "C" int get_jit_fschg_preset();
 // it is a separate switch from fpu_pin rather than part of it.
 extern "C" int get_jit_fmov_preset();
 
+// JIT COLD ENTRY preset (naomi_frontend.cpp): the timeslice exit after the
+// block's tail. s_cold_entry = the prologue's blt, until ngen_Compile places it.
+extern "C" int g_cold_entry_preset;
+static ppc_label* s_cold_entry;
+
+// REFLECTIONS preset (naomi_frontend.cpp): skipped reflection map builds.
+extern "C" u32 naomi_ReflectionExit(u32 pc);
+extern "C" u32 naomi_ReflectionSkip(u32 row);
+
 // Forward decls: GPR/FPR allocation maps + flush/reload (defined later in this file).
 ppc_ireg GetIntReg(u32 reg);
 ppc_freg GetFloatReg(u32 reg);
@@ -395,7 +404,18 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 	}
 
 	ppc_addic(ppc_cycles,ppc_cycles,-block->cycles,1);
-	
+
+	// JIT COLD ENTRY: blocks are entered ~95K times a frame and end a timeslice
+	// ~1870 times (real Wii, race). Inline, each entry takes a branch over 12
+	// bytes it never runs, in the first line of the block. Here the entry falls
+	// through and the exit waits after the block's tail (ngen_Compile).
+	if (g_cold_entry_preset)
+	{
+		s_cold_entry = ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);		// blt -> exit stub
+		return;
+	}
+
 	ppc_label* jdst=ppc_CreateLabel();
 	ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);
 
@@ -3097,6 +3117,22 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	ColdReset();          // mem-op cold (slow) fragments deferred to block end
 	ngen_Begin(block,force_checks);
 
+	// REFLECTIONS (naomi_frontend.cpp): this block is the reflection map's row
+	// loop; a skipped build leaves at its first row. Volatile registers are free
+	// at block entry and C keeps the pinned ones.
+	const u32 reflection_exit = naomi_ReflectionExit(block->start);
+	if (reflection_exit)
+	{
+		ppc_ori(ppc_rarg0,GetIntReg(reg_r4),0);		// mr rarg0,R4 (the row)
+		ppc_call(&naomi_ReflectionSkip);
+		ppc_cmpi(ppc_cr0,ppc_rrv0,0,0);
+		ppc_label* build=ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq build
+		ppc_li(ppc_next_pc,reflection_exit);
+		ppc_jump(loop_no_update);
+		build->MarkLabel();
+	}
+
 	// JIT_HOTBLOCKS: bump this block's execution counter. Emitted AFTER
 	// ngen_Begin so it counts real body executions — past the SMC check and the
 	// cycle-underflow exit — at a point where rarg0/rarg1 are still scratch
@@ -4894,6 +4930,16 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	// cold fragments look like bad codegen when its hot path may be fine, so
 	// the two are reported separately.
 	u8 *const _hb_cold_start = (u8*)emit_GetCCPtr();
+
+	if (s_cold_entry)     // JIT COLD ENTRY: the timeslice exit (see ngen_Begin)
+	{
+		snat blt_disp = (u8*)emit_GetCCPtr() - (u8*)s_cold_entry;
+		verify(blt_disp >= 0 && blt_disp < 32768);
+		s_cold_entry->MarkLabel();
+		s_cold_entry = 0;
+		ppc_li(ppc_next_pc,block->start);
+		ppc_jump(loop_do_update_write);
+	}
 
 	FlushCold();          // emit the out-of-line mem slow paths after the block tail
 	make_address_range_executable((u8*)rv, (u8*)emit_GetCCPtr()-(u8*)rv);

@@ -58,6 +58,8 @@ volatile bool sh4_int_bCpuRun = false;
 // Debug hook (Initial D3 port, host builds only): called before every
 // interpreted instruction when set. Used by the bring-up runner's --watch.
 void (*g_sh4_step_hook)(u32 pc, u32 op) = nullptr;
+// Called before an instruction is fetched: may change next_pc (runner's --reflection).
+void (*g_sh4_pc_hook)() = nullptr;
 // Cycles charged per interpreted instruction when > 0 (runner's --cpi).
 s32 g_sh4_cpu_ratio_override = 0;
 #endif
@@ -153,6 +155,10 @@ void Sh4_int_Run()
 		// Inner loop: dispatch one timeslice worth of opcodes
 		do
 		{
+#if HOST_OS != OS_WII
+			if (g_sh4_pc_hook)
+				g_sh4_pc_hook();
+#endif
 			const u32 op = ReadMem16(next_pc);
 #if HOST_OS != OS_WII
 			if (g_sh4_step_hook)

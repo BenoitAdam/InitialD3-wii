@@ -81,6 +81,9 @@ void elan_gx_canvas(float& width, float& height);
 // left unwritten since render `since` (checks its pages for this render).
 u32 elan_gx_render();
 bool elan_gx_unwritten_since(const void* p, u32 bytes, u32 since);
+#if !defined(GEKKO)
+void elan_gx_box_check(const u32* vtx, u32 count, u32 vsize, const float box[6]);   // the runner's stale box check
+#endif
 
 #if !defined(GEKKO)
 // Windows runner: once per drawn render (soft_renderer.cpp StartRender), the

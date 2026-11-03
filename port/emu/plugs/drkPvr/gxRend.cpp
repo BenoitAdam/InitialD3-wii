@@ -1285,6 +1285,10 @@ static INLINE void fp_GX_WaitDrawDone() { FP_T0(t); GX_WaitDrawDone(); FP_ACC(gx
 // The FIFO is the command buffer for the GX hardware. 
 // 256KB is a standard size for most homebrew applications. May need more for NullDC4Wii to avoid FIFO error ?
 #define DEFAULT_FIFO_SIZE (256 * 1024)
+#define LARGE_FIFO_SIZE (512 * 1024)  // GX FIFO SIZE: ELAN index draws go through the FIFO, ~6 B a vertex
+#define FIFO_WAKE_BYTES (32 * 1024)   // GX FIFO WAKE: read this much, then go on
+extern "C" int g_fifo_wake_preset;    // naomi_frontend.cpp / launch page
+extern "C" int g_fifo_size_preset;
 
 // Regions the YUV converter has actually written - dc/pvr/pvr_if.cpp.
 // Declared here rather than with the preset block at the top of the file:
@@ -1306,7 +1310,7 @@ u32 plus_tex_arena_size = 0;
 // Double buffering setup: frameBuffer[0] and [1] prevent screen tearing.
 static void *frameBuffer[2] = {NULL, NULL};
 static GXRModeObj *rmode;
-static u8 gp_fifo[DEFAULT_FIFO_SIZE] __attribute__((aligned(32)));
+static u8 gp_fifo[LARGE_FIFO_SIZE] __attribute__((aligned(32)));
 static int fb = 0; // Current framebuffer index
 
 // ============================================================================
@@ -13363,9 +13367,24 @@ bool InitRenderer()
   fb ^= 1;
 
   // setup the fifo and then init the flipper
-  memset(gp_fifo, 0, DEFAULT_FIFO_SIZE);
+  const u32 fifoSize = g_fifo_size_preset ? LARGE_FIFO_SIZE : DEFAULT_FIFO_SIZE;
+  memset(gp_fifo, 0, fifoSize);
 
-  GX_Init(gp_fifo, DEFAULT_FIFO_SIZE);
+  GX_Init(gp_fifo, fifoSize);
+  // GX FIFO WAKE. A full FIFO suspends this thread until the GP has read down
+  // to the low watermark, half the FIFO by default: 112 KB, ~1.6 ms a render on a
+  // real Wii in the race's heavy scenes, when a few KB of room would do. Set
+  // straight in the CP (0x2C/0x2E): libogc's GX_SetGPFifo would also reload the
+  // read and write pointers, from values older than what GX_Init just sent.
+  if (g_fifo_wake_preset)
+  {
+    const u32 low = fifoSize - GX_FIFO_HIWATERMARK - FIFO_WAKE_BYTES;
+    const u32 level = IRQ_Disable();
+    volatile u16* const cp = (volatile u16*)0xCC000000;
+    cp[0x2C / 2] = (u16)low;
+    cp[0x2E / 2] = (u16)(low >> 16);
+    IRQ_Restore(level);
+  }
   // Draw-done interrupt callback for ASYNC_RENDER()'s non-blocking vblank
   // present (gx_present_if_done). Registered unconditionally: with the preset
   // off it only sets an unused flag.

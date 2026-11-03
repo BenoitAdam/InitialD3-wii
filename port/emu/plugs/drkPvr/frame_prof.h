@@ -47,6 +47,8 @@
 //   disc  libGDR_ReadSector() - the SD/USB fread behind the emulated GD-ROM
 //   pad   host controller reads - maple_DoDma() and the scanline-driven
 //         exit-combo poll, i.e. PAD/WPAD_ScanPads and Sixaxis USB traffic
+//   cart  NAOMI: cart DMA reads (SD, CHD decompression, DES) and the slices of
+//         the frame given to the read-ahead thread (naomi_board.cpp)
 //
 // Per-frame EVENT counts ride along, because a spike's size is only half the
 // story and its cause is usually the count: dec= textures decoded, blk= blocks
@@ -131,6 +133,7 @@ struct FrameProfAcc
   u32 disc;      // ticks in libGDR_ReadSector()
   u32 pad;       // ticks reading host controllers
   u32 mem;       // ticks paging guest memory in and out (NAOMI 2: faults, the vblank compression tick)
+  u32 cart;      // ticks in cart reads and read-ahead slices (NAOMI)
   u32 gxw;       // ticks blocked on the GP, all call sites
   u32 gxw_rend;  // ...of which were taken inside DoRender(), so `rend` can be
                  // reported net of them without losing the ones taken outside

@@ -7,17 +7,133 @@ the profiler logs the owner sent from a real Wii ("REAL WII LOG n") and from Dol
 ## The target
 
 A race frame must fit in **16.7 ms** (60 fps). On a real Wii, with every frame drawn
-(FRAMESKIPPING 0), the race is at **~24-25 ms** (log 12, Akina uphill, 36-41 fps, p50 24.8):
+(FRAMESKIPPING 0), the race is at **~20.5 ms** (log 16, Akina uphill, ~80-86K ELAN vertices: 48-51
+fps, p50 20.2-21, p99 25):
 
-| Bucket | log 11 | log 12 | What it is |
-| --- | --- | --- | --- |
-| sh4 | 9.4-9.6 | 10.4 | the game's own code through the dynarec (5% of frames: ~20 ms) |
-| rend | 7.2-7.45 | 3.15 | GX draw of the frame, mostly ELAN GPU lists |
-| elan | 4.1-4.2 | 8.0 | ELAN command walk (2.7) + recording lists for the GPU (5.4) |
-| arm | 1.4 | 1.25 | ARM7 sound CPU |
-| aica | 1.0-1.7 | 1.1 | AICA sound synthesis |
+| Bucket | log 11 | log 12 | log 13 | log 15 | log 16 | What it is |
+| --- | --- | --- | --- | --- | --- | --- |
+| sh4 | 9.4-9.6 | 10.4 | 10.2 | 9.2 | 9.3 | the game's own code through the dynarec |
+| rend | 7.2-7.45 | 3.15 | 2.85 | 2.85 | 2.7 | GX draw of the frame, mostly ELAN GPU lists |
+| elan | 4.1-4.2 | 8.0 | 5.5 | 5.1 | 5.0 | ELAN command walk (2.0) + recording lists for the GPU (3.0) |
+| arm | 1.4 | 1.25 | 1.25 | 1.23 | 1.16 | ARM7 sound CPU |
+| aica | 1.0-1.7 | 1.1 | 1.05 | 1.2 | 1.06 | AICA sound synthesis |
 
-Log 12 is the first with 3D LIST CULL (OUT OF VIEW): `rend` lost 4.2 ms but `elan` gained 3.9,
+So ~4 ms must still go for a full-speed, every-frame-drawn race, and the SH-4 is nearly half the
+frame. Scenes differ: at the race's start (88-104K vertices in, 71-83K on the GPU) log 16 gives
+41-46 fps, `elan` 5.9-6.9.
+
+Log 16 (two runs, 2026-11-01):
+- **The "MEM SWEEP SHORT hang" was the TEST button.** The hang log's run read TEST as pressed at
+  frame ~2050: the game resets the ELAN, turns the caches off at AC0193D6, restarts at its entry
+  point and opens the BIOS SYSTEM MENU (the text screen at frames 4440-5400, 870 TA vertices). One
+  `--press 2600:test` on Windows gives the same lines in the same order, and a run with no press
+  none of them. The sweep code cannot have run: it needs under 256 KB free and this run never went
+  under 4.5 MB, with 0 page faults at that moment. So SHORT is still **untested**. The log cannot
+  say what pressed it; `[game] TEST button pressed at frame N` now does.
+- **Night demo: done.** 21 blocks over frames 5040-7560, every frame drawn: 55.5-60.8 fps, 16 of
+  them at 59+, the slowest at 88-102K vertices in. The slow stretch (frames 6240-7080) went from
+  37-47 fps in log 14 (diagnostics on, ~12% slower) to 55.5-60.5. Log 14 left the demo at ~7300, so
+  its later blocks are not the same scene.
+- **The race costs 4.3 ms more than the demo at fewer vertices**, nearly all that separates it
+  from 60 fps. Demo at frames 7320-7440 (98K vertices in, 75K on the GPU) against race at 13320-13440
+  (80K, 52-58K): `sh4` 7.1 -> 9.3, `elan` 3.85 -> 5.1 (`commands` 1.54 -> 2.0), `arm` + `aica` 1.63 ->
+  2.2, `rend` 2.4 -> 2.7. ELAN model lists walked 219 -> 270 a frame.
+  Windows, same settings (`IDAS3_HISTO_FILE`, driving route in the in-car view): **only 11% more SH-4
+  instructions**, 643K -> 712K a frame, against 33% more `sh4` time. It is not one job: ~200K go to
+  race-only code over dozens of ranges, ~130K of demo-only code go away. The biggest, 0C222A00-E7F
+  (+27K, 4%), is a large branchy function, not a loop, so nothing like the reflection map to
+  throttle. JIT call-outs (log 14) 4500 -> 5800 a frame: `sync_fpscr` +650, `writemem` +370, ~0.25
+  ms at most. That leaves ~1 ms of the `sh4` gap unexplained; the route does not drive like a player,
+  so its count may be low. [HOT] lines of a race and a demo in the same log would show it.
+- **GX FIFO WAKE works, partly.** At 58K vertices a render: full 2.0 times a render (was 1.0),
+  `cached programs` 2.2 ms (was 2.9), against ~1.33 without any wait (23 ns a vertex). The demo's
+  heaviest blocks still spend 2.55-2.96 ms there. The FIFO fills because the index draws go through
+  it, ~6 B a vertex. No crash or glitch reported with it on.
+- **Race:** 48-51 fps at 80-86K vertices against log 15's 46.5-48.7, p50 20.2-21 against 20.8.
+  `sh4` unchanged. The scenes differ too much to credit anything: the owner's "maybe a bit better"
+  is what the log says.
+- **Hitches, all at the race's start with MEM SWEEP 2 MB:** f11808 195 ms (`tex` 122, `mem` 72,
+  224 textures, 471 pages), f12049 62 ms, f12366 261 ms (`mem` 238, 701 pages, 1 texture). Free
+  fell to 268 KB. In the last one a single fault paid for 2 MB, which is what SHORT is for.
+- **Memory** after that sweep: 3.4-3.7 MB free over the last ~22 s, 11 MB compressed into 3.8 MB. 3 reclaims
+  and 0 failed at the only allocation line (frame 11760). The race lasted ~46 s, so two minutes stay
+  unmeasured.
+- Loading (not the race): `cart` frames of 85-177 ms (f3117, f4140, f4439, f11207, f11366), reads
+  the read-ahead could not see coming.
+
+Before log 16, with the outside cameras (102-127K vertices in) log 15 gave 41-46 fps, `elan` 6.3-7.3
+and p50 22.5-23.3.
+
+Log 15 (no diagnostics, REFLECTIONS 1 in 4, DIMM AHEAD, JIT COLD ENTRY, DEPTH MEASURE) settles
+log 14's questions:
+- **The stutter was the cart reads.** Race tail `sh4` ~21 -> 9.8-10, p99 38-40 -> 25-29. `cart`
+  0.03-0.12 ms a frame, tail 0.1-0.4; every run in the race came from the read-ahead, none late.
+- **Speed:** like for like (~80K vertices, frames 13440-13800) 46.5-48.7 fps, p50 20.8, against
+  log 13's 45-47 fps, p50 21.9: -1.1 ms, all of it `sh4`. REFLECTIONS at 1 in 4 skips 15% of the
+  instructions, so ~1.5 ms was expected: that code is cheaper than the average instruction.
+- **JIT COLD ENTRY shows nothing yet:** rest-of-frame IPC 0.53-0.56 and L1I 6560-7340/ms against
+  0.51-0.55 and 6200-7300 in log 13. No A/B was run.
+- **Race intro fixed:** 50-60 fps at frames 12000-12240 against log 14's 32-37; 0.6-1.6K vertices
+  measured against 7.6-16.6K, T&L 2.8-3.8 against 6-8 ms. The slow stretch of the night demo was
+  not reached (coin at ~6240), so that fix has no Wii figure. Same frames before it: 590-1100
+  measured against 500-2360.
+- **New hitch, memory:** f12531 215 ms (`mem` 191, 511 pages) and part of f12003's 193 ms (`tex`
+  119, `mem` 73.5, 220 textures, 517 pages): the synchronous sweep to 2 MB free, reached because
+  free fell to 260 KB (log 14 stayed near 900, and read-ahead takes 140 KB from the pool). It fired
+  in a longer race than before. See "Done after log 15".
+- **GX FIFO:** full 1.0 times a render at frames 12240-12600, `cached programs` 2.9 ms against
+  1.25, the GP still drawing 4.5-7 ms when the CPU ends. Each overflow waited for 112 KB.
+- Guest memory after the sweep: 3.3-3.7 MB free, falling ~23 KB/s over ~43 s of race, 3 reclaims
+  and 0 failed at the only allocation line (frame 11940). Longer races stay unmeasured.
+
+Before log 15: outside the render the CPU runs at IPC 0.51-0.55 with 16-21% L1 load-miss cycles and
+6200-7300 L1 instruction misses a ms (menus 2300-4500, attract race 5500-6000). The counters give
+no cycle cost for instruction misses, so their share of the time is unmeasured. The frame-time
+tail is the SH-4 too: frame p95 24.5 ms but p99 38; the slowest 5% of frames average `sh4` ~20 ms
+against ~10 typical, worst 33, and `elan` only ~1 ms more. Cause unknown. `cc=0` on those lines
+says nothing: that count only runs with JIT CCALLS on.
+
+Log 14 (Akina uphill, 40-44 fps with JIT CCALLS + HOTBLOCKS on, so ~12% slower, not comparable)
+is the SH-4 census. Typical `sh4` 11.0, tail ~21-22, p95 25.7, p99 40, max 55 ms.
+- **The `sh4` spikes are not game work.** The runner counts each frame's SH-4 instructions
+  outside the wait loop (`--work-from`): race p5 820K, p50 850K, max 880K, no heavy frame. `sh4`
+  is FPROF's residual: anything unbracketed lands in it. Call-outs do not explain the spikes
+  (typical ~5620, worst 7700-8200 while `sh4` doubles) and total only ~1 ms of 11.
+- **Likely cause: cart reads on the emulation thread** (no bracket until now, so unproven: the
+  `cart` bucket measures it in the next log). The race streams its music from the game image as
+  two channels at once, A at image offset 02B8B040, B at 02D2B580, 8 KB each every ~44.4 frames,
+  on consecutive frames. Reads are at odd offsets, so most span two 8-sector runs, and with one
+  run kept each channel threw out the other's: 88 CHD hunks per 1000 frames (each an SD read and
+  an LZMA decode) plus DES over 16 KB, where the data is 22.5 hunks. That is 2 frames in 44, 4.5%
+  of them: the 5% tail. The worst frames sit on that lattice: 267 frames apart in log 14 (6 x
+  44.5), 533 in log 13 (12 x 44.4), and not on the `[prof]` block (96, 3, 30 mod 120).
+- **The biggest SH-4 job is the car's reflection map**: 0C048E80-0C0491BF, ~100 ops a cell x 2048
+  cells, 170K of 850K instructions a frame (20%; ~2 ms if time follows instructions). It builds a
+  64x32 RGB565 panorama of the road side at 0DD1C6C0, cell by cell through tables: seen in a RAM
+  dump as road, trees and sky around the car.
+- 0C20A2A0, ~8500 entries, is the word-copy loop to VRAM (and 32-byte store-queue bursts). Its
+  big job runs every other frame (`copy` 2.8K / 35.6K instructions alternate). What it copies
+  is not identified.
+- Candidates checked and dropped: `sync_fpscr` is already inline, its ~1800 call-outs are real FR
+  bank swaps (item 6). The fixed cost of a call-out kind is small next to 11 ms.
+- Night demo and race intro measured far too many vertices (demo 11-35K a frame, T&L 5-11 ms, 37-47
+  fps against ~60; race intro 7.6-16.6K, 32-37 fps; race proper ~2.3K). Mostly not the unpinned
+  rule first suspected (its `zlo < 2 x nearest` measures ~0): lists wholly behind the camera
+  never got a box. See "Done after log 14".
+- Code cache 83% full (HOTBLOCKS' 15% included); a flush at 92% would stutter. Guest memory free
+  864-1004 KB, flat over ~27 s of race: the 2-minute question stays open.
+
+Log 13 is the first with VIEW + MODELS and the record-side fixes: `elan` -2.5 ms, `rend` -0.3,
+p50 -2.9 ms. 106-170 whole models (131-288 lists) stepped over per frame. To watch: at frames
+11040-11280 (~160 frames) the GX FIFO fills 0.6-0.9 times a render, `cached programs` costs
+2.2-2.7 ms against 1.0-1.4 elsewhere in the race and the speed dips to ~40 fps; everywhere else
+in the race the FIFO count is 0.0. Guest memory free fell from 700 KB to 492 KB over frames
+11400-12120. The one allocation line, just before the race, shows 3 reclaims and 0 failed, and
+the log ends before anything fails, so a longer race is the open question. Colour lists are
+course-dependent: ~30 CPU-fed colour vertices a render on Akina against 4.6K on the runner's
+route, so the TEV item below gains nothing here.
+
+Log 12 was the first with 3D LIST CULL (OUT OF VIEW): `rend` lost 4.2 ms but `elan` gained 3.9,
 so the frame barely moved (the ~3 ms expected did not come). Dropping ~750 of ~1430 lists a
 frame works (drawn: ~60K vertices, ~650 lists), but the lookups moved to record time cost ~3.8
 ms: ~2.7 us a list, on every list, dropped ones included. At the draw the same work is cheap
@@ -32,8 +148,6 @@ With **FRAMESKIP AUTO** (1 frame in 4 drawn) the game logic runs at 94-103%: an 
 costs ~13.5 ms (sh4 9.7, arm 1.35, aica 1.1, ELAN commands 1.2), a drawn one adds 6-8 ms of
 render. Menus, attract mode and car select run at 100%.
 
-So ~8 ms must still go for a full-speed, every-frame-drawn race. The SH-4 side alone is more
-than half the budget.
 
 ## How we measure
 
@@ -80,7 +194,10 @@ than half the budget.
 | 10-28 | Depth measuring spread over 32 renders (log 10 bug, fixed in log 11) | 35 -> 38-41 fps |
 | 10-30 | BACKFACE CULL (flickering trees fix): back faces no longer rasterised, ~350-400 GX cull changes a frame | awaiting log 12 (expect equal or a little less GP time) |
 | 10-30 | 3D LIST CULL: list bounding boxes kept with the fetch programs; lists out of the picture dropped, depth range from the box | log 12: drawn ~60K vertices, `rend` 7.3 -> 3.15 but `elan` 4.1 -> 8.0: race unchanged (36-41 fps); night demo a few fps -> ~57-60 |
-| 10-30 | Whole hidden models stepped over, light sets not rebuilt per material, box rows per matrix, sampled checksums | awaiting log 13 (expect ~2.5 ms of `elan`) |
+| 10-30 | Whole hidden models stepped over, light sets not rebuilt per material, box rows per matrix, sampled checksums | log 13: `elan` 8.0 -> 5.5, p50 24.8 -> 21.9 ms, race 36-41 -> 42-47 fps |
+| 10-30 | DIMM AHEAD, REFLECTIONS, JIT COLD ENTRY, DEPTH MEASURE, boxes for dropped lists | log 15: stutter gone (p99 38 -> 25), p50 21.9 -> 20.8, race intro 32-37 -> 50-60 fps |
+| 11-01 | REFLECTIONS default 1 in 4, MEM SWEEP, GX FIFO WAKE | log 16: 48-51 fps at 80-86K vertices, night demo 55.5-60.8 fps, `cached programs` 2.9 -> 2.2 ms in heavy scenes; MEM SWEEP SHORT still untested (the "hang" was TEST) |
+| 11-01 | GX FIFO SIZE | awaiting log 17 |
 
 ## What was done
 
@@ -173,6 +290,74 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
+### Done after log 16 (awaiting log 17)
+
+- **GX FIFO SIZE** (RENDERING, last row, default 512 KB; `gp_fifo`, gxRend.cpp). The FIFO is in BSS,
+  so the page pool gives up 256 KB, whichever value is chosen. Heavy scenes pay 0.9-1.6 ms a render
+  waiting for it; lighter ones nothing, so nothing changes there. Read `GX FIFO full` (should be
+  ~0) and `cached programs` (~23 ns a vertex). Only runs on a Wii.
+- **`[game] TEST button pressed at frame N`** and the same for SERVICE: see "The target".
+
+### Done after log 15 (log 16 read them)
+
+- **REFLECTIONS** default 1 FRAME IN 4: the owner finds it fine from the outside cameras. A Wii U
+  could keep every frame; that split is for later.
+- **MEM SWEEP** (RECOMPILER, last row, default SHORT; `page_alloc`, wii_fastmem.cpp). The fault
+  handler's sweep frees 32 pages and scans 2048 at most, ~12 ms if pages cost what they did in log
+  15, and the next fault that finds under 256 KB free does the next bit. Below 32 KB free it looks
+  for as long as it takes. 2 MB (LEGACY) is the old sweep. It runs with interrupts off, and Windows
+  cannot run this code.
+- **GX FIFO WAKE** (RENDERING, last row, default NEAR FULL). A full FIFO suspended the emulation
+  until the GP had read 112 KB; now 32 KB. Written straight to the CP's low watermark after
+  `GX_Init` (0xCC00002C/2E, checked in the linked binary: 0x34000), because `GX_SetGPFifo` would
+  also reload the FIFO pointers. Expect `GX FIFO full` to count more, each one shorter: read
+  `cached programs` ms, not the count. Log 16: count 1.0 -> 2.0, 2.9 -> 2.2 ms.
+
+### Done after log 14 (log 15 confirmed)
+
+All on Windows first. What the Wii made of them is under "The target".
+
+- **DIMM AHEAD** (AUDIO page, last row; `dimm_image.cpp`). Six runs of 16 KB kept instead of one
+  (a channel reads across two and has the next ahead, so it holds three; with four the channels
+  still threw each other's out). A run that follows one still kept is a stream: the next is
+  decoded before it is asked for. On a Wii by a thread at priority 32 (emulation 64, log writer
+  80), which holds the CHD under a mutex and never reads guest memory. Below 100% speed the
+  emulation never sleeps, so while the thread has work each vblank gives it 1 ms
+  (`naomi_CartSlice`, in the frame and in the `cart` bucket). A run still being decoded when
+  asked for is waited for. Windows: 88 -> 22 hunks per 1000 frames, exactly the data rate.
+  Each run's slices add up to ~3.5 ms (from `cart`). OFF: one run, decoded when asked for, as
+  before. `[prof]   DIMM runs` shows on demand / ahead /
+  late / started. +80 KB of heap and a 32 KB stack, taken before the core starts.
+- **REFLECTIONS** (RENDERING, default 1 FRAME IN 2). At the reflection map's first row (block
+  0C048E86, R4 = 0) a skipped build jumps to the routine's own "no rows" exit, 0C0491CE, so all
+  its cleanup runs and the last panorama stays in its buffer. Matched on opcodes. Windows: 38
+  instructions instead of 175K on a skipped frame, the rest of the frame unchanged. The kept
+  builds fall on the 32 KB copy's frames (875K / 667K instructions alternating). Snapshots at 1
+  in 4 against every build (CPU path, outside cameras): differences only inside the car's
+  outline, nearly all under 24/255, timer and speed identical to the frame. In the in-car view
+  the car body is not on screen and the frames are byte-identical: that work is wasted there.
+- **JIT COLD ENTRY** (RECOMPILER, last row, default ON). The timeslice exit goes after the block's
+  tail: `blt` instead of a taken `bge` over 12 bytes in the first line of every block, ~95K
+  entries a frame against ~1870 exits. Wii only, so unproven by the runner.
+- **Dropped-list boxes** (no option of its own: 3D LIST CULL OFF turns it off). A list wholly
+  behind the camera with no box was dropped before the renderer, so it never got a program, so
+  never a box: measured again every render, point-lit ones always (log 14: `programs built 0`
+  with 24K vertices measured). Its model-space box is now kept in a 256 x 4 table (40 KB BSS), good
+  while its pages stay unwritten. Models holding such lists can now be stepped over whole.
+  Direct-mapped, two lists on a slot threw each other out every render (~70 lists a render).
+  Windows night demo, with DEPTH MEASURE: vertices measured over the run 425K -> 88K, worst 60
+  frames 32.5K -> 3.8K a frame; every box checked against its records, 0 stale.
+- **DEPTH MEASURE** (RENDERING, default RACE PLANE). Boxes cross the near plane in fly-bys though
+  no vertex does (road lists), and one unmeasured list holds the frame's near plane at its box
+  anyway, so measuring is all or nothing. Lists that may reach the plane now keep their 1-in-32
+  slice on those frames too, whose near plane is then the race's. EXACT is the old rule.
+  Windows night demo: the near plane drops by 2x or more on 2.1% of renders, the largest
+  0.395 -> 0.01. Wii Z emulation at the race plane, demo frames: median 56 pixels of 307K differ
+  from exact. The worst frame (5087 pixels, 7516) was already at 0.01 under the old rule.
+  Not reproduced: the race intro's 7.6-16.6K measured vertices on a Wii (32-37 fps). The runner's
+  route never passes ~2K there, so log 15 alone tells if it is fixed.
+- `cart` FPROF bucket, `recSh4: cache N% full` once a percent (1128 lines in log 14).
+
 ### Guest memory
 
 NAOMI 2 needs 88 MB of guest memory, the race touches ~46.5 MB of non-zero data.
@@ -198,25 +383,36 @@ badly are skipped (`COMP_MAX_BYTES` 2048). On hardware: DTLB walks 0-1% of cycle
 
 ### Sound (not a speed item)
 
-Music is an ADPCM stream the SH-4 refills, so its tempo follows emulation speed. SOUND CLOCK
-REAL TIME was tried and breaks it (the AICA overtakes the refills): keep EMULATED. Correct music
-needs 100% speed, hence FRAMESKIP AUTO for now.
+Music is an ADPCM stream the SH-4 refills, so with SOUND CLOCK EMULATED its tempo follows emulation
+speed and it is only right at 100%. REAL TIME broke it at the 2026-10-17 speeds (the AICA overtook
+the refills), but the owner finds it OK with the log 15 build. Its cost is not measured: at 70%
+speed it should run ~1.4x the sound work per emulated frame, up to ~1 ms on `arm` + `aica`.
+Owner's decision (2026-11-01): good music matters more than those fps below 100%, so REAL TIME
+becomes the default once the speed tests are over. The default stays EMULATED until then, to keep
+logs comparable. The cost does not need measuring, and the question is closed.
 
 ## Tried and dropped
 
 - Software T&L only: cannot reach 60 fps on Broadway (the lighting rewrite gave ~20%).
   Paired-single CPU T&L was considered; GPU T&L was chosen instead.
 - BAT-mapping hot guest RAM: DTLB walks were 0-1% on hardware.
-- Real-time sound clock: breaks the streamed music.
+- Real-time sound clock: broke the streamed music on 2026-10-17; OK in the log 15 build (see Sound).
 - Inlining the FR bank swap in `sync_fpscr` (~1.5K real swaps a frame): ~0.2 ms, not worth it
   yet.
 - Trusting Dolphin's numbers for anything cache-related.
 
 ## What is left, best first
 
+Numbers are kept because the items refer to each other. After log 16 the order is: prove MEM SWEEP
+SHORT and GX FIFO SIZE on a Wii, then item 1 (`elan` 5-7 ms), item 6 (SH-4 9.3 ms: log 16's demo
+against race says it is spread out, see "The target") and item 8 (sound, 2.2 ms, never profiled).
+Sending the index draws as display lists would take `cached programs` (1.1 ms, 2-3 in heavy scenes)
+and the FIFO load off the CPU, at the price of a larger ring and a rewrite of the fetch programs
+(CP arrays cannot be set inside a display list). JIT COLD ENTRY needs an A/B before it counts as a
+gain.
+
 1. **The cost of recording lists** (`elan`, log 12: 5.4 ms over ~1430 lists, ~2.7 us of it
-   per list new with item 9). Built after log 12, awaiting log 13 (`[prof] 3D list cull per
-   frame`, `ELAN ms per frame`, the `elan` bucket):
+   per list new with item 9). Done after log 12, log 13 confirms ~2.5 ms of the ~2.5 expected:
    - 3D LIST CULL = VIEW + MODELS (value 3, default): whole models stepped over before their
      commands are read (`hiddenModel`, naomi_elan_cmd.cpp). Models are 100% pure, hold no
      matrix or light (census) and ~3.1 lists inline in their block, so the union of their
@@ -233,15 +429,16 @@ needs 100% speed, hence FRAMESKIP AUTO for now.
    at OUT OF VIEW over the race and the night demo; every model stepped over is walked by the
    runner against its summary (0 stale). Value 3 is not comparable by digest with value 2: a
    hidden list that lost its own box (its program overwritten) is then not drawn at all.
-   If `elan` stays high, the next steps: prefetch the next list's table entries in the walk,
-   a per-page PTE pointer with an uncached read for page checks (item 2), compiled models
+   `elan` is still 5.5 ms. Next steps there: prefetch the next list's table entries in the
+   walk, a per-page PTE pointer with an uncached read for page checks (item 2), compiled models
    (list descriptors kept per model, no ELAN RAM read for a model that did not change).
 2. **Cheaper fetch validation.** ~1000 page checks a render (PTE lookup + `dcbf` + `sync`,
    ~5 cache misses each; fewer pages now that culled lists are not drawn, but culled lists
    with a box still check theirs). A write-tracking bitmap set by the pager/trampolines would
    replace them. Keep a fallback: Dolphin ignores read-only page bits.
-3. **Colour lists through the GPU fetch, with a TEV swap table.** They stay CPU-fed (3-4.6K
-   vertices a render, ~220 ns each against ~55 fetched) because their colour word is ARGB and
+3. **Colour lists through the GPU fetch, with a TEV swap table** (log 13: pointless on Akina,
+   ~30 vertices a render). They stay CPU-fed (4.6K vertices a render on the runner's route,
+   ~220 ns each against ~55 fetched) because their colour word is ARGB and
    GX reads RGBA: in the records it is A,R,G,B in memory, so GX gets R=A, G=R, B=G, A=B, a
    rotation that `GX_SetTevSwapModeTable` (ras side, R<-G, G<-B, B<-A, A<-R) undoes; gxRend
    uses no swap table yet. Unlit lists: the swap alone. Lit lists: the guest alpha is in GX's
@@ -260,16 +457,16 @@ needs 100% speed, hence FRAMESKIP AUTO for now.
    time dominating: an INDEX8 display-list ring (~400 KB for a race) would replace the 256 KB
    program ring (and hold the boxes); `SetArray` is not allowed inside a display list, so one
    list per array segment. The GP has the time (idle ~60% of a race frame).
-6. **SH-4 side (~9.5 ms, largest bucket).** It is the game's own work: IPC ~0.6 with many L1
-   instruction misses. PC histogram while driving (runner, interpreter instruction counts, not
-   Wii time; wait-for-frame loop left out): 0C048E80-0C0491BF ~20% (integer: a switch on a byte,
-   24 `mul.l`, no FPU), 0C1DA1C0-0C1DA57F ~10%, 0C207D80-0C2081FF ~9%, 0C1D4C40-0C1D4FBF ~7%,
-   then a long flat tail. All of it is plain compiled code, 40-50% `mov.l` and ~0% floating
+6. **SH-4 side (10.2 ms in log 13, largest bucket).** It is the game's own work: IPC ~0.55 with
+   many L1 instruction misses. PC histogram while driving (runner, interpreter instruction counts, not
+   Wii time; wait-for-frame loop left out): 0C048E80-0C0491BF ~20% (the reflection map, see log 14),
+   0C1DA1C0-0C1DA57F ~10%, 0C207D80-0C2081FF ~9%, 0C1D4C40-0C1D4FBF ~7%, then a long flat tail. All of it is plain compiled code, 40-50% `mov.l` and ~0% floating
    point, some with `pref` (store-queue copies): there is no matrix kernel to replace with
-   native code. Directions: block layout (hot/cold, cache-line aligned chains), fewer
-   call-outs (timeslice ~1.9K, sync_fpscr ~1.5K, readmem ~700, writemem ~750 a frame), and the
-   5% of frames where sh4 jumps to 27-48 ms even on skipped frames (cause unknown; look at them
-   with HOTBLOCKS).
+   native code. Left: what the 32 KB copy is and whether it needs doing (~4% of the instructions
+   on its frames), a JIT memcpy idiom for it, wider timeslices, hot guest data in MEM1 (whether
+   first touch gives MEM1 to the right pages is unchecked, and load misses are ~18% of cycles).
+   Call-outs are ~1 ms in all (timeslice 1866, sync_fpscr ~1800, writemem ~760, readmem ~420,
+   getcode ~390, sync_sr ~275, interrupt ~270 a frame): not the lever.
 7. **Overlap CPU and GPU.** The GP is still drawing ~2.5 ms after the CPU finishes the render;
    async render is on, but the next frame's SH-4 work could start earlier.
 8. **Sound side (~2.5-3 ms: ARM7 + AICA).** Not profiled yet.

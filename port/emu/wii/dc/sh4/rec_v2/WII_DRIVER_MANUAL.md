@@ -96,6 +96,9 @@ Supports writes of 1, 2, 4, and 8 bytes:
 3. If exhausted, saves PC and jumps to update routine
 4. Otherwise, continues with block execution
 
+With JIT COLD ENTRY (`g_cold_entry_preset`) step 3 sits after the block's tail: the entry is
+a `blt` that falls through, and `ngen_Compile` places the exit before the mem slow paths.
+
 #### Block Exit (`ngen_End`)
 
 Handles different block ending types:

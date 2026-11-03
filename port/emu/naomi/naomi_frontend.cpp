@@ -103,6 +103,7 @@ void naomi_VBlank()
 #if defined(GEKKO)
     WiiGuestMem_Tick();   // compress a few cold guest pages when memory runs low
 #endif
+    naomi_CartSlice();    // the read-ahead thread's time, when it has work
     if (s_frameHook && s_frameInfo.vblanks % s_framePeriod == 0)
     {
         s_frameInfo.pc = next_pc;
@@ -215,6 +216,10 @@ extern "C" {
 int g_idle_skip_preset = 1;     // idle loop below: charge it 30x its cycles
 int g_vram32_fast_preset = 1;   // rec: inline 32-bit VRAM stores (wii_driver.cpp)
 int g_sq_fast_preset = 1;       // rec: inline store-queue flushes to memory (wii_driver.cpp shop_pref)
+int g_cold_entry_preset = 1;    // rec: timeslice exit after the block's tail (wii_driver.cpp ngen_Begin)
+int g_fifo_wake_preset = 1;     // gxRend: wake from a full GX FIFO early (InitRenderer)
+int g_mem_sweep_preset = 1;     // wii_fastmem: short synchronous sweeps (page_alloc)
+int g_fifo_size_preset = 1;     // gxRend: 512 KB GX FIFO (InitRenderer)
 int g_sound_realtime_preset = 0; // ARM7 + AICA follow the real clock (plugs/vbaARM/arm_aica.cpp)
 }
 
@@ -249,6 +254,31 @@ extern "C" u32 naomi_IdleCycleScale(u32 pc, u32 bytes)
         if (p == b.pc && bytes == b.bytes && ReadMem16(pc) == b.first && ReadMem16(pc + bytes - 2) == b.last)
             return 30;
     return 1;
+}
+
+// REFLECTIONS. The game's SH-4 code rebuilds the car body's reflection map
+// every frame: a 64x32 panorama of the road side, put together cell by cell in
+// a buffer it keeps (0C048E80-0C0491BF, 20% of its instructions in a race; 1
+// build in 4 took ~1 ms off `sh4` on a Wii). Sent back at the first row to the
+// routine's own "no rows" exit, a build costs a few dozen instructions, cleans
+// up as usual and leaves the last panorama in place: the reflection only
+// updates less often. One build in g_reflection_rate_preset is made. Matched on
+// its opcodes, as the idle loop is.
+int g_reflection_rate_preset = 4;
+
+extern "C" u32 naomi_ReflectionExit(u32 pc)
+{
+    const u32 exitPc = (pc & 0xE0000000) | 0x0C0491CE;
+    if (g_reflection_rate_preset < 2 || (pc & 0x1FFFFFFF) != 0x0C048E86 || ReadMem16(pc) != 0x9A3C ||
+        ReadMem16(exitPc) != 0x9029)
+        return 0;
+    return exitPc;
+}
+
+extern "C" u32 naomi_ReflectionSkip(u32 row)
+{
+    static u32 builds = 0;
+    return row == 0 && ++builds % (u32)g_reflection_rate_preset != 0;
 }
 
 void naomi_Run()
