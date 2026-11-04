@@ -22,6 +22,21 @@ So ~2.7 ms must still go for a full-speed, every-frame-drawn race, and the SH-4 
 frame. Scenes differ: at the race's start (90-105K vertices in, 73-84K on the GPU) log 17 gives
 43-45 fps, `elan` 6.4-7.0.
 
+Log 18 (2026-11-04, SOFT FLOAT NATIVE, otherwise as log 17):
+- **SOFT FLOAT works: `sh4` -0.31 to -0.45 ms** in the steady race windows (frames 13320-14040:
+  9.31-9.47 -> 8.93-9.13), the 0.3-0.5 expected. Control: the night demo replays the same frames
+  in both logs and its `sh4` matches log 17 within +-0.08 ms over 18 windows (5400-7440); `elan`
+  and `rend` match too. Nothing wrong reported.
+- **The race itself is not comparable**: the owner's race loaded ~240 frames later, its heavy start
+  lasted longer (12120-12840: 98-116K vertices in, 43-46 fps) and the steady part drew more (~80K
+  in as before, but 58-68K on the GPU against 50-59K, ~110 whole models stepped over against
+  ~150: another line or camera). So `elan` +0.5-0.9 and `rend` +0.4-0.7 there, 47.3-51.8 fps,
+  p50 20-21 ms. Compare buckets, not fps, between two driven races.
+- Same hitches as log 17 at the race's load (f11901 152 ms: `tex` 74.6, `mem` 39.6; f12143 92 ms),
+  36 reclaims, 0 failed allocations, free down to 1036 KB once. Night demo 56-61 fps.
+- The four "Write to Boot ROM (read-only), addr=74-77, pc=0C0E2154" lines near frame 4800 are in
+  every log since 14: not new.
+
 Log 17 (2026-11-04, MEM SWEEP SHORT set by hand, GX FIFO SIZE 512 KB, no diagnostics):
 - **GX FIFO SIZE works:** `GX FIFO full` 0.0 in every block, race and demo; `cached programs`
   18-26 ns a vertex (the 23 expected with no wait): ~1.0-1.3 ms at 45-59K vertices, where log 16
@@ -213,7 +228,7 @@ render. Menus, attract mode and car select run at 100%.
 | 10-30 | DIMM AHEAD, REFLECTIONS, JIT COLD ENTRY, DEPTH MEASURE, boxes for dropped lists | log 15: stutter gone (p99 38 -> 25), p50 21.9 -> 20.8, race intro 32-37 -> 50-60 fps |
 | 11-01 | REFLECTIONS default 1 in 4, MEM SWEEP, GX FIFO WAKE | log 16: 48-51 fps at 80-86K vertices, night demo 55.5-60.8 fps, `cached programs` 2.9 -> 2.2 ms in heavy scenes; MEM SWEEP SHORT still untested (the "hang" was TEST) |
 | 11-01 | GX FIFO SIZE | log 17: FIFO never full, `rend` + `elan` 7.7 -> 6.6-6.8 ms, race 48.8-54.7 fps at ~80K vertices, p50 19.2-19.6; MEM SWEEP SHORT: race hitches 261 -> 158 ms |
-| 11-04 | SOFT FLOAT (native double divide and multiply) | awaiting log 18 |
+| 11-04 | SOFT FLOAT (native double divide and multiply) | log 18: `sh4` -0.31 to -0.45 ms in the race (night demo control unchanged); race not comparable (heavier scenes driven) |
 
 ## What was done
 
@@ -306,9 +321,9 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
-### Done after log 17 (awaiting log 18)
+### Done after log 17 (log 18 confirmed)
 
-- **SOFT FLOAT** (RECOMPILER, last row, default NATIVE; `emu/naomi/naomi_softfloat.cpp`, hook in
+- **SOFT FLOAT** (RECOMPILER 2 since log 18, default NATIVE; `emu/naomi/naomi_softfloat.cpp`, hook in
   `ngen_Compile` next to the reflection one). The game does its double-precision maths in
   software: GCC soft-float routines, SH-4 integer code (__divdf3 0C222D00, __muldf3 0C222A00,
   unpack 0C2225A0, pack 0C222440). A race calls each ~23 times a frame, ~40K SH-4 instructions,
@@ -344,7 +359,7 @@ From the `[CC]` and `[HOT]` censuses of a race:
 
 - **REFLECTIONS** default 1 FRAME IN 4: the owner finds it fine from the outside cameras. A Wii U
   could keep every frame; that split is for later.
-- **MEM SWEEP** (RECOMPILER, last row, default SHORT; `page_alloc`, wii_fastmem.cpp). The fault
+- **MEM SWEEP** (RECOMPILER 2 since log 18, default SHORT; `page_alloc`, wii_fastmem.cpp). The fault
   handler's sweep frees 32 pages and scans 2048 at most, ~12 ms if pages cost what they did in log
   15, and the next fault that finds under 256 KB free does the next bit. Below 32 KB free it looks
   for as long as it takes. 2 MB (LEGACY) is the old sweep. It runs with interrupts off, and Windows
@@ -378,7 +393,7 @@ All on Windows first. What the Wii made of them is under "The target".
   in 4 against every build (CPU path, outside cameras): differences only inside the car's
   outline, nearly all under 24/255, timer and speed identical to the frame. In the in-car view
   the car body is not on screen and the frames are byte-identical: that work is wasted there.
-- **JIT COLD ENTRY** (RECOMPILER, last row, default ON). The timeslice exit goes after the block's
+- **JIT COLD ENTRY** (RECOMPILER 2 since log 18, default ON). The timeslice exit goes after the block's
   tail: `blt` instead of a taken `bge` over 12 bytes in the first line of every block, ~95K
   entries a frame against ~1870 exits. Wii only, so unproven by the runner.
 - **Dropped-list boxes** (no option of its own: 3D LIST CULL OFF turns it off). A list wholly
@@ -445,9 +460,9 @@ logs comparable. The cost does not need measuring, and the question is closed.
 
 ## What is left, best first
 
-Numbers are kept because the items refer to each other. After log 17 the order is: measure SOFT
-FLOAT on a Wii, then item 1 (`elan` 4.4-7 ms), item 6 (SH-4 9.3 ms: spread out, see "The target")
-and item 8 (sound, 2.2 ms, never profiled).
+Numbers are kept because the items refer to each other. After log 18 the order is: item 1 (`elan`
+4.4-7 ms), item 6 (SH-4 9.0 ms after SOFT FLOAT: spread out, see "The target") and item 8 (sound,
+2.2 ms, never profiled).
 Sending the index draws as display lists would take `cached programs` (1.1 ms, 2-3 in heavy scenes)
 and the FIFO load off the CPU, at the price of a larger ring and a rewrite of the fetch programs
 (CP arrays cannot be set inside a display list). JIT COLD ENTRY needs an A/B before it counts as a

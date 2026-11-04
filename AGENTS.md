@@ -28,8 +28,12 @@ it exists.
   SHORT, GX FIFO SIZE 512 KB): at ~80K vertices 48.8-54.7 fps, p50 19.2-19.6 ms (`sh4` 9.3, `rend`
   2.2-2.35, `elan` 4.35-4.45, sound 2.2), p99 22-23; heavy start of the race 43-45 fps. Night demo
   56.4-60.9 fps. GX FIFO never full; MEM SWEEP SHORT confirmed (36 reclaims, 0 failures, race
-  hitches 261 -> 158 ms). Built after it, **awaiting log 18**: SOFT FLOAT (the game's software
-  double divide/multiply run natively). REFLECTIONS default 1 in 4 is the owner's choice for the
+  hitches 261 -> 158 ms). Log 18 (same day): SOFT FLOAT (the game's software double
+  divide/multiply run natively) took `sh4` 9.3-9.5 -> 8.9-9.1 ms in the race, night demo unchanged
+  (control); its race drew more, so its fps is not comparable. The RECOMPILER page was full: JIT
+  COLD ENTRY, MEM SWEEP and SOFT FLOAT moved to a new page RECOMPILER 2 (labels and
+  `CoreOptionId` order unchanged, so saved choices and `autolaunch.txt` still apply); new
+  recompiler rows go there. REFLECTIONS default 1 in 4 is the owner's choice for the
   Wii (a Wii U could keep every frame, to decide later).
   Open bug: owner says the enemy car's lights display wrong (to look at in a later session).
 - 3D LIST CULL (RENDERING page, last row, default VIEW + MODELS; 2026-10-30): each GPU fetch program keeps its list's model-space bounding box; when the ELAN
@@ -79,7 +83,7 @@ current work:
 
 | File | Role |
 | --- | --- |
-| `port/src/game/core_options.h` | Launcher option table (5 pages: GENERAL, RENDERING, RECOMPILER, AUDIO, FIXES) |
+| `port/src/game/core_options.h` | Launcher option table (6 pages: GENERAL, RENDERING, RECOMPILER, RECOMPILER 2, AUDIO, FIXES; a page that fills up gets a second one) |
 | `port/src/game/game_runner.cpp` | Runs the core on the Wii: options -> `g_*_preset` globals (array in `CoreOptionId` order, static_assert), pads -> JVS, `[prof]` blocks, async log |
 | `port/src/ui/launcher.cpp` | Menus; `options.txt` saved as `LABEL=VALUE`, matched by label |
 | `port/src/core/log.cpp` | Log file, async ring mode (`log::setAsync`) |

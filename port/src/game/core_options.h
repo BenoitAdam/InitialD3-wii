@@ -11,13 +11,14 @@ enum CoreOptionPage
     PAGE_GENERAL,
     PAGE_DEPTH,
     PAGE_RECOMPILER,
+    PAGE_RECOMPILER_2,   // the first one is full: new recompiler rows go here
     PAGE_AUDIO,
     PAGE_FIXES,
     kCoreOptionPages
 };
 
-inline constexpr const char* kCoreOptionPageNames[kCoreOptionPages] = {"GENERAL", "RENDERING", "RECOMPILER", "AUDIO",
-                                                                       "FIXES"};
+inline constexpr const char* kCoreOptionPageNames[kCoreOptionPages] = {"GENERAL", "RENDERING", "RECOMPILER",
+                                                                       "RECOMPILER 2", "AUDIO", "FIXES"};
 
 enum CoreOptionId
 {
@@ -258,18 +259,18 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // Frames with no pin (fly-bys, replays): see recordForGpu.
     {"DEPTH MEASURE ", "fly-bys and replays: keep the race's near plane (faster) or measure the exact one", PAGE_DEPTH,
      1, 2, {"EXACT (LEGACY)", "RACE PLANE"}, {0, 1}},
-    {"JIT COLD ENTRY", "timeslice exit after the block: no taken branch at each entry, 12 B less", PAGE_RECOMPILER,
+    {"JIT COLD ENTRY", "timeslice exit after the block: no taken branch at each entry, 12 B less", PAGE_RECOMPILER_2,
      1, 2, {"OFF (LEGACY)", "ON (AFTER BLOCK)"}, {0, 1}},
     {"DIMM AHEAD    ", "decode streamed game data (the music) ahead on a thread: small slices, no stutter", PAGE_AUDIO,
      1, 2, {"OFF (ON DEMAND)", "ON (THREAD)"}, {0, 1}},
     {"GX FIFO WAKE  ", "FIFO full: the CPU goes on after 32 KB were read, not 112 KB (heavy scenes)", PAGE_DEPTH, 1, 2,
      {"HALF (LEGACY)", "NEAR FULL"}, {0, 1}},
     {"MEM SWEEP     ", "guest memory nearly full: free a little at a time, or 2 MB at once (a 200 ms stall)",
-     PAGE_RECOMPILER, 1, 2, {"2 MB (LEGACY)", "SHORT"}, {0, 1}},
+     PAGE_RECOMPILER_2, 1, 2, {"2 MB (LEGACY)", "SHORT"}, {0, 1}},
     {"GX FIFO SIZE  ", "room for what the CPU sends the GPU: heavy scenes wait less for it to catch up", PAGE_DEPTH, 1,
      2, {"256 KB (LEGACY)", "512 KB"}, {0, 1}},
     {"SOFT FLOAT    ", "the game's software double maths (divide, multiply) runs natively, same results",
-     PAGE_RECOMPILER, 1, 2, {"EMULATED (LEGACY)", "NATIVE"}, {0, 1}},
+     PAGE_RECOMPILER_2, 1, 2, {"EMULATED (LEGACY)", "NATIVE"}, {0, 1}},
 };
 
 } // namespace idas3
