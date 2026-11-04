@@ -259,6 +259,223 @@ static void reflectionHook()
                 next_pc = out;
 }
 
+// env IDAS3_SF_PROBE=LO:HI[:FROM] (hex range, decimal frame): each call into [LO, HI) from outside it, its
+// arguments and result tried against native double arithmetic, to name the
+// game's software floating-point routines. Printed at exit.
+static u32 s_probeLo, s_probeHi, s_probePrev, s_probeFrom;
+struct ProbeFrame
+{
+    u32 entry, ret, sp, a[4];
+};
+enum
+{
+    kHypDiv, kHypMul, kHypAdd, kHypSub, kHypRsub, kHypNeg, kHypI2D, kHypU2D, kHypD2I, kHypF2D, kHypD2F, kHypCmp,
+    kHypCount
+};
+static const char* const kHypNames[kHypCount] = {"a/b", "a*b", "a+b", "a-b", "b-a", "-a", "(double)int",
+                                                 "(double)uint", "(int)a", "(double)float", "(float)a", "cmp"};
+struct ProbeStats
+{
+    u64 calls = 0;
+    u32 hits[2][kHypCount] = {};      // [word order: r(n) low, r(n) high][hypothesis]
+    u32 example[6] = {};
+};
+static std::vector<ProbeFrame> s_probeStack;
+static std::map<u32, ProbeStats> s_probe;
+
+static double pairDouble(u32 a, u32 b, int order)
+{
+    const u64 bits = order ? ((u64)a << 32 | b) : ((u64)b << 32 | a);
+    double d;
+    memcpy(&d, &bits, 8);
+    return d;
+}
+
+static bool sameDouble(double x, u32 lo, u32 hi, int order)
+{
+    const double y = pairDouble(lo, hi, order);
+    return memcmp(&x, &y, 8) == 0 || (x != x && y != y);
+}
+
+static void probeResult(const ProbeFrame& f)
+{
+    ProbeStats& s = s_probe[f.entry];
+    if (s.calls++ == 0)
+    {
+        memcpy(s.example, f.a, 16);
+        s.example[4] = r[0];
+        s.example[5] = r[1];
+    }
+    for (int o = 0; o < 2; o++)
+    {
+        const double a = pairDouble(f.a[0], f.a[1], o), b = pairDouble(f.a[2], f.a[3], o);
+        u32* h = s.hits[o];
+        h[kHypDiv] += sameDouble(a / b, r[0], r[1], o);
+        h[kHypMul] += sameDouble(a * b, r[0], r[1], o);
+        h[kHypAdd] += sameDouble(a + b, r[0], r[1], o);
+        h[kHypSub] += sameDouble(a - b, r[0], r[1], o);
+        h[kHypRsub] += sameDouble(b - a, r[0], r[1], o);
+        h[kHypNeg] += sameDouble(-a, r[0], r[1], o);
+        h[kHypI2D] += sameDouble((double)(s32)f.a[0], r[0], r[1], o);
+        h[kHypU2D] += sameDouble((double)f.a[0], r[0], r[1], o);
+        h[kHypD2I] += (a == a && a > -2147483649.0 && a < 2147483648.0 && (s32)r[0] == (s32)a);
+        float fa;
+        memcpy(&fa, &f.a[0], 4);
+        h[kHypF2D] += sameDouble((double)fa, r[0], r[1], o);
+        const float fl = (float)a;
+        u32 frb;
+        memcpy(&frb, &fl, 4);
+        h[kHypD2F] += frb == r[0];
+        const s32 cmp = (s32)r[0];
+        h[kHypCmp] += a == a && b == b && ((a < b) == (cmp < 0)) && ((a == b) == (cmp == 0)) && ((a > b) == (cmp > 0));
+    }
+}
+
+static void probeStep()
+{
+    if (g_host_render.vblanks < s_probeFrom)
+        return;
+    const u32 pc = next_pc & 0x1FFFFFFF;
+    while (!s_probeStack.empty() && pc == (s_probeStack.back().ret & 0x1FFFFFFF) && r[15] == s_probeStack.back().sp)
+    {
+        probeResult(s_probeStack.back());
+        s_probeStack.pop_back();
+    }
+    const bool in = pc >= s_probeLo && pc < s_probeHi;
+    const bool wasIn = s_probePrev >= s_probeLo && s_probePrev < s_probeHi;
+    const u32 ret = pr & 0x1FFFFFFF;
+    if (in && !wasIn && !(ret >= s_probeLo && ret < s_probeHi) && s_probeStack.size() < 64)
+        s_probeStack.push_back({pc, pr, r[15], {r[4], r[5], r[6], r[7]}});
+    s_probePrev = pc;
+}
+
+static void printProbe(u32 frames)
+{
+    std::vector<std::pair<u64, u32>> order;
+    for (const auto& e : s_probe)
+        order.push_back({e.second.calls, e.first});
+    std::sort(order.rbegin(), order.rend());
+    printf("[probe] calls into %08X-%08X over %u frames\n", s_probeLo, s_probeHi, frames);
+    for (const auto& o : order)
+    {
+        const ProbeStats& s = s_probe[o.second];
+        std::string hyp;
+        for (int w = 0; w < 2; w++)
+            for (int k = 0; k < kHypCount; k++)
+                if (s.hits[w][k] * 100ull >= s.calls * 99ull)
+                    hyp += std::string(" ") + kHypNames[k] + (w ? "[r(n) high]" : "[r(n) low]") + " " +
+                           std::to_string(s.hits[w][k]);
+        printf("[probe]   %08X  %8.1f calls a frame  matches:%s | e.g. r4-r7 %08X %08X %08X %08X -> r0 r1 %08X %08X\n",
+               o.second, frames ? (double)s.calls / frames : 0.0, hyp.empty() ? " none" : hyp.c_str(), s.example[0],
+               s.example[1], s.example[2], s.example[3], s.example[4], s.example[5]);
+    }
+}
+
+// --soft-float 0/1/2: the launcher's SOFT FLOAT (default 0 here). 1 = the game's software
+// double divide and multiply run natively (naomi_softfloat.cpp); 2 = the game's code runs
+// and each result is checked against the native one. --soft-float-test N: N random operand
+// pairs against the host's own doubles, no game needed.
+static int s_softFloat;
+struct SoftFloatCall
+{
+    u32 ret, sp, kind, a[4], native[2];
+};
+static std::vector<SoftFloatCall> s_sfStack;
+static u64 s_sfCalls[2], s_sfNative[2], s_sfChecked[2], s_sfWrong[2];
+static const char* const kSfNames[2] = {"divide", "multiply"};
+
+static void softFloatStep()
+{
+    const u32 pc = next_pc & 0x1FFFFFFF;
+    while (!s_sfStack.empty() && pc == (s_sfStack.back().ret & 0x1FFFFFFF) && r[15] == s_sfStack.back().sp)
+    {
+        const SoftFloatCall& call = s_sfStack.back();
+        s_sfChecked[call.kind]++;
+        if ((r[0] != call.native[0] || r[1] != call.native[1]) && s_sfWrong[call.kind]++ < 16)
+            printf("[run] SOFT FLOAT %s MISMATCH %08X%08X, %08X%08X: game %08X%08X, native %08X%08X\n",
+                   kSfNames[call.kind], call.a[1], call.a[0], call.a[3], call.a[2], r[1], r[0], call.native[1],
+                   call.native[0]);
+        s_sfStack.pop_back();
+    }
+    const NaomiSoftFloatFn fn = pc == 0x0C222D00 || pc == 0x0C222A00 ? naomi_SoftFloatEntry(pc) : nullptr;
+    if (!fn)
+        return;
+    const u32 kind = fn == naomi_SoftFloatMul;
+    s_sfCalls[kind]++;
+    if (!fn(r[4], r[5], r[6], r[7]))
+        return;
+    s_sfNative[kind]++;
+    if (s_softFloat == 1)
+    {
+        r[0] = g_soft_float_result[0];
+        r[1] = g_soft_float_result[1];
+        next_pc = pr;
+    }
+    else if (s_sfStack.size() < 64)
+        s_sfStack.push_back({pr, r[15], kind, {r[4], r[5], r[6], r[7]}, {g_soft_float_result[0], g_soft_float_result[1]}});
+}
+
+static int softFloatTest(u32 pairs)
+{
+    u64 seed = 0x9E3779B97F4A7C15ull;
+    auto next = [&seed]() {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        return seed;
+    };
+    // Exponents that keep results normal; one operand in two has its middle fraction bits
+    // clear, for exact products and ties; one in 64 is zero.
+    auto make = [&next]() {
+        const u64 bits = next();
+        u64 frac = bits & 0xFFFFFFFFFFFFFull;
+        if (bits >> 63)
+            frac &= 0xFFC00000003FFull;
+        const u64 e = (bits & 0x3F0000) ? 600 + next() % 800 : 0;
+        return (next() & 1) << 63 | e << 52 | (e ? frac : 0);
+    };
+    const NaomiSoftFloatFn fns[2] = {naomi_SoftFloatDiv, naomi_SoftFloatMul};
+    u64 wrong[2] = {}, left[2] = {};
+    for (u32 i = 0; i < pairs; i++)
+    {
+        const u64 a = make(), b = make();
+        double da, db;
+        memcpy(&da, &a, 8);
+        memcpy(&db, &b, 8);
+        const double want[2] = {da / db, da * db};
+        for (int k = 0; k < 2; k++)
+        {
+            if (!fns[k]((u32)a, (u32)(a >> 32), (u32)b, (u32)(b >> 32)))
+            {
+                left[k]++;
+                continue;
+            }
+            const u64 got = (u64)g_soft_float_result[1] << 32 | g_soft_float_result[0];
+            u64 w;
+            memcpy(&w, &want[k], 8);
+            if (got != w && wrong[k]++ < 8)
+                printf("[run] SOFT FLOAT %s WRONG %016llX, %016llX: host %016llX, native %016llX\n", kSfNames[k],
+                       (unsigned long long)a, (unsigned long long)b, (unsigned long long)w, (unsigned long long)got);
+        }
+    }
+    for (int k = 0; k < 2; k++)
+        printf("[run] SOFT FLOAT self-test %s: %u pairs, %llu wrong, %llu left to the game\n", kSfNames[k], pairs,
+               (unsigned long long)wrong[k], (unsigned long long)left[k]);
+    return wrong[0] || wrong[1];
+}
+
+static bool s_reflectionHook;
+
+static void pcHook()
+{
+    if (s_reflectionHook)
+        reflectionHook();
+    if (s_probeHi)
+        probeStep();
+    if (s_softFloat)
+        softFloatStep();
+}
+
 // --work-from F[:T]: from frame F on, a [work] line per frame with its SH-4
 // instructions outside the wait-for-frame loop: the game's real work, what is
 // left on a Wii after the idle skip. With T, frames over T instructions and
@@ -675,6 +892,8 @@ int main(int argc, char** argv)
 #if defined(_WIN32)
     SetUnhandledExceptionFilter(crashHandler);
 #endif
+    if (const char* t = argValue(argc, argv, "--soft-float-test"))
+        return softFloatTest((u32)strtoul(t, nullptr, 0));
     const char* chd = argValue(argc, argv, "--chd");
     if (!chd)
     {
@@ -750,7 +969,23 @@ int main(int argc, char** argv)
     if (const char* n = argValue(argc, argv, "--reflection"))
     {
         g_reflection_rate_preset = (int)strtol(n, nullptr, 0);
-        g_sh4_pc_hook = reflectionHook;
+        s_reflectionHook = true;
+        g_sh4_pc_hook = pcHook;
+    }
+    g_soft_float_preset = 0;
+    if (const char* s = argValue(argc, argv, "--soft-float"))
+    {
+        s_softFloat = atoi(s);
+        g_soft_float_preset = s_softFloat != 0;
+        if (s_softFloat)
+            g_sh4_pc_hook = pcHook;
+    }
+    if (const char* p = getenv("IDAS3_SF_PROBE"))
+    {
+        sscanf(p, "%x:%x:%u", &s_probeLo, &s_probeHi, &s_probeFrom);
+        s_probeLo &= 0x1FFFFFFF;
+        s_probeHi &= 0x1FFFFFFF;
+        g_sh4_pc_hook = pcHook;
     }
     s_workGdrom = &session.gdrom();
     if (const char* p = argValue(argc, argv, "--press"))
@@ -926,6 +1161,13 @@ int main(int argc, char** argv)
         }
     }
 
+    if (s_probeHi)
+        printProbe(g_host_render.vblanks - s_probeFrom);
+    for (int k = 0; k < 2 && s_softFloat; k++)
+        printf("[run] SOFT FLOAT %s: %llu calls (%.1f a frame), %llu native, %llu checked, %llu MISMATCHES\n",
+               kSfNames[k], (unsigned long long)s_sfCalls[k],
+               g_host_render.vblanks ? (double)s_sfCalls[k] / g_host_render.vblanks : 0.0,
+               (unsigned long long)s_sfNative[k], (unsigned long long)s_sfChecked[k], (unsigned long long)s_sfWrong[k]);
     const double secs = (double)(platform::microseconds() - s_startUs) / 1e6;
     char line[256];
     snprintf(line, sizeof(line), "[run] stopped after %u frames in %.1f s (%.1f emulated fps), pc %08X\n",

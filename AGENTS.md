@@ -19,17 +19,17 @@ it exists.
   (MSVC: launcher, headless runner and tests, used for bring-up, censuses and A/B checks).
 - GitHub: `BenoitAdam/Initial-D-3-wii`, branch `main`. The owner commits often themselves.
 
-### Status (2026-10-30)
+### Status (2026-11-04)
 
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
-- Menus/attract/car select: 100% speed. Race: ~42-47 fps with every frame drawn
+- Menus/attract/car select: 100% speed. Race: ~49-55 fps with every frame drawn
   (FRAMESKIPPING 0); FRAMESKIP AUTO last measured at ~94-103% speed (1 frame in 4 drawn).
-- Last real-Wii log analysed: **log 16** (2026-11-01, race Akina uphill, no diagnostics, MEM SWEEP
-  2 MB): at 80-86K vertices 48-51 fps, p50 20.2-21 ms (`sh4` 9.3, `rend` 2.7, `elan` 5.0, sound
-  2.2), p99 25; heavy start of the race 41-46 fps. Night demo 55.5-60.8 fps, every frame drawn.
-  The owner's "MEM SWEEP SHORT hangs" run was a TEST press (reproduced on Windows); the sweep code
-  never ran, so **SHORT is still untested**. Built after it, **awaiting log 17**: GX FIFO SIZE,
-  `[game] TEST button pressed` log line. REFLECTIONS default 1 in 4 is the owner's choice for the
+- Last real-Wii log analysed: **log 17** (2026-11-04, race Akina uphill, no diagnostics, MEM SWEEP
+  SHORT, GX FIFO SIZE 512 KB): at ~80K vertices 48.8-54.7 fps, p50 19.2-19.6 ms (`sh4` 9.3, `rend`
+  2.2-2.35, `elan` 4.35-4.45, sound 2.2), p99 22-23; heavy start of the race 43-45 fps. Night demo
+  56.4-60.9 fps. GX FIFO never full; MEM SWEEP SHORT confirmed (36 reclaims, 0 failures, race
+  hitches 261 -> 158 ms). Built after it, **awaiting log 18**: SOFT FLOAT (the game's software
+  double divide/multiply run natively). REFLECTIONS default 1 in 4 is the owner's choice for the
   Wii (a Wii U could keep every frame, to decide later).
   Open bug: owner says the enemy car's lights display wrong (to look at in a later session).
 - 3D LIST CULL (RENDERING page, last row, default VIEW + MODELS; 2026-10-30): each GPU fetch program keeps its list's model-space bounding box; when the ELAN
@@ -87,6 +87,7 @@ current work:
 | `port/src/run/run_main.cpp` | Windows headless runner `idas3wii_run` (all diagnostics flags) |
 | `port/emu/naomi/naomi_frontend.cpp` | Core init/run/settings, idle-loop skip (`naomi_IdleCycleScale`), assert/BIOS-entry traps |
 | `port/emu/naomi/naomi_board.cpp` | DIMM board, cart DMA, register counters |
+| `port/emu/naomi/naomi_softfloat.cpp` | SOFT FLOAT: the game's software double divide/multiply (GCC soft-float, SH-4 integer code) run natively, fingerprinted; called by the JIT at the routines' entry |
 | `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin + GPU light sets (point lights as GX local lights), `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs (+ each list's bounding box, `cachedBox`) |
 | `port/emu/plugs/drkPvr/gxRend.cpp` | PowerVR -> GX renderer (TA lists, ELAN items, VRAM present, tile clip, buffer caps) |
 | `port/emu/plugs/drkPvr/frame_prof.cpp` | FPROF per-frame profiler |
@@ -154,6 +155,8 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--trace-from PC`, `--trace-at F`, `--trace-pc a,b`, `--watch ADDR`, `--path-after-elan` | SH-4 tracing (`--trace-at`: arm at frame F; 40 hits per address) |
 | `--dimm-ahead 0/1` | DIMM AHEAD (default 0 here, the launcher's is on): run cache + stream read-ahead; on Windows the decode is done on the spot |
 | `--reflection N` | REFLECTIONS: one reflection map build in N (default every one, the launcher's is 4) |
+| `--soft-float 0/1/2` | SOFT FLOAT (default 0 here, the launcher's is NATIVE): 1 = the game's double divide/multiply run natively, 2 = the game's code runs and every result is checked against the native one (`SOFT FLOAT ... MISMATCHES` must stay 0). `--soft-float-test N`: N random pairs against the host's doubles, no CHD needed |
+| env `IDAS3_SF_PROBE=LO:HI[:FROM]` | names the routines called into that code range by trying native double operations on their r4-r7 and r0/r1 (how the soft-float routines were found) |
 | `--depth-plane 0/1` | DEPTH MEASURE: 1 = RACE PLANE, frames with no pin keep the race's near plane |
 | env `IDAS3_NEAR_TRACE=1` | a `[near]` line per render: pin, frame near plane, vertices measured and why |
 | env `IDAS3_CART_TRACE=1` | a `[cart]` line per read of the game image (offset, length) |
@@ -264,6 +267,10 @@ probe, ELAN draw split, fetch programs/patches/ring passes); `[CC]` JIT call-out
   before each check after an ELAN run (`g_elan_exec_seq`) to see what the Wii would. A program's
   box lives in the ring right after it: ring room matters (lining programs up on cache lines
   as well cost ~15% and made the in-car view rebuild live programs).
+- The game's doubles are software (GCC soft-float routines, SH-4 integer code around
+  0C221F00-0C224FFF): an FPU-free hot loop can still be floating point. The runner's
+  `IDAS3_SF_PROBE` names such routines from their registers. Native replacements follow the
+  machine code (libgcc's source is GPL-3) and are checked against it (`--soft-float 2`).
 
 ## Open issues (besides speed)
 

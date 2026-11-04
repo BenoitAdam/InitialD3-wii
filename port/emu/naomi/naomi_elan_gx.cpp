@@ -612,6 +612,9 @@ void elan_gx_census_render()
     {
         const FetchCounts& c = s_fetchCounts;
         const double d = 64.0, v = s_check.vertices ? (double)s_check.vertices : 1.0;
+        static u32 s_pageChecks0 = 0;
+        printf("[run]   GPU fetch page checks per drawn render: %.0f\n", (c.pageChecks - s_pageChecks0) / d);
+        s_pageChecks0 = c.pageChecks;
         printf("[run]   GPU fetch per drawn render: %.0f vertices in %.0f lists | from programs %.0f (%.0f%%), "
                "built now %.0f (%.0f%%), pages written since the last render %.0f (%.0f%%), colour lists %.0f, "
                "other CPU-fed %.0f | patched records %.0f | programs drawn take %.0f of the ring's %u KB | "

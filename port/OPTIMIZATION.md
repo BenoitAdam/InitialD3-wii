@@ -7,20 +7,35 @@ the profiler logs the owner sent from a real Wii ("REAL WII LOG n") and from Dol
 ## The target
 
 A race frame must fit in **16.7 ms** (60 fps). On a real Wii, with every frame drawn
-(FRAMESKIPPING 0), the race is at **~20.5 ms** (log 16, Akina uphill, ~80-86K ELAN vertices: 48-51
-fps, p50 20.2-21, p99 25):
+(FRAMESKIPPING 0), the race is at **~19.4 ms** (log 17, Akina uphill, ~80K ELAN vertices: 48.8-54.7
+fps, p50 19.2-19.4, p99 22-23):
 
-| Bucket | log 11 | log 12 | log 13 | log 15 | log 16 | What it is |
-| --- | --- | --- | --- | --- | --- | --- |
-| sh4 | 9.4-9.6 | 10.4 | 10.2 | 9.2 | 9.3 | the game's own code through the dynarec |
-| rend | 7.2-7.45 | 3.15 | 2.85 | 2.85 | 2.7 | GX draw of the frame, mostly ELAN GPU lists |
-| elan | 4.1-4.2 | 8.0 | 5.5 | 5.1 | 5.0 | ELAN command walk (2.0) + recording lists for the GPU (3.0) |
-| arm | 1.4 | 1.25 | 1.25 | 1.23 | 1.16 | ARM7 sound CPU |
-| aica | 1.0-1.7 | 1.1 | 1.05 | 1.2 | 1.06 | AICA sound synthesis |
+| Bucket | log 11 | log 12 | log 13 | log 15 | log 16 | log 17 | What it is |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| sh4 | 9.4-9.6 | 10.4 | 10.2 | 9.2 | 9.3 | 9.3 | the game's own code through the dynarec |
+| rend | 7.2-7.45 | 3.15 | 2.85 | 2.85 | 2.7 | 2.2-2.35 | GX draw of the frame, mostly ELAN GPU lists |
+| elan | 4.1-4.2 | 8.0 | 5.5 | 5.1 | 5.0 | 4.35-4.45 | ELAN command walk (1.9-2.0) + recording lists for the GPU (2.3-2.9) |
+| arm | 1.4 | 1.25 | 1.25 | 1.23 | 1.16 | 1.17 | ARM7 sound CPU |
+| aica | 1.0-1.7 | 1.1 | 1.05 | 1.2 | 1.06 | 1.07-1.12 | AICA sound synthesis |
 
-So ~4 ms must still go for a full-speed, every-frame-drawn race, and the SH-4 is nearly half the
-frame. Scenes differ: at the race's start (88-104K vertices in, 71-83K on the GPU) log 16 gives
-41-46 fps, `elan` 5.9-6.9.
+So ~2.7 ms must still go for a full-speed, every-frame-drawn race, and the SH-4 is nearly half the
+frame. Scenes differ: at the race's start (90-105K vertices in, 73-84K on the GPU) log 17 gives
+43-45 fps, `elan` 6.4-7.0.
+
+Log 17 (2026-11-04, MEM SWEEP SHORT set by hand, GX FIFO SIZE 512 KB, no diagnostics):
+- **GX FIFO SIZE works:** `GX FIFO full` 0.0 in every block, race and demo; `cached programs`
+  18-26 ns a vertex (the 23 expected with no wait): ~1.0-1.3 ms at 45-59K vertices, where log 16
+  paid 2.2 ms at 58K. `rend` 2.7 -> 2.2-2.35 and `elan` 5.0 -> 4.35-4.45 at ~80K vertices.
+- **Race:** 48.8-54.7 fps at ~80K vertices (log 16: 48-51), p50 19.2-19.6 (20.2-21), p99 22-23
+  (25). Heavy start (90-105K in) 43.4-45.1 fps, `elan` 6.4-7.0 there. `sh4` 9.3-9.6, unchanged.
+- **Night demo:** 56.4-60.9 fps over frames 5040-7440, 59+ in most blocks (log 16: 55.5-60.8).
+- **MEM SWEEP SHORT works.** 36 reclaims freed 4.6 MB, 0 failed allocations; free fell to 656 KB
+  at the race's load and never again under 1.8 MB. Race-start hitches f11720 158 ms (`tex` 75.6,
+  `mem` 45, `elan` 28.5, `rend` 19.8: the first race frame's textures and pages) and f11962 97 ms
+  (`tex` 46.9, `sh4` 26), against log 16's 195 and 261 ms (`mem` 238). No hang, no crash.
+- Loading (not the race): `cart` stalls up to 166 ms (f11278) on the loading screen, reads the
+  read-ahead could not see coming, as before.
+- No TEST press logged.
 
 Log 16 (two runs, 2026-11-01):
 - **The "MEM SWEEP SHORT hang" was the TEST button.** The hang log's run read TEST as pressed at
@@ -197,7 +212,8 @@ render. Menus, attract mode and car select run at 100%.
 | 10-30 | Whole hidden models stepped over, light sets not rebuilt per material, box rows per matrix, sampled checksums | log 13: `elan` 8.0 -> 5.5, p50 24.8 -> 21.9 ms, race 36-41 -> 42-47 fps |
 | 10-30 | DIMM AHEAD, REFLECTIONS, JIT COLD ENTRY, DEPTH MEASURE, boxes for dropped lists | log 15: stutter gone (p99 38 -> 25), p50 21.9 -> 20.8, race intro 32-37 -> 50-60 fps |
 | 11-01 | REFLECTIONS default 1 in 4, MEM SWEEP, GX FIFO WAKE | log 16: 48-51 fps at 80-86K vertices, night demo 55.5-60.8 fps, `cached programs` 2.9 -> 2.2 ms in heavy scenes; MEM SWEEP SHORT still untested (the "hang" was TEST) |
-| 11-01 | GX FIFO SIZE | awaiting log 17 |
+| 11-01 | GX FIFO SIZE | log 17: FIFO never full, `rend` + `elan` 7.7 -> 6.6-6.8 ms, race 48.8-54.7 fps at ~80K vertices, p50 19.2-19.6; MEM SWEEP SHORT: race hitches 261 -> 158 ms |
+| 11-04 | SOFT FLOAT (native double divide and multiply) | awaiting log 18 |
 
 ## What was done
 
@@ -290,7 +306,33 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
-### Done after log 16 (awaiting log 17)
+### Done after log 17 (awaiting log 18)
+
+- **SOFT FLOAT** (RECOMPILER, last row, default NATIVE; `emu/naomi/naomi_softfloat.cpp`, hook in
+  `ngen_Compile` next to the reflection one). The game does its double-precision maths in
+  software: GCC soft-float routines, SH-4 integer code (__divdf3 0C222D00, __muldf3 0C222A00,
+  unpack 0C2225A0, pack 0C222440). A race calls each ~23 times a frame, ~40K SH-4 instructions,
+  most of them the division's 61-round bit loop (blocks 0C222DD4/DDC, ~1250 entries a frame in
+  log 14's [HOT]). The demo makes far fewer (~5.6K soft-float instructions a frame against ~55K in
+  a race): part of the race-vs-demo `sh4` gap. The block at either entry now calls a native
+  version that follows the machine code step for step (61-bit fractions, implicit bit at 60, 8
+  rounding bits; quotient loop; exact 128-bit product; round to nearest even with the sticky
+  bit folded in when the rounding bits are exactly half), written from the disassembly, not from
+  libgcc's source (GPL-3). It hands NaN, infinity, denormal operands, division by zero and
+  results outside the normal range back to the game's code. Both routines, unpack/pack and their
+  constants are fingerprinted (FNV-1a), so other code or another game version is never touched.
+  Windows: `--soft-float 2` runs the game's code and checks every result against the native one,
+  `--soft-float-test N` checks N random pairs against the host's doubles (20M pairs: 0 wrong).
+  Race route on Windows: every call taken natively (124K divisions and 124K multiplications over
+  13000 frames, none handed back), 0 mismatches in check mode, `record digest` identical line for
+  line; **38,083 SH-4 instructions fewer in every race frame** (5.3%, ~724K -> ~686K). On a Wii a
+  native division is ~1000 PowerPC instructions (61 rounds of ~16), a multiplication ~60.
+  Expected: ~0.3-0.5 ms off `sh4` (the loop is register-only code, cheaper than the average
+  instruction). The other routines the race calls in that area are short FPU helpers (float to
+  unsigned at 0C222300, int to double at 0C2223B8, ~130 calls a frame) and word copies (0C222348):
+  not worth replacing.
+
+### Done after log 16 (log 17 confirmed)
 
 - **GX FIFO SIZE** (RENDERING, last row, default 512 KB; `gp_fifo`, gxRend.cpp). The FIFO is in BSS,
   so the page pool gives up 256 KB, whichever value is chosen. Heavy scenes pay 0.9-1.6 ms a render
@@ -403,9 +445,9 @@ logs comparable. The cost does not need measuring, and the question is closed.
 
 ## What is left, best first
 
-Numbers are kept because the items refer to each other. After log 16 the order is: prove MEM SWEEP
-SHORT and GX FIFO SIZE on a Wii, then item 1 (`elan` 5-7 ms), item 6 (SH-4 9.3 ms: log 16's demo
-against race says it is spread out, see "The target") and item 8 (sound, 2.2 ms, never profiled).
+Numbers are kept because the items refer to each other. After log 17 the order is: measure SOFT
+FLOAT on a Wii, then item 1 (`elan` 4.4-7 ms), item 6 (SH-4 9.3 ms: spread out, see "The target")
+and item 8 (sound, 2.2 ms, never profiled).
 Sending the index draws as display lists would take `cached programs` (1.1 ms, 2-3 in heavy scenes)
 and the FIFO load off the CPU, at the price of a larger ring and a rewrite of the fetch programs
 (CP arrays cannot be set inside a display list). JIT COLD ENTRY needs an A/B before it counts as a
@@ -462,7 +504,8 @@ gain.
    Wii time; wait-for-frame loop left out): 0C048E80-0C0491BF ~20% (the reflection map, see log 14),
    0C1DA1C0-0C1DA57F ~10%, 0C207D80-0C2081FF ~9%, 0C1D4C40-0C1D4FBF ~7%, then a long flat tail. All of it is plain compiled code, 40-50% `mov.l` and ~0% floating
    point, some with `pref` (store-queue copies): there is no matrix kernel to replace with
-   native code. Left: what the 32 KB copy is and whether it needs doing (~4% of the instructions
+   native code. Its doubles are software, though: SOFT FLOAT runs the divide and multiply natively
+   (after log 17). Left: what the 32 KB copy is and whether it needs doing (~4% of the instructions
    on its frames), a JIT memcpy idiom for it, wider timeslices, hot guest data in MEM1 (whether
    first touch gives MEM1 to the right pages is unchecked, and load misses are ~18% of cycles).
    Call-outs are ~1 ms in all (timeslice 1866, sync_fpscr ~1800, writemem ~760, readmem ~420,

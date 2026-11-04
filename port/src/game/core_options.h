@@ -98,6 +98,7 @@ enum CoreOptionId
     OPT_FIFO_WAKE,
     OPT_MEM_SWEEP,
     OPT_FIFO_SIZE,
+    OPT_SOFT_FLOAT,
     kCoreOptionCount
 };
 
@@ -267,6 +268,8 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
      PAGE_RECOMPILER, 1, 2, {"2 MB (LEGACY)", "SHORT"}, {0, 1}},
     {"GX FIFO SIZE  ", "room for what the CPU sends the GPU: heavy scenes wait less for it to catch up", PAGE_DEPTH, 1,
      2, {"256 KB (LEGACY)", "512 KB"}, {0, 1}},
+    {"SOFT FLOAT    ", "the game's software double maths (divide, multiply) runs natively, same results",
+     PAGE_RECOMPILER, 1, 2, {"EMULATED (LEGACY)", "NATIVE"}, {0, 1}},
 };
 
 } // namespace idas3

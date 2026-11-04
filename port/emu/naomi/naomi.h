@@ -68,6 +68,16 @@ void naomi_SetFrameHook(NaomiFrameHook fn, u32 period);
 // block, or every build is made), and whether the build at that row is skipped.
 extern "C" u32 naomi_ReflectionExit(u32 pc);
 extern "C" u32 naomi_ReflectionSkip(u32 row);
+// SOFT FLOAT (naomi_softfloat.cpp): the native version of the game's software
+// double divide or multiply starting at pc (null: not one, or the option is
+// off). Called with r4-r7, it returns 0 to leave the call to the game's code,
+// else 1 with the result (r0, r1) in g_soft_float_result.
+typedef u32 (*NaomiSoftFloatFn)(u32 r4, u32 r5, u32 r6, u32 r7);
+extern "C" NaomiSoftFloatFn naomi_SoftFloatEntry(u32 pc);
+extern "C" u32 naomi_SoftFloatDiv(u32 r4, u32 r5, u32 r6, u32 r7);
+extern "C" u32 naomi_SoftFloatMul(u32 r4, u32 r5, u32 r6, u32 r7);
+extern "C" u32 g_soft_float_result[2];
+extern "C" int g_soft_float_preset;
 void naomi_VBlank();
 void naomi_OnStartRender();
 // Called from the update cascade: logs the CPU state once if execution ever

@@ -303,6 +303,12 @@ static ppc_label* s_cold_entry;
 extern "C" u32 naomi_ReflectionExit(u32 pc);
 extern "C" u32 naomi_ReflectionSkip(u32 row);
 
+// SOFT FLOAT preset (naomi_softfloat.cpp): the game's software double divide
+// and multiply, run natively.
+typedef u32 (*NaomiSoftFloatFn)(u32 r4, u32 r5, u32 r6, u32 r7);
+extern "C" NaomiSoftFloatFn naomi_SoftFloatEntry(u32 pc);
+extern "C" u32 g_soft_float_result[2];
+
 // Forward decls: GPR/FPR allocation maps + flush/reload (defined later in this file).
 ppc_ireg GetIntReg(u32 reg);
 ppc_freg GetFloatReg(u32 reg);
@@ -3131,6 +3137,28 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		ppc_li(ppc_next_pc,reflection_exit);
 		ppc_jump(loop_no_update);
 		build->MarkLabel();
+	}
+
+	// SOFT FLOAT: this block is the entry of the game's software double divide
+	// or multiply. The native version takes the operands (r4-r7); when it
+	// returns 1, R0/R1 get its result and the call returns to PR, else the
+	// game's code below runs as usual.
+	if (NaomiSoftFloatFn soft_float = naomi_SoftFloatEntry(block->start))
+	{
+		ppc_ori(ppc_rarg0,GetIntReg(reg_r4),0);
+		ppc_ori(ppc_rarg1,GetIntReg(reg_r5),0);
+		ppc_ori(ppc_rarg2,GetIntReg(reg_r6),0);
+		ppc_ori(ppc_rarg3,GetIntReg(reg_r7),0);
+		ppc_call((void*)soft_float);
+		ppc_cmpi(ppc_cr0,ppc_rrv0,0,0);
+		ppc_label* own=ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq own
+		u32 lo=ppc_addr_high(ppc_rarg1,(void*)g_soft_float_result);	// 8-aligned: lo+4 stays in range
+		ppc_lwz(GetIntReg(reg_r0),ppc_rarg1,lo);
+		ppc_lwz(GetIntReg(reg_r1),ppc_rarg1,lo+4);
+		ppc_sh_load(ppc_next_pc,reg_pr);
+		ppc_jump(loop_no_update);
+		own->MarkLabel();
 	}
 
 	// JIT_HOTBLOCKS: bump this block's execution counter. Emitted AFTER

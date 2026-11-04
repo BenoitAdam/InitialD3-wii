@@ -85,6 +85,7 @@ struct FetchCounts
 {
     u32 builds, patches, patchRecords, aborted, tooBig, wraps, staleCaught, resets;
     u32 bounds, gaps;       // page boundaries inside lists built, and those between frames apart
+    u32 pageChecks;         // pages checked (fetchPagePhys calls), at most one a page a render
 };
 FetchCounts s_fetchCounts = {};
 // The first cached program found changed under its list (a ring bookkeeping
@@ -109,6 +110,7 @@ bool pagesSettled(u32 first, u32 last, u32& newest)
         {
             int written;
             const u32 pa = fetchPagePhys(p, &written);
+            s_fetchCounts.pageChecks++;
             if (written || pa != s.pa)
                 s.written = s_render;
             s.pa = pa;
