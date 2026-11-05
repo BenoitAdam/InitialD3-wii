@@ -177,6 +177,12 @@ u32 g_fp_elan_gaps = 0;
 u32 g_fp_elan_items = 0;
 u32 g_fp_elan_progtb = 0;
 u32 g_fp_elan_strips = 0;
+u32 g_fp_elan_pgchk = 0;
+u32 g_fp_elan_pgdirty = 0;
+u32 g_fp_elan_pgro = 0;
+u32 g_fp_elan_pgtb = 0;
+u32 g_fp_elan_pgset = 0;
+u32 g_fp_elan_pgfault = 0;
 
 #if HOST_OS == OS_WII
 // Event set being counted (index into kPmcSel), -1 = counters not programmed.
@@ -239,6 +245,7 @@ static u32 s_rend_t0 = 0, s_ovf0 = 0, s_elan_t0 = 0, s_elan_v0 = 0;
 static u32 s_elan_f0 = 0, s_elan_b0 = 0, s_elan_w0 = 0, s_elan_g0 = 0, s_elan_p0 = 0, s_elan_resets0 = 0;
 static u32 s_elan_progs0 = 0, s_elan_patches0 = 0, s_elan_wraps0 = 0, s_elan_bounds0 = 0, s_elan_gaps0 = 0;
 static u32 s_elan_i0 = 0, s_elan_pt0 = 0, s_elan_s0 = 0;
+static u32 s_pg_chk0 = 0, s_pg_dirty0 = 0, s_pg_ro0 = 0, s_pg_tb0 = 0, s_pg_set0 = 0, s_pg_fault0 = 0;
 
 // Draw-done probe: the interrupt stamps every draw-done; a render that left
 // the GP busy takes the first stamp after its own end.
@@ -385,6 +392,24 @@ static void fp_hw_dump()
              fp_tb_ms(w.elanTb) / r - progMs,
              (fp_tb_ms(w.elanTb) - fp_tb_ms(w.elanProgTb)) * 1000.0 / (double)w.elanItems);
     }
+    // The GPU fetch's page checks, done when the ELAN records its lists (so in
+    // `elan`, not in the render above): full ones against PAGE GUARD's flags.
+    const u32 pgChk = g_fp_elan_pgchk - s_pg_chk0, pgRo = g_fp_elan_pgro - s_pg_ro0;
+    if (pgChk | pgRo)
+    {
+      const double pgMs = fp_tb_ms(g_fp_elan_pgtb - s_pg_tb0);
+      fp_out("[HW] ELAN page checks a render: %.0f, %.3f ms (%.0f ns each) | full %.0f (%.0f written),"
+             " read-only %.0f | made read-only %u, guards dropped %u\n",
+             (double)(pgChk + pgRo) / r, pgMs / r, pgMs * 1e6 / (double)(pgChk + pgRo), (double)pgChk / r,
+             (double)(g_fp_elan_pgdirty - s_pg_dirty0) / r, (double)pgRo / r, g_fp_elan_pgset - s_pg_set0,
+             g_fp_elan_pgfault - s_pg_fault0);
+    }
+    s_pg_chk0 = g_fp_elan_pgchk;
+    s_pg_dirty0 = g_fp_elan_pgdirty;
+    s_pg_ro0 = g_fp_elan_pgro;
+    s_pg_tb0 = g_fp_elan_pgtb;
+    s_pg_set0 = g_fp_elan_pgset;
+    s_pg_fault0 = g_fp_elan_pgfault;
   }
   else
     fp_out("[HW] 3D renders shown: 0 in %u frames\n", w.frames);

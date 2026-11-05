@@ -108,6 +108,14 @@ int g_wii_fastmem_active = 0;
 static u8* s_htab      = 0;
 static u32 s_htab_phys = 0;
 
+// PAGE GUARD (WiiGuestMem_ElanGpuPage): ELAN pages read-only since they were
+// last seen unwritten. Any new translation of a page (pte_map: the fault of a
+// store to it, or of any access after its PTE was evicted) drops its guard.
+// Below GUARD_ON: clean checks in a row so far.
+#define ELAN_PAGES  ((32u << 20) >> 12)
+#define GUARD_ON    0x80
+static u8 s_elan_guard[ELAN_PAGES];
+
 static inline u32* pteg_for(u32 ea, u32 secondary)
 {
     const u32 vsid = VSID_BASE + (ea >> 28);
@@ -164,6 +172,13 @@ static void pte_remove(u32 ea)
 static void pte_map(u32 ea, u32 pa, u32 pp, u32 rc = 0x180)
 {
     const u32 w1 = (pa & 0xFFFFF000) | rc | pp;
+    if (ea - WII_GUEST_ELAN_EA < (ELAN_PAGES << 12))
+    {
+        u8& guard = s_elan_guard[(ea - WII_GUEST_ELAN_EA) >> 12];
+        if (guard & GUARD_ON)
+            g_fp_elan_pgfault++;
+        guard = 0;
+    }
     u32* pte = pte_find(ea);
     if (!pte)
     {
@@ -877,7 +892,20 @@ extern "C" void WiiGuestMem_Tick(void)
 // clears it, and the MMU sets it again on the next store to the page. A page
 // mapped anew (fault, decompression into another frame) comes back with C
 // set, so it counts as written too.
+//
+// PAGE GUARD: that check costs a page-table search, a cache flush, a sync and
+// a read from memory, ~800 times a race render, though most pages hold track
+// geometry nothing writes again. A page found unwritten GUARD_AFTER checks in
+// a row is mapped read-only instead, and its check is then a flag. The next
+// store to it takes a protection fault, which guest_fault answers as for any
+// backed page (mapped read-write, C set) and pte_map drops the guard: the
+// following check sees C as before. Exact, as the C bit is: every write goes
+// through the page's translation. Only where the MMU enforces PP (not
+// Dolphin, see zero_page_protected).
 // ============================================================================
+
+extern "C" int g_page_guard_preset;           // naomi_frontend.cpp / launch page
+#define GUARD_AFTER 16
 
 static bool s_c_tracking = false;
 
@@ -892,6 +920,7 @@ extern "C" u32 WiiGuestMem_ElanGpuPage(u32 page, int* written)
     *written = 1;
     if (!s_guest_ready || page >= (reg.size >> 12))
         return 0;
+    FP_T0(t0);
     const u32 level = IRQ_Disable();
     const u32 pa = reg.backing[page];
     if (!pa || (pa & 1))
@@ -901,6 +930,18 @@ extern "C" u32 WiiGuestMem_ElanGpuPage(u32 page, int* written)
     }
     if (reg.skip[page] < 4)
         reg.skip[page] = 4;                   // the GPU may read it: no sweep for a while
+    u8& guard = s_elan_guard[page];
+    if (guard & GUARD_ON)
+    {
+        IRQ_Restore(level);                   // read-only: no store since the last check
+        *written = 0;
+        if (FRAME_PROF_ON())
+        {
+            g_fp_elan_pgro++;
+            g_fp_elan_pgtb += FP_TICKS32() - t0;
+        }
+        return pa;
+    }
     const u32 ea = WII_GUEST_ELAN_EA + (page << 12);
     u32* pte = pte_find(ea);
     bool dirty = true;
@@ -913,6 +954,15 @@ extern "C" u32 WiiGuestMem_ElanGpuPage(u32 page, int* written)
             pte[1] &= ~0x80u;
             flush_pte(pte);
             tlb_invalidate(ea);
+            guard = 0;
+        }
+        else if (g_page_guard_preset && s_zero_page_ro && ++guard >= GUARD_AFTER)
+        {
+            pte[1] = (pte[1] & ~3u) | PP_RO;
+            flush_pte(pte);
+            tlb_invalidate(ea);
+            guard = GUARD_ON;
+            g_fp_elan_pgset++;
         }
     }
     else
@@ -925,6 +975,12 @@ extern "C" u32 WiiGuestMem_ElanGpuPage(u32 page, int* written)
     if (dirty)
         DCStoreRange(phys_to_k0(pa), 4096);
     *written = dirty;
+    if (FRAME_PROF_ON())
+    {
+        g_fp_elan_pgchk++;
+        g_fp_elan_pgdirty += dirty;
+        g_fp_elan_pgtb += FP_TICKS32() - t0;
+    }
     return pa;
 }
 

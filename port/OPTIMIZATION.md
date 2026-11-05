@@ -229,6 +229,7 @@ render. Menus, attract mode and car select run at 100%.
 | 11-01 | REFLECTIONS default 1 in 4, MEM SWEEP, GX FIFO WAKE | log 16: 48-51 fps at 80-86K vertices, night demo 55.5-60.8 fps, `cached programs` 2.9 -> 2.2 ms in heavy scenes; MEM SWEEP SHORT still untested (the "hang" was TEST) |
 | 11-01 | GX FIFO SIZE | log 17: FIFO never full, `rend` + `elan` 7.7 -> 6.6-6.8 ms, race 48.8-54.7 fps at ~80K vertices, p50 19.2-19.6; MEM SWEEP SHORT: race hitches 261 -> 158 ms |
 | 11-04 | SOFT FLOAT (native double divide and multiply) | log 18: `sh4` -0.31 to -0.45 ms in the race (night demo control unchanged); race not comparable (heavier scenes driven) |
+| 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | awaiting log 19 |
 
 ## What was done
 
@@ -320,6 +321,25 @@ From the `[CC]` and `[HOT]` censuses of a race:
 - All 18 nullDC4Wii JIT presets on (block cache, dynamic IC, FPU pin, fmov direct, T-forward,
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
+
+### Done after log 18 (awaiting log 19)
+
+- **PAGE GUARD** (RECOMPILER 2, last row, default ON; `WiiGuestMem_ElanGpuPage` and `pte_map`,
+  wii_fastmem.cpp). The GPU fetch checks every ELAN page a render uses once a render (~800 in a
+  race on Windows): a page-table search, a `dcbf` + `sync` of the PTE's line and a read from
+  memory, the page table's lines most likely out of the cache by the next render. A page found
+  unwritten 16 checks in a row is now mapped read-only (PP=3), and while it is its check is a
+  flag. The next store to it takes a protection fault: `guest_fault` maps any backed page
+  read-write with C set (as for a demand fault), and `pte_map` drops the guard of every ELAN page
+  it maps, so the following check sees C exactly as before. The same goes for a page whose PTE was
+  evicted (any access maps it anew) or compressed (not resident, seen before the guard). Exact, as
+  the C bit is: every write to ELAN RAM goes through its one window (no mirrors). Off where the MMU
+  ignores PP (`s_zero_page_ro`: Dolphin). Pages the game writes every frame never qualify; a page
+  written every ~17 renders pays a fault (~1-2 us) each time. Wii only: the Windows runner's
+  fetch check models writes with a write watch, unchanged. New line with PROFILER:
+  `[HW] ELAN page checks a render: N, X ms (Y ns each) | full F (W written), read-only R | made
+  read-only M, guards dropped D`. It times the checks with PAGE GUARD OFF too, which gives the
+  old cost.
 
 ### Done after log 17 (log 18 confirmed)
 
@@ -489,10 +509,10 @@ gain.
    `elan` is still 5.5 ms. Next steps there: prefetch the next list's table entries in the
    walk, a per-page PTE pointer with an uncached read for page checks (item 2), compiled models
    (list descriptors kept per model, no ELAN RAM read for a model that did not change).
-2. **Cheaper fetch validation.** ~1000 page checks a render (PTE lookup + `dcbf` + `sync`,
-   ~5 cache misses each; fewer pages now that culled lists are not drawn, but culled lists
-   with a box still check theirs). A write-tracking bitmap set by the pager/trampolines would
-   replace them. Keep a fallback: Dolphin ignores read-only page bits.
+2. **Cheaper fetch validation.** ~800 page checks a race render (PTE lookup + `dcbf` + `sync`,
+   a few cache misses each). Done after log 18: PAGE GUARD (read-only pages, see above); log 19
+   gives its cost and gain. Next if it is still large: a per-page PTE pointer and an uncached
+   read of the C bit for the pages written too often to guard.
 3. **Colour lists through the GPU fetch, with a TEV swap table** (log 13: pointless on Akina,
    ~30 vertices a render). They stay CPU-fed (4.6K vertices a render on the runner's route,
    ~220 ns each against ~55 fetched) because their colour word is ARGB and

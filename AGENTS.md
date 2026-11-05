@@ -33,7 +33,10 @@ it exists.
   (control); its race drew more, so its fps is not comparable. The RECOMPILER page was full: JIT
   COLD ENTRY, MEM SWEEP and SOFT FLOAT moved to a new page RECOMPILER 2 (labels and
   `CoreOptionId` order unchanged, so saved choices and `autolaunch.txt` still apply); new
-  recompiler rows go there. REFLECTIONS default 1 in 4 is the owner's choice for the
+  recompiler rows go there. Owner: with SOFT FLOAT the car drives normally. Built after it,
+  **awaiting log 19**: PAGE GUARD (RECOMPILER 2, last row): ELAN pages left unwritten 16 renders
+  are mapped read-only, so the GPU fetch no longer checks their PTE every render; new [HW] line
+  "ELAN page checks a render". REFLECTIONS default 1 in 4 is the owner's choice for the
   Wii (a Wii U could keep every frame, to decide later).
   Open bug: owner says the enemy car's lights display wrong (to look at in a later session).
 - 3D LIST CULL (RENDERING page, last row, default VIEW + MODELS; 2026-10-30): each GPU fetch program keeps its list's model-space bounding box; when the ELAN
@@ -187,7 +190,8 @@ read-only (PP) bits, needs its MMU option on, and the owner's Dolphin is overclo
 Reading the log: `FPROF` per-frame buckets (`sh4`, `rend`, `elan`, `arm`, `aica`, `tex`, `mem`;
 on NAOMI 2 the `elan` column is the old disc bucket and `rd=` counts ELAN command executions);
 `[prof]` 120-frame blocks; `[HW]` Broadway PMC lines (IPC, L1 miss cycles, DTLB, L2, render
-probe, ELAN draw split, fetch programs/patches/ring passes); `[CC]` JIT call-outs into C
+probe, ELAN draw split, fetch programs/patches/ring passes, ELAN page checks: count, time, PAGE
+GUARD's read-only pages); `[CC]` JIT call-outs into C
 (JIT CCALLS); `[HOT]` hottest blocks (JIT HOTBLOCKS, ~12% cost); `[mem]` guest page pool;
 `[2P]` split-screen passes.
 
@@ -228,7 +232,8 @@ probe, ELAN draw split, fetch programs/patches/ring passes); `[CC]` JIT call-out
 - Cart DMA offsets carry flag bits (0x2080xxxx / 0x4000xxxx): mask to the DIMM window.
 - Red/magenta border + hang = the game's own assert handler; `naomi_ReportAssert()` logs the
   call site. A jump into BIOS ROM is trapped by `naomi_ReportBiosEntry()`.
-- Dolphin ignores PP bits: anything relying on a write fault to a read-only page writes through.
+- Dolphin ignores PP bits: anything relying on a write fault to a read-only page writes through
+  (the RO zero page, PAGE GUARD).
   `wii_fastmem.cpp` probes this at init (`zero_page_protected`, `change_bit_tracked`) and falls
   back; keep the probes when adding such tricks.
 - After installing PPC exception handlers put a `sync` + memory clobber: GCC moved the inline

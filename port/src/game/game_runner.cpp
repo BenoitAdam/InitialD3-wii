@@ -65,6 +65,7 @@ extern "C" int g_fifo_wake_preset;
 extern "C" int g_mem_sweep_preset;
 extern "C" int g_fifo_size_preset;
 extern "C" int g_soft_float_preset;
+extern "C" int g_page_guard_preset;
 extern "C" int g_sound_realtime_preset;
 extern int g_audio_buffers_preset;    // emu/host/presets_generated.cpp (wii/wii_audio.cpp)
 extern int g_audio_block_preset;
@@ -332,7 +333,8 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_spg_fix_preset,       &g_ta_guard_preset,     &g_inf_vtx_preset,
         &g_elan_point_preset,    &g_isp_cull_preset,     &g_elan_box_preset,     &g_reflection_rate_preset,
         &g_depth_plane_preset,   &g_cold_entry_preset,   &g_dimm_ahead_preset,   &g_fifo_wake_preset,
-        &g_mem_sweep_preset,     &g_fifo_size_preset,    &g_soft_float_preset};
+        &g_mem_sweep_preset,     &g_fifo_size_preset,    &g_soft_float_preset,
+        &g_page_guard_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

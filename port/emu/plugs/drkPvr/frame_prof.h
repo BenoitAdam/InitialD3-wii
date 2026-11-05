@@ -196,3 +196,9 @@ extern u32 g_fp_elan_gaps;         //   (frames not adjacent: patches)
 extern u32 g_fp_elan_items;        // ELAN GPU lists drawn, and of g_fp_elan_ticks the time spent
 extern u32 g_fp_elan_progtb;       //   sending cached programs' indices (the rest: list setup, CPU-fed)
 extern u32 g_fp_elan_strips;       //   in those many strips
+extern u32 g_fp_elan_pgchk;        // ELAN page checks for the GPU fetch (wii_fastmem.cpp), full ones,
+extern u32 g_fp_elan_pgdirty;      //   of those the pages found written,
+extern u32 g_fp_elan_pgro;         //   checks of read-only pages (PAGE GUARD), a flag each,
+extern u32 g_fp_elan_pgtb;         //   time base ticks in both;
+extern u32 g_fp_elan_pgset;        //   pages made read-only, and guards dropped (a store faulted, or
+extern u32 g_fp_elan_pgfault;      //   the page was mapped anew). All cumulative.

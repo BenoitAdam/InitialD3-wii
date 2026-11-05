@@ -220,6 +220,7 @@ int g_cold_entry_preset = 1;    // rec: timeslice exit after the block's tail (w
 int g_fifo_wake_preset = 1;     // gxRend: wake from a full GX FIFO early (InitRenderer)
 int g_mem_sweep_preset = 1;     // wii_fastmem: short synchronous sweeps (page_alloc)
 int g_fifo_size_preset = 1;     // gxRend: 512 KB GX FIFO (InitRenderer)
+int g_page_guard_preset = 1;    // wii_fastmem: unwritten ELAN pages read-only (WiiGuestMem_ElanGpuPage)
 int g_sound_realtime_preset = 0; // ARM7 + AICA follow the real clock (plugs/vbaARM/arm_aica.cpp)
 }
 
