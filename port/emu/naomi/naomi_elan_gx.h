@@ -121,6 +121,9 @@ extern int g_elan_fetch_preset;
 // ring of this size that the guest page pool gives up (_vmem.cpp).
 extern int g_elan_dl_preset;
 constexpr u32 kElanDlRingBytes = 1024u * 1024u;
+// Launch option COLOUR LISTS: 1 = vertex-coloured lists go through the GPU
+// fetch too (as RGB8) when their vertex alpha is opaque or ignored.
+extern int g_elan_colour_fetch_preset;
 // Launch option NIGHT LIGHTS: 0 = lists lit by point lights stay on the CPU
 // (exact), 1 = the GPU path lights them with GX local lights (approximate).
 extern int g_elan_point_preset;

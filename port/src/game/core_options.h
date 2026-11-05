@@ -10,6 +10,7 @@ enum CoreOptionPage
 {
     PAGE_GENERAL,
     PAGE_DEPTH,
+    PAGE_DEPTH_2,        // RENDERING is full: new rendering rows go here
     PAGE_RECOMPILER,
     PAGE_RECOMPILER_2,   // the first one is full: new recompiler rows go here
     PAGE_AUDIO,
@@ -17,8 +18,8 @@ enum CoreOptionPage
     kCoreOptionPages
 };
 
-inline constexpr const char* kCoreOptionPageNames[kCoreOptionPages] = {"GENERAL", "RENDERING", "RECOMPILER",
-                                                                       "RECOMPILER 2", "AUDIO", "FIXES"};
+inline constexpr const char* kCoreOptionPageNames[kCoreOptionPages] = {
+    "GENERAL", "RENDERING", "RENDERING 2", "RECOMPILER", "RECOMPILER 2", "AUDIO", "FIXES"};
 
 enum CoreOptionId
 {
@@ -107,6 +108,7 @@ enum CoreOptionId
     OPT_SMALL_CULL,
     OPT_INCAR_REFLECT,
     OPT_DISPLAY_LISTS,
+    OPT_COLOUR_FETCH,
     kCoreOptionCount
 };
 
@@ -302,6 +304,10 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // the guest page pool gives up kElanDlRingBytes when ON (_vmem.cpp).
     {"DISPLAY LISTS ", "3D VTX FETCH: cached 3D sent as GX display lists, the CPU no longer writes indices",
      PAGE_DEPTH, 1, 2, {"OFF (LEGACY)", "ON (FASTER)"}, {0, 1}},
+    // Vertex-coloured lists through the GPU fetch as RGB8 (naomi_elan_fetch.inc,
+    // alphaOpaque): only when their vertex alpha is 255 or not used.
+    {"COLOUR LISTS  ", "3D VTX FETCH: vertex-coloured 3D read by the GPU too (when its alpha is opaque)",
+     PAGE_DEPTH_2, 1, 2, {"CPU (LEGACY)", "GPU FETCH"}, {0, 1}},
 };
 
 } // namespace idas3

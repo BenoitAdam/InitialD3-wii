@@ -7,6 +7,7 @@
 int g_elan_gx_preset = 0;
 int g_elan_fetch_preset = 1;
 int g_elan_dl_preset = 0;
+int g_elan_colour_fetch_preset = 0;
 int g_elan_point_preset = 0;
 int g_elan_box_preset = 0;
 
@@ -530,7 +531,9 @@ struct FetchRec
 {
     u32 off, count, vsize;
     bool color;
-    u8 attrs;               // attributes the GPU fetches (the Wii's fmtKey): position, normal, UV
+    bool alphaOff;          // colour list with TSP UseAlpha 0: gxRend forces its vertex alpha opaque
+    u8 colorWord;
+    u8 attrs;               // attributes the GPU fetches (the Wii's fmtKey): position, normal, colour, UV
 };
 
 struct CheckTotals
@@ -541,6 +544,7 @@ struct CheckTotals
     u32 lightSetsMax;       // ...in its fullest render
     u32 draws, mismatches, overruns;
     u32 boxAsked, boxes, boxStale;  // lists recorded with 3D LIST CULL on, boxes found, boxes not holding the records
+    u64 colorFetched;               // COLOUR LISTS: colour list vertices drawn from programs
     u32 dlDraws, dlMismatches;      // DISPLAY LISTS: draws from an entry, and those not drawing the CPU's triangles
     u64 dlLiveBytes;                // ring bytes of the entries drawn (each once a render)
 };
@@ -577,8 +581,9 @@ void fetchNote(const ElanGxRecord& r)
     // As the Wii's drawItem: normals when lit or environment-mapped, UVs when
     // the layout has them and the list is not environment-mapped.
     const bool env = r.envMap, uv = !env && (r.layout == 0x00A || r.layout == 0x00E || r.layout == 0x04A);
-    const u8 attrs = (u8)(1 + (r.lights.lit || env ? 1 : 0) + (uv ? 1 : 0));
-    s_fetchRecs.push_back({off, r.count, r.vsize, r.colorFromVertex != 0, attrs});
+    const bool color = r.colorFromVertex != 0;
+    const u8 attrs = (u8)(1 + (r.lights.lit || env ? 1 : 0) + (color ? 1 : 0) + (uv ? 1 : 0));
+    s_fetchRecs.push_back({off, r.count, r.vsize, color, !(r.tsp >> 20 & 1), (u8)(r.layout == 0x042 ? 4 : 6), attrs});
 }
 
 bool fetchCheckInit(u32 size)
@@ -639,7 +644,7 @@ void elan_gx_census_render()
     {
         s_check.vertices += r.count;
         s_check.lists++;
-        if (r.color)
+        if (r.color && !g_elan_colour_fetch_preset)
         {
             s_check.color += r.count;
             continue;
@@ -661,6 +666,15 @@ void elan_gx_census_render()
             (how == kFetchWritten ? s_check.written : s_check.other) += r.count;
             continue;
         }
+        // COLOUR LISTS = GPU FETCH, as the Wii's fetchDraw (whose opaque rule,
+        // gxRend's, also covers some UseAlpha 1 lists by texture format).
+        if (r.color && !r.alphaOff && !alphaOpaque(const_cast<FetchList&>(*e), vtx, r.colorWord))
+        {
+            s_check.color += r.count;
+            continue;
+        }
+        if (r.color)
+            s_check.colorFetched += r.count;
         (how == kFetchBuilt ? s_check.built : s_check.fetched) += r.count;
         s_drawnPrograms.push_back(e);
         fromProgram.clear();
@@ -745,12 +759,12 @@ void elan_gx_census_render()
         printf("[run]   GPU fetch page checks per drawn render: %.0f\n", (c.pageChecks - s_pageChecks0) / d);
         s_pageChecks0 = c.pageChecks;
         printf("[run]   GPU fetch per drawn render: %.0f vertices in %.0f lists | from programs %.0f (%.0f%%), "
-               "built now %.0f (%.0f%%), pages written since the last render %.0f (%.0f%%), colour lists %.0f, "
-               "other CPU-fed %.0f | patched records %.0f | programs drawn take %.0f of the ring's %u KB | "
-               "light sets %.1f (most %u)\n",
+               "built now %.0f (%.0f%%), pages written since the last render %.0f (%.0f%%), colour lists %.0f "
+               "(%.0f more fetched), other CPU-fed %.0f | patched records %.0f | programs drawn take %.0f of the "
+               "ring's %u KB | light sets %.1f (most %u)\n",
                s_check.vertices / d, s_check.lists / d, s_check.fetched / d, 100.0 * s_check.fetched / v,
                s_check.built / d, 100.0 * s_check.built / v, s_check.written / d, 100.0 * s_check.written / v,
-               s_check.color / d, s_check.other / d, s_check.patchVertices / d, s_check.liveWords * 2 / 1024.0 / d,
+               s_check.color / d, s_check.colorFetched / d, s_check.other / d, s_check.patchVertices / d, s_check.liveWords * 2 / 1024.0 / d,
                s_progWords * 2 / 1024, s_check.lightSets / d, s_check.lightSetsMax);
         printf("[run]   GPU fetch check: %u draws compared with the CPU draw, %u MISMATCHES, %u ring overruns | "
                "programs so far: %u built, %u patches (%.1f records each), %u ring passes, %u too big, %u aborted, "
@@ -1277,12 +1291,14 @@ const DrawFn kDraw[16] = {drawFormat<0>,  drawFormat<1>,  drawFormat<2>,  drawFo
                           drawFormat<12>, drawFormat<13>, drawFormat<14>, drawFormat<15>};
 
 // fmtKey bit 4: the GPU fetches the attributes (16-bit indices, GPU fetch
-// below) instead of taking them from the FIFO. Never with colour.
+// below) instead of taking them from the FIFO. With colour (COLOUR LISTS =
+// GPU FETCH) it reads RGB8, alpha 255 (alphaOpaque in naomi_elan_fetch.inc).
 constexpr u32 kFmtFetch = 16;
 
 void setFormat(u32 key)
 {
-    const u8 src = (key & kFmtFetch) ? GX_INDEX16 : GX_DIRECT;
+    const bool fetch = (key & kFmtFetch) != 0;
+    const u8 src = fetch ? GX_INDEX16 : GX_DIRECT;
     GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS, src);
     GX_SetVtxAttrFmt(GX_VTXFMT2, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
@@ -1293,8 +1309,8 @@ void setFormat(u32 key)
     }
     if (key & 2)
     {
-        GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
-        GX_SetVtxAttrFmt(GX_VTXFMT2, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        GX_SetVtxDesc(GX_VA_CLR0, src);
+        GX_SetVtxAttrFmt(GX_VTXFMT2, GX_VA_CLR0, fetch ? GX_CLR_RGB : GX_CLR_RGBA, fetch ? GX_RGB8 : GX_RGBA8, 0);
     }
     if (key & 1)
     {
@@ -1388,6 +1404,8 @@ void setArrays(const Item& it, u32 pa, u32 fmtKey)
     GX_SetArray(GX_VA_POS, (void*)(0x80000000u | (pa + 4)), stride);
     if (fmtKey & 8)                             // float normal: words 4-6; S8: header bytes z y x
         GX_SetArray(GX_VA_NRM, (void*)(0x80000000u | (pa + ((fmtKey & 4) ? 16 : 1))), stride);
+    if (fmtKey & 2)                             // ARGB colour word 4 or 6: its R G B bytes
+        GX_SetArray(GX_VA_CLR0, (void*)(0x80000000u | (pa + (it.layout == 0x042 ? 16 : 24) + 1)), stride);
     if (fmtKey & 1)
         GX_SetArray(GX_VA_TEX0, (void*)(0x80000000u | (pa + (it.layout == 0x00E ? 32 : 16))), stride);
 }
@@ -1400,10 +1418,15 @@ inline void putIndex(u32 k)
         wgPipe->U16 = (u16)k;
     else if (kAttrs == 2)
         wgPipe->U32 = k << 16 | k;
-    else
+    else if (kAttrs == 3)
     {
         wgPipe->U32 = k << 16 | k;
         wgPipe->U16 = (u16)k;
+    }
+    else
+    {
+        wgPipe->U32 = k << 16 | k;
+        wgPipe->U32 = k << 16 | k;
     }
 }
 
@@ -1540,13 +1563,17 @@ bool fetchDraw(const Item& it, u32 fmtKey, u32 alphaOr)
 {
     FetchOutcome how;
     FetchList* e = const_cast<FetchList*>(fetchProgram(it.vtx, (u32)it.vtx - WII_GUEST_ELAN_EA, it.count, it.vsize, how));
-    const u32 attrs = 1 + ((fmtKey >> 3) & 1) + (fmtKey & 1);
-    const u8* entry = e ? dlEntry(*e, attrs) : nullptr;
     if (how == kFetchWritten)
         g_fp_elan_wrote += it.count;
     noteFetchEvents();
     if (!e)
         return false;
+    // A colour list whose vertex alpha shows stays CPU-fed (it still has its
+    // program, so its box).
+    if ((fmtKey & 2) && !alphaOr && !alphaOpaque(*e, it.vtx, it.layout == 0x042 ? 4 : 6))
+        return false;
+    const u32 attrs = 1 + ((fmtKey >> 3) & 1) + ((fmtKey >> 1) & 1) + (fmtKey & 1);
+    const u8* entry = dlEntry(*e, attrs);
     if (how == kFetchBuilt)
         g_fp_elan_build += it.count;
     else
@@ -1571,8 +1598,10 @@ bool fetchDraw(const Item& it, u32 fmtKey, u32 alphaOr)
         drawProgram<1>(it, *e, fmtKey, alphaOr);
     else if (attrs == 2)
         drawProgram<2>(it, *e, fmtKey, alphaOr);
-    else
+    else if (attrs == 3)
         drawProgram<3>(it, *e, fmtKey, alphaOr);
+    else
+        drawProgram<4>(it, *e, fmtKey, alphaOr);
     return true;
 }
 
@@ -1837,7 +1866,7 @@ static void drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
     const u32 fmtKey = (hasNormal ? 8u : 0u) | (hasNormal && floatNormal ? 4u : 0u) | (hasColor ? 2u : 0u) |
                        (hasUV ? 1u : 0u);
     const u32 alphaOr = forceOpaqueAlpha ? 0xFF000000u : 0u;
-    if (!hasColor && s_fetchOn && fetchDraw(it, fmtKey, alphaOr))
+    if (s_fetchOn && (!hasColor || g_elan_colour_fetch_preset) && fetchDraw(it, fmtKey, alphaOr))
         return;
     useFormat(fmtKey);
     kDraw[fmtKey](it, 0, it.count, alphaOr, kEmit[fmtKey]);

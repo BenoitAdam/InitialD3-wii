@@ -261,7 +261,7 @@ u32 ichVertexSize(u32 flags);
 // nothing a skip would lose.
 void checkHiddenModel(const u8* list, u32 listSize, const ModelEntry& m)
 {
-    u32 lastGmp = 0;
+    u32 lastGmp = 0, ich = 0, verts = 0;
     bool bad = false;
     for (u32 at = 0; at + 32 <= listSize && !bad;)
     {
@@ -286,6 +286,8 @@ void checkHiddenModel(const u8* list, u32 listSize, const ModelEntry& m)
             {
                 const u32 vsize = ichVertexSize(word(p, 6)), count = word(p, 7);
                 used = 32 + vsize * count;
+                ich++;
+                verts += count;
                 const int type = m.typeIn >= 0 ? m.typeIn : (int)(pcw >> 24 & 7);
                 if (type & 1)
                     break;                      // modifier volumes are not drawn
@@ -306,7 +308,7 @@ void checkHiddenModel(const u8* list, u32 listSize, const ModelEntry& m)
             }
         at += used;
     }
-    if (lastGmp != m.lastGmp)
+    if (lastGmp != m.lastGmp || ich != m.ich || verts != m.verts)
         bad = true;
     if (bad && elan_Stats().modelCheckStale++ < 8)
         naomi_Log("[elan] hidden model at ELAN +%X, %u bytes: its block no longer matches its summary\n", m.offset,

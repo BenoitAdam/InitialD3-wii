@@ -30,6 +30,30 @@ not a model): S ~12-13 ms. With D ~20-21 ms that is d ~0.45, ~27 fps shown, whic
 as "a 30 fps limit" (log 19). It is no cap: every ms off D adds ~6-8 shown fps under AUTO, every ms
 off S more. 45 fps shown at 100% needs D ~17.5 ms with today's S.
 
+Log 23 (2026-11-05, two runs, every frame drawn, MIRROR OFF, SMALL 3D 4 px, REAL TIME sound, the
+in-car view most of the time):
+- **Night Akina uphill** (log 22's settings): the light-set reuse works, 10-64 sets built a frame
+  and 206-410 reused (80-97%). Recording (`elan` T&L "GPU lists") per list with a box: 2.85-3.6 us
+  against 3.65-4.5 in log 22; at equal load (~600 boxes, frames 7440 in both) 2.36 -> 1.87 ms, and
+  the frame's `elan` 4.79 -> 4.31: **~0.5 ms off a drawn night frame**, the low end of the 0.5-1
+  expected. 48.9-54.4 emulated fps, p50 18.1-20.0 (`sh4` 9.25-9.43, `rend` 1.45-2.03, `elan`
+  3.98-4.94 of which the command walk 2.14-2.80, `arm` 1.54-1.60, `aica` 1.13-1.25).
+- **Day race** (the course of log 21's day run, 146K vertices in): in the in-car view **~100% with
+  every frame drawn**: 57.5-60.9 fps, p50 16.45-16.84 (`sh4` 8.3, `rend` 1.55-2.4, `elan` 3.5-3.76 =
+  walk 2.2-2.5 + recording 1.16-1.37, `arm` 1.36, `aica` 0.9-1.2). Chase camera 51.8-55.9 fps, p50
+  16.8-17.7 (walk 2.0-2.2, recording 1.5-1.96). A render's CPU 1.54-2.27 ms in-car (243-456 lists),
+  2.5-2.8 chase (438-504). Day lists cost more to draw than night ones ("the rest" 2.9-4.3 us a list
+  against 2.1-2.4): the course's colour lists, 1.1-1.6K CPU-fed vertices a render in-car and
+  2.1-2.3K chase, ~0.28 us each, ~0.3-0.65 ms (item 3). Recording by day: 2.35-2.66 us a box.
+- Under FRAMESKIP AUTO (S ~11.4-12 ms) this means ~52 shown fps by day (D ~17.5) and ~40 at night
+  (D ~19): the day course meets the owner's target, night Akina needs ~1.5 ms more off D.
+- The ELAN command walk is now the largest ELAN cost of a drawn frame: 2.0-2.8 ms (log 20: 2.4-2.9),
+  as much as the recording at night and twice it by day. In-car it walks ~65 mirror models a frame
+  that MIRROR OFF does not draw (only those with a main-view summary are stepped over; see "Tried
+  and dropped").
+- `[game] TEST button pressed at frame 6840` (night run) at the race start, but the game did not
+  enter its test menu (no ELAN reset, the race went on): harmless.
+
 Log 22 (2026-11-05, night Akina uphill, every frame drawn, MIRROR OFF, SMALL 3D 4 px, DISPLAY
 LISTS ON; the owner drove backwards at the end): compared with log 20's every-frame run on the same
 course (SMALL 3D 8 px there):
@@ -324,7 +348,8 @@ render. Menus, attract mode and car select run at 100%.
 | 11-05 | MIRROR OFF (in-car view), SMALL 3D, REFLECTIONS 1 in 8 (owner: downgrade options for speed) | log 20 (in-car view all race): every frame drawn 43.5-54.7 fps, p50 18.8-21.2, `rend` 1.55-2.2; AUTO + 4 px: 100% speed, 43-61% of frames drawn |
 | 11-05 | IN-CAR REFLECT (reflection map rebuilt 1 frame in 16 in the in-car view) | log 21: 112-113 builds of 120 skipped as designed, but `sh4` unchanged within 0.1 ms against log 20 on the same course: a build costs the Wii far less than the 1.3 ms assumed |
 | 11-05 | DISPLAY LISTS (cached lists' index draws written once as GX display lists) | log 22 (night Akina, every frame drawn): `cached programs` 0.75-1.4 -> 0.10-0.28 ms a render, render CPU -0.5 to -0.6 ms at equal lists and vertices; no GPU wait, no ring pass in the race |
-| 11-05 | Point-lit light sets reused while a list picks the same lights | awaiting log 23 |
+| 11-05 | Point-lit light sets reused while a list picks the same lights | log 23 (night Akina, every frame drawn): 80-97% of sets reused, recording 3.65-4.5 -> 2.85-3.6 us a list with a box, `elan` -0.5 ms at equal load; day course in-car ~100% every frame drawn |
+| 11-05 | COLOUR LISTS (colour lists through the GPU fetch as RGB8) | awaiting log 24 |
 | 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
@@ -418,7 +443,30 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
-### Done after log 22 (awaiting log 23)
+### Done after log 23 (awaiting log 24)
+
+- **COLOUR LISTS** (new page RENDERING 2, the first row; default GPU FETCH, CPU (LEGACY) keeps the
+  old path; runner `--colour-fetch`). Colour lists (layouts 0x042/0x04A with the vertex colour as
+  material) were the only race lists still CPU-fed (~0.28 us a vertex on the Wii, 1.1-2.3K a render
+  on log 23's day course, ~30 on Akina), and without a program they had no box either. Their
+  colour word is ARGB, which no GX vertex format reads; but the guest's words are stored big-endian,
+  so its bytes are A R G B in memory and GX reads the colour as RGB8 from one byte into the word,
+  with alpha 255 (array bases at odd bytes were already proven by the S8 normals at record+1).
+  Exact when the list's vertex alpha is not used (gxRend's `force_vtx_alpha_opaque`, e.g. TSP
+  UseAlpha 0) or is 255 in every record: `alphaOpaque` (naomi_elan_fetch.inc) scans the records once
+  per program (they cannot change while it is valid) and keeps the answer in spare bits of
+  `FetchList.valid`; a list that fails stays CPU-fed but keeps its program, so its box. Colour adds
+  a fourth index to a vertex (`putIndex<4>`, display-list entries with 4 attributes). Runner census
+  first: in the race every colour list has UseAlpha 0 and every alpha at 255 (type 0 ~1.1K vertices a
+  render, type 2 ~250, a few punch-through); only the car select's translucent untextured effects
+  carry a real vertex alpha (14-58K vertices a render there), they stay CPU-fed. Runner, driving
+  route in the in-car view (`--gpu-tnl --list-cull 3 --small 4 --mirror 0 --display-lists 1
+  --colour-fetch 1`): colour lists 1242-1326 vertices a render all drawn from programs, fetch,
+  display-list and box checks clean (only the 15 known menu lists mismatch, as without it), 0
+  hazards. With `--colour-fetch 0` the record digests match the log-23 code. Expected on the Wii:
+  ~0.3-0.65 ms off a drawn day frame, nothing at night.
+
+### Done after log 22 (log 23 confirmed: ~0.5 ms off a drawn night frame)
 
 - **Point-lit light sets reused** (no option: exact, and checked on every reuse by the runner).
   At night every point-lit list built its GX light set from scratch: 500 bytes cleared, 6-11
@@ -680,15 +728,24 @@ logs comparable. The cost does not need measuring, and the question is closed.
 - Inlining the FR bank swap in `sync_fpscr` (~1.5K real swaps a frame): ~0.2 ms, not worth it
   yet.
 - Trusting Dolphin's numbers for anything cache-related.
+- MIRROR OFF summaries for mirror-only models (after log 23): ~65 mirror models a frame are still
+  walked in-car, because only models with a main-view (boxed) summary are stepped over. A summary
+  without a box written by the mirror walk raised the stepped-over share 100 -> 118 of ~167 on the
+  runner, but those summaries evicted main-view ones from the 2048-slot model table (record digests
+  split from render ~7169); allowed only into free slots, the gain fell to ~3 models a frame (~0.05
+  ms) and digests still split later (render ~9089, cause not found). Reverted; the runner's check of
+  every skipped model now also compares its list and vertex counts.
 
 ## What is left, best first
 
-After log 21: the owner's target is 100% speed with ~45 fps shown under FRAMESKIP AUTO. Log 21's
-day race gives S ~11.4 ms and D ~20.5 (34 shown); 45 there needs D ~18.5 (see "The target").
-DISPLAY LISTS (item 5) took 0.5-0.6 ms off a drawn frame in log 22; light-set reuse (night
-recording) is built for log 23. Next on a drawn frame: the colour lists the day course CPU-feeds
-(item 3, ~0.6-0.8 ms there), the rest of the per-list draw (item 4, ~2.1-2.4 us a list, ~1-1.4 ms
-over ~600 lists), the rest of the recording per list (~3.5 us by day). On a dropped frame besides
+After log 23: the owner's target is 100% speed with ~45 fps shown under FRAMESKIP AUTO. The day
+course of logs 21/23 now runs its in-car view at ~100% with every frame drawn (D ~16.5-17.7 ms:
+~52 shown under AUTO); night Akina has D ~18-20 (~40 shown) and needs ~1.5 ms more. DISPLAY
+LISTS (item 5, log 22) and the light-set reuse (log 23) took ~0.5 ms each off a drawn frame;
+COLOUR LISTS (item 3) is built for log 24. Next
+on a drawn frame: the ELAN command walk (2.0-2.8 ms, now the largest ELAN cost: compiled models,
+item 1), the rest of the per-list draw (item 4, ~2.1-2.4 us a list, ~0.8-1.4 ms), the recording
+(~2.5 us a box by day, ~3.2 at night). On a dropped frame besides
 the game's own code: sound (`arm` 1.2 + `aica` ~0.85 at 100%, item 8: the ARM7 already runs in
 batches of 4 timeslices and skips its idle loops; the AICA mixes ~6 voices at 44.1 kHz, half rate
 would halve it at a cost in sound quality) and the ELAN walk (~0.9 ms: ~1400 command headers a
@@ -724,15 +781,13 @@ log 21 (item 5). JIT COLD ENTRY needs an A/B before it counts as a gain.
    (list descriptors kept per model, no ELAN RAM read for a model that did not change).
 2. **Cheaper fetch validation.** Done: PAGE GUARD (log 19: ~0.055 ms a race render left, ~60%
    of it the ~20 pages written each render, ~1.35 us each). Not worth more work.
-3. **Colour lists through the GPU fetch, with a TEV swap table** (log 13: pointless on Akina,
-   ~30 vertices a render). They stay CPU-fed (4.6K vertices a render on the runner's route,
-   ~220 ns each against ~55 fetched) because their colour word is ARGB and
-   GX reads RGBA: in the records it is A,R,G,B in memory, so GX gets R=A, G=R, B=G, A=B, a
-   rotation that `GX_SetTevSwapModeTable` (ras side, R<-G, G<-B, B<-A, A<-R) undoes; gxRend
-   uses no swap table yet. Unlit lists: the swap alone. Lit lists: the guest alpha is in GX's
-   red, so light and ambient colours rotate the same way, red light 0 with red ambient 255
-   (alpha unlit, as on the ELAN), ALPHA0 lit with the same lights. Forced-opaque lists: alpha
-   from KONST, or keep them CPU-fed. ~0.5 ms; they would also get boxes (item 9).
+3. **Colour lists through the GPU fetch.** Done after log 23 (COLOUR LISTS, see "Done after log
+   23"): read as RGB8 one byte into the ARGB word, when the alpha is 255 or not used; on the
+   day course ~0.3-0.65 ms a drawn frame. Left: the lists whose vertex alpha shows (car select's
+   translucent untextured effects, none in a race on the runner) would need the TEV swap: in
+   the records the word is A,R,G,B in memory, so GX's RGBA8 gets R=A, G=R, B=G, A=B, a rotation
+   that `GX_SetTevSwapModeTable` (ras side, R<-G, G<-B, B<-A, A<-R) undoes; lit ones would also
+   need the light colours rotated and ALPHA0 lit.
 4. **The rest of the ELAN draw.** Of 6.0-6.5 ms of GPU lists (log 11, before item 9), only
    2.2-2.5 ms is spent sending cached programs; 3.6-4.3 ms is everything else inside
    `drawItem`, over ~960 lists: the CPU-fed colour vertices (item 3), matrices, light sets,

@@ -22,18 +22,26 @@ it exists.
 ### Status (2026-11-05)
 
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
-- Menus/attract/car select: 100% speed. Race: ~45-55 fps with every frame drawn
-  (FRAMESKIPPING 0). FRAMESKIP AUTO holds 100% but shows only ~25-35 renders a second in a race
-  (logs 20-21): a dropped frame still costs ~11.5-13 ms (`sh4` 8.3-9.5, sound ~2.1, ELAN walk ~0.9),
-  a drawn one ~20-22.5, and AUTO settles on d = (16.7 - S) / (D - S) drawn. The owner wants 100% at
-  ~45 fps: every ms off either kind of frame helps (OPTIMIZATION.md, "The target").
-- Last real-Wii log analysed: **log 22** (2026-11-05, night Akina, every frame drawn, MIRROR OFF,
-  SMALL 3D 4 px): DISPLAY LISTS (RENDERING, last row, default ON) work: `cached programs`
-  0.75-1.4 -> 0.10-0.28 ms a render, no GPU wait, no ring pass, nothing wrong reported; a render's
-  CPU -0.5 to -0.6 ms at equal lists. 45-57 emulated fps, p50 18.1-21.2 (it drew more lists than log
-  20 at 8 px). At night the recording costs ~5-6 us a list (light sets). Built after it,
-  **awaiting log 23**: point-lit light sets reused while a list picks the same lights (no option;
-  runner: 87% reused, 0 stale).
+- Menus/attract/car select: 100% speed. Race, every frame drawn (FRAMESKIPPING 0, MIRROR OFF,
+  SMALL 3D 4 px): the day course of logs 21/23 at ~100% in the in-car view (57.5-61 fps, p50
+  16.5-16.8 ms) and 52-56 fps from the chase camera; night Akina 49-54 fps (p50 18-20). FRAMESKIP
+  AUTO settles on d = (16.7 - S) / (D - S) drawn (S a dropped frame, ~11.5-13 ms: `sh4` 8.3-9.5,
+  sound ~2.1-2.8, ELAN walk ~0.9; D a drawn one). The owner wants 100% at ~45 fps shown: by day
+  that should now hold (D ~17.5: ~52 shown), at night D ~19 gives ~40 (OPTIMIZATION.md, "The
+  target").
+- Last real-Wii log analysed: **log 23** (2026-11-05, two runs, every frame drawn, MIRROR OFF,
+  SMALL 3D 4 px): night Akina: the light-set reuse works (10-64 sets built a frame, 206-410 reused),
+  recording 3.65-4.5 -> 2.85-3.6 us a list with a box, ~0.5 ms off a drawn night frame (log 22,
+  same settings). Day course (log 21's): in-car ~100%, chase 52-56 fps; there ~1.1-2.3K CPU-fed
+  colour vertices a render cost ~0.3-0.65 ms. The ELAN command walk (2.0-2.8 ms a drawn frame) is
+  now as big as the recording at night and twice it by day. Built after it, **awaiting log 24**:
+  COLOUR LISTS (new page RENDERING 2, after RENDERING, default GPU FETCH): colour lists through
+  the GPU fetch as RGB8 read one byte into their ARGB word, when their alpha is 255 or not used
+  (runner race: all of them, ~1.2-1.3K vertices a render).
+- Log 22 (2026-11-05, night Akina, every frame drawn, MIRROR OFF, SMALL 3D 4 px): DISPLAY LISTS
+  (RENDERING, last row, default ON) work: `cached programs` 0.75-1.4 -> 0.10-0.28 ms a render, no
+  GPU wait, no ring pass; a render's CPU -0.5 to -0.6 ms at equal lists. At night the recording
+  cost ~5-6 us a list (light sets), hence the light-set reuse confirmed by log 23.
 - Log 21 (2026-11-05, AUTO, SMALL 3D 4 px, in-car view, MIRROR ON in the owner's options.txt):
   night Akina ~25 shown fps (log 20, same course with MIRROR OFF: ~31), a day course ~34 (S ~11.4,
   D ~20.5 ms). IN-CAR REFLECT skips 15 builds in 16 as designed but `sh4` did not move (<0.1 ms):
@@ -118,7 +126,7 @@ current work:
 
 | File | Role |
 | --- | --- |
-| `port/src/game/core_options.h` | Launcher option table (6 pages: GENERAL, RENDERING, RECOMPILER, RECOMPILER 2, AUDIO, FIXES; a page that fills up gets a second one) |
+| `port/src/game/core_options.h` | Launcher option table (7 pages: GENERAL, RENDERING, RENDERING 2, RECOMPILER, RECOMPILER 2, AUDIO, FIXES; a page that fills up gets a second one, ~20 rows fit) |
 | `port/src/game/game_runner.cpp` | Runs the core on the Wii: options -> `g_*_preset` globals (array in `CoreOptionId` order, static_assert), pads -> JVS, `[prof]` blocks, async log |
 | `port/src/ui/launcher.cpp` | Menus; `options.txt` saved as `LABEL=VALUE`, matched by label |
 | `port/src/core/log.cpp` | Log file, async ring mode (`log::setAsync`) |
@@ -201,6 +209,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | env `IDAS3_NEAR_TRACE=1` | a `[near]` line per render: pin, frame near plane, vertices measured and why |
 | env `IDAS3_CART_TRACE=1` | a `[cart]` line per read of the game image (offset, length) |
 | `--incar-reflect N` | IN-CAR REFLECT (default 0 here = as REFLECTIONS, the launcher's is 16): while the in-car view's mirror models are on screen, one reflection map build in N, -1 = none; an `IN-CAR REFLECT per 60 frames` line and an exit line count the builds not made. The race starts in the in-car view; `view` toggles it with the chase view |
+| `--colour-fetch 0/1` | COLOUR LISTS with `--gpu-tnl` (default 0 here, the launcher's is GPU FETCH): colour lists get fetch programs (so boxes) and are drawn from them when TSP UseAlpha is 0 or every record's alpha is 255 (the Wii also takes gxRend's other forced-opaque cases); the `GPU fetch per drawn render` line shows "colour lists N (M more fetched)" and they join the fetch, display-list and box checks |
 | `--display-lists 0/1` | DISPLAY LISTS with `--gpu-tnl` (default 0 here, the launcher's is ON): every cached list's display-list entry is built as on the Wii, its bytes read back as the GPU would and compared with the CPU draw. `DISPLAY LISTS per drawn render` line: MISMATCHES (only where the GPU fetch check has them too) and HAZARDS (an entry written over one still queued) must stay 0; also the ring bytes the drawn entries take, ring passes and GPU waits. Env `IDAS3_DL_RING_KB`: ring size (the Wii's is 1024) |
 | `--mirror 0/1` | MIRROR: 0 = models clipped inside the user clip rectangle (the in-car view's rear-view mirror) not drawn; `MIRROR OFF per frame` line. The race starts in the in-car view (~9350) and each `view` press toggles in-car/chase: with presses at 9950, 10250, 10550 the route is in-car at 9350-9950 and 10300-10550 |
 | `--small N` | SMALL 3D with `--gpu-tnl`: lists and whole models under N pixels on screen not drawn; `SMALL 3D per frame` line. Snapshots cannot show it (GPU lists are not drawn in them) |
@@ -321,6 +330,10 @@ GUARD's read-only pages); `[CC]` JIT call-outs into C
   0C221F00-0C224FFF): an FPU-free hot loop can still be floating point. The runner's
   `IDAS3_SF_PROBE` names such routines from their registers. Native replacements follow the
   machine code (libgcc's source is GPL-3) and are checked against it (`--soft-float 2`).
+- Guest words are stored in host order on the Wii (big-endian), so a record's bytes in memory are
+  each word's bytes high first: the S8 normal is bytes 1-3 of word 0 (z y x), an ARGB colour is
+  A R G B. GX array bases may be any byte address (the normals have always started at record+1),
+  so COLOUR LISTS reads RGB8 from one byte into the colour word. No GX format reads ARGB.
 - The menus are driven with the **steering wheel** ("Steering SELECT, Accel OK"): the runner's
   `left`/`right` move the cursor, `up`/`down` are the shifter. To find a sound, compare the
   `IDAS3_AICA_KEYS` key-ons of a run with presses against one without: menu music keys on notes

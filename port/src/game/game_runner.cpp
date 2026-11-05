@@ -360,7 +360,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_depth_plane_preset,   &g_cold_entry_preset,   &g_dimm_ahead_preset,   &g_fifo_wake_preset,
         &g_mem_sweep_preset,     &g_fifo_size_preset,    &g_soft_float_preset,
         &g_page_guard_preset,    &g_mirror_preset,       &g_sfx_menu_level_preset, &g_sfx_tire_level_preset,
-        &g_small_cull_preset,    &g_incar_reflect_preset, &g_elan_dl_preset};
+        &g_small_cull_preset,    &g_incar_reflect_preset, &g_elan_dl_preset,     &g_elan_colour_fetch_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

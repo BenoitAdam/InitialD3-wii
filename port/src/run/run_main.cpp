@@ -1169,6 +1169,14 @@ int main(int argc, char** argv)
         extern int g_elan_dl_preset;
         g_elan_dl_preset = atoi(dl);
     }
+    if (const char* cf = argValue(argc, argv, "--colour-fetch"))
+    {
+        // COLOUR LISTS (with --gpu-tnl): 1 = colour lists get fetch programs
+        // (so boxes) and are drawn from them when their vertex alpha is 255 or
+        // TSP UseAlpha is off, checked like the others; "(N more fetched)".
+        extern int g_elan_colour_fetch_preset;
+        g_elan_colour_fetch_preset = atoi(cf);
+    }
     if (const char* mi = argValue(argc, argv, "--mirror"))
     {
         // MIRROR: 0 = the in-car view's rear-view mirror (models clipped inside

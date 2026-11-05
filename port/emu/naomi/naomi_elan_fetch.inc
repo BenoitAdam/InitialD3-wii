@@ -71,7 +71,8 @@ struct FetchList
     u32 sum;                // progSum of the program when built
     u16 count;
     u8 vsize;
-    u8 valid;               // a program was built (and not given up since)
+    u8 valid;               // kProgValid: a program was built (and not given up
+                            // since); above it, what alphaOpaque found
     u32 dl;                 // its display-list entry: ring offset | attributes fetched, 0 = none
     u32 dlGen;              // ring pass the entry was written in
 };
@@ -150,10 +151,12 @@ FetchList* findList(u32 key, u32 count, u32 vsize, bool& found)
     return nullptr;                             // cannot happen: kFetchMaxLists < kFetchSlots
 }
 
+constexpr u8 kProgValid = 1;
+
 // Written in this ring pass, or in the previous one past the head.
 inline bool programValid(const FetchList& e)
 {
-    return e.valid && (e.gen == s_progGen || (e.gen + 1 == s_progGen && e.prog >= s_progHead));
+    return (e.valid & kProgValid) && (e.gen == s_progGen || (e.gen + 1 == s_progGen && e.prog >= s_progHead));
 }
 
 inline u32 progSum(const u16* p, u32 n)
@@ -424,7 +427,7 @@ bool buildProgram(const u32* vtx, u32 off, u32 count, u32 vs, FetchList& e)
     e.gen = s_progGen;
     e.built = s_render;
     e.sum = progSum(b.out, box + kBoxWords - s_progHead);
-    e.valid = 1;
+    e.valid = kProgValid;                       // and its records' alpha unknown
     e.dl = 0;                                   // its display list, if any, was another program's
     // Next program right after (on 4 bytes, for its box and patches): lining
     // programs up on cache lines took ~15% more of the ring, which the in-car
@@ -517,6 +520,29 @@ bool cachedBox(u32 off, u32 count, u32 vs, float* box)
         return false;
     memcpy(box, s_prog + boxPos(e->prog, e->len), 6 * sizeof(float));
     return true;
+}
+
+// COLOUR LISTS = GPU FETCH: a colour list's records hold ARGB, which no GX
+// vertex format reads, but its R G B bytes follow A in memory (the guest's
+// words are stored big-endian), so GX reads them as RGB8 from one byte into
+// the colour word, alpha 255. Exact when the list is drawn with its vertex
+// alpha forced opaque, or when every record's alpha is 255: scanned once per
+// program (the records cannot change while it is valid), for the colour word
+// asked (4 or 6, by layout).
+constexpr u8 kAlphaKnown = 2, kAlphaOpaque = 4;     // shifted by 2 for word 6
+
+inline bool alphaOpaque(FetchList& e, const u32* vtx, u32 colorWord)
+{
+    const u32 shift = colorWord == 4 ? 0 : 2;
+    if (!(e.valid & (kAlphaKnown << shift)))
+    {
+        const u32 words = e.vsize / 4;
+        bool opaque = true;
+        for (u32 i = 0; i < e.count && opaque; i++)
+            opaque = vtx[i * words + colorWord] >> 24 == 0xFF;
+        e.valid |= (u8)((kAlphaKnown | (opaque ? kAlphaOpaque : 0)) << shift);
+    }
+    return (e.valid & (kAlphaOpaque << shift)) != 0;
 }
 
 // Whether ELAN RAM [off, off + bytes) saw no write since render `since`. Checks
