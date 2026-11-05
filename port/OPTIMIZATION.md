@@ -30,6 +30,70 @@ not a model): S ~12-13 ms. With D ~20-21 ms that is d ~0.45, ~27 fps shown, whic
 as "a 30 fps limit" (log 19). It is no cap: every ms off D adds ~6-8 shown fps under AUTO, every ms
 off S more. 45 fps shown at 100% needs D ~17.5 ms with today's S.
 
+Log 22 (2026-11-05, night Akina uphill, every frame drawn, MIRROR OFF, SMALL 3D 4 px, DISPLAY
+LISTS ON; the owner drove backwards at the end): compared with log 20's every-frame run on the same
+course (SMALL 3D 8 px there):
+- **DISPLAY LISTS work on the Wii.** `cached programs` 0.10-0.28 ms a render for 20-57K vertices
+  (~4-5 ns a vertex) against 0.44-1.42 ms (~24). Ring passes 0 and GPU waits 0 over the whole run;
+  607 entries (447 KB) written at the race's load, then 0-118 a block. The pool gave up 1 MB (40420
+  KB), guest memory still never failed (732 KB free at its lowest, frame 2070). No glitch reported.
+- But "the rest" of the ELAN draw went up ~0.4 us a list (2.1-2.4 against 1.8-1.9): render IPC
+  0.66-0.73 -> 0.57-0.63 at the same load-miss share, likely the GP now fetching at full speed and
+  the CPU's misses waiting longer. Net, a render's CPU at equal lists and vertices: 360 lists / 36K
+  vertices 2.04 -> 1.56 ms, ~420 lists / 35-40K 2.3-2.4 -> 1.72, ~620 lists / 54K ~2.9 -> 2.44 to
+  2.52: **-0.5 to -0.6 ms a drawn frame**, less than the ~1 ms hoped at night.
+- The frame barely moved (45.1-57.0 emulated fps, p50 18.1-21.2, against 43.5-54.7 and 18.2-21.2)
+  because this run drew more: SMALL 3D 4 px instead of 8 left 360-640 lists a render against
+  220-530, and **at night each recorded list costs ~5-6 us** (`elan` T&L 2.0-3.9 ms a frame, light
+  sets), more than its draw. `elan` 4.0-5.65 a frame against 4.2-4.95. That is the next target
+  (done after log 22).
+
+Log 21 (2026-11-05, two runs, FRAMESKIP AUTO, SMALL 3D 4 px, IN-CAR REFLECT 1 in 16, in-car view
+the whole race, REAL TIME sound, and **MIRROR ON** from the owner's options.txt):
+- **Night Akina**, the course and settings of log 20's AUTO run but for MIRROR and IN-CAR REFLECT
+  (its race intro, frames 6480 here and 6120 there, has the same vertices and ELAN times). Race
+  frames 6720-8640: 17-34 renders shown a second (log 20: 19-48, ~31 on average; here ~25), 37-60%
+  drawn, p50 16.4-16.9. A render's CPU 2.3-3.55 ms with 45-64K fetched vertices (log 20 mostly
+  1.7-3.0 at 23-35K): the mirror's second pass, ~0.8-1 ms of `rend` and as much recording per drawn
+  frame. The GP is still drawing 3.9-6.3 ms after the CPU is done (point lights). MIRROR OFF is
+  worth ~6 shown fps at night.
+- **IN-CAR REFLECT** skips 112-113 builds of 120 as designed (log 20 built 30). Yet typical `sh4`
+  matches log 20 window for window (aligned on the race start, 14 windows: -0.07 to +0.08 ms), where
+  ~0.25 was expected. A build must cost the Wii well under the 1.3 ms assumed: log 15, where that
+  figure came from, also moved the cart reads out of `sh4`. So turning the reflections off entirely
+  would gain <0.1 ms (owner's offer: not taken). The mirror, drawn here and not in log 20, is in
+  `rend` and `elan`, not in `sh4`, so it should not hide the difference.
+- **Day race** (another course, 146K vertices in, 41-62K fetched): 24-38 renders shown a second
+  (~34), 54-69% drawn, p50 16.1-16.8; typical `sh4` 7.8-8.3. A render's CPU 4.3-4.9 ms, of it ELAN
+  GPU lists 3.5-4.0 (66-72K vertices): `cached programs` 1.75-1.9 ms (11-12.5K strips) and the
+  rest 1.9-2.1 ms, ~0.8 of it 3.0-3.9K CPU-fed colour vertices (item 3; ~30 on Akina). ELAN
+  2.7-3.2 ms a frame (commands 1.6-1.9, recording 1.1-1.4). So S ~11.4 ms (`sh4` 8.3, sound 2.0,
+  ELAN walk ~0.9) and D ~20.5: d ~0.58, as measured. 45 fps shown there needs D ~18.5.
+- Night recording costs more than day: ~3.9 ms of T&L a drawn night frame for ~35K vertices
+  against ~2.1 ms for ~53K by day (light sets: 6-11 point lights a list, box tests, merges).
+- Owner: "Easy Day race: nothing particular"; at night the rival stays ahead (game difficulty).
+  Guest memory nearly full at frame ~2130-2160 in both, as in every log since 16.
+
+Log 20 (2026-11-05, two runs, in-car view the whole race, MIRROR OFF, REAL TIME sound):
+- **Every frame drawn, SMALL 3D 8 px** (frames 6600-9480): 43.5-54.7 fps, p50 18.8-21.2 ms, p99
+  22-26; `sh4` 9.2-9.6, `rend` 1.55-2.2, `elan` 4.2-4.95 (commands 2.4-2.9, T&L 1.8-3.2), `arm`
+  1.43-1.52, `aica` 1.08-1.25. 105-140K vertices in, 37-72K on the GPU. MIRROR OFF steps over
+  ~175-185 models a drawn frame (560-690 lists, 42-53K vertices); SMALL 3D drops 3-85 lists. The
+  in-car view with its mirror gone draws about like log 19's race at ~80K vertices (p50 19.7-20.6,
+  `rend` 2.3-2.6; its camera is not known), so MIRROR OFF mostly bought back what the mirror
+  costs. The chase view has no mirror models at all (runner), so MIRROR changes nothing there.
+- **FRAMESKIP AUTO, SMALL 3D 4 px**: 59.5-60.2 emulated fps all race, 43-61% of frames drawn
+  (26-37 renders shown a second), p50 16.4-17.0, p99 21.4-23.6. Typical (mostly dropped) frames:
+  `sh4` 9.0-9.9, `elan` 1.1-1.7, `arm` 1.21-1.31, `aica` 0.80-1.03. SMALL 3D at 4 px drops only
+  2-8 lists a frame here. ELAN commands average 1.45-1.85 ms a frame against 2.4-2.9 on a drawn
+  one, so a dropped frame still walks ~1 ms of commands (list-end waits, texture DMAs, TA runs and
+  the top level must be walked; models are stepped over). So S ~13 ms (`sh4` ~9.5, sound ~2.2 at
+  100%, ELAN walk ~1, the rest ~0.3) and D ~19-20: d ~0.55, as measured. Owner: "a little bit
+  better but not that much". Every 0.5 ms off S is ~+2.5 shown fps, off D ~+2.
+- Owner: MIRROR OFF works; SMALL 3D works, at 8 px trees visibly clip ("not a big deal"); SOUND
+  LEVELS work, defaults set to MENU 5, TIRE 4. Both runs: guest memory nearly full at frame 2130
+  (624 KB free), then fine; the AUTO run logged one SERVICE press (harmless).
+
 Log 19 (2026-11-05, PAGE GUARD ON, SOUND CLOCK REAL TIME chosen by the owner, otherwise as log 18):
 - **PAGE GUARD works and is exact**: a whole race, no glitch, no crash (owner: "more fast and
   stable", committed). But the checks were cheap already. A race render checks 480-690 pages in
@@ -257,7 +321,10 @@ render. Menus, attract mode and car select run at 100%.
 | 11-01 | REFLECTIONS default 1 in 4, MEM SWEEP, GX FIFO WAKE | log 16: 48-51 fps at 80-86K vertices, night demo 55.5-60.8 fps, `cached programs` 2.9 -> 2.2 ms in heavy scenes; MEM SWEEP SHORT still untested (the "hang" was TEST) |
 | 11-01 | GX FIFO SIZE | log 17: FIFO never full, `rend` + `elan` 7.7 -> 6.6-6.8 ms, race 48.8-54.7 fps at ~80K vertices, p50 19.2-19.6; MEM SWEEP SHORT: race hitches 261 -> 158 ms |
 | 11-04 | SOFT FLOAT (native double divide and multiply) | log 18: `sh4` -0.31 to -0.45 ms in the race (night demo control unchanged); race not comparable (heavier scenes driven) |
-| 11-05 | MIRROR OFF (in-car view), SMALL 3D, REFLECTIONS 1 in 8 (owner: downgrade options for speed) | awaiting log 20 |
+| 11-05 | MIRROR OFF (in-car view), SMALL 3D, REFLECTIONS 1 in 8 (owner: downgrade options for speed) | log 20 (in-car view all race): every frame drawn 43.5-54.7 fps, p50 18.8-21.2, `rend` 1.55-2.2; AUTO + 4 px: 100% speed, 43-61% of frames drawn |
+| 11-05 | IN-CAR REFLECT (reflection map rebuilt 1 frame in 16 in the in-car view) | log 21: 112-113 builds of 120 skipped as designed, but `sh4` unchanged within 0.1 ms against log 20 on the same course: a build costs the Wii far less than the 1.3 ms assumed |
+| 11-05 | DISPLAY LISTS (cached lists' index draws written once as GX display lists) | log 22 (night Akina, every frame drawn): `cached programs` 0.75-1.4 -> 0.10-0.28 ms a render, render CPU -0.5 to -0.6 ms at equal lists and vertices; no GPU wait, no ring pass in the race |
+| 11-05 | Point-lit light sets reused while a list picks the same lights | awaiting log 23 |
 | 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
@@ -351,7 +418,78 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
-### Done after log 19 (awaiting log 20)
+### Done after log 22 (awaiting log 23)
+
+- **Point-lit light sets reused** (no option: exact, and checked on every reuse by the runner).
+  At night every point-lit list built its GX light set from scratch: 500 bytes cleared, 6-11
+  lights tested against its box, copies merged by comparing every pair (`sameLight`), each kept
+  light converted (`gxPointLight`, several divisions), then 500 bytes compared with the previous
+  set. Neighbouring lists nearly always keep the same lights. Now `pointLightRecord`
+  (naomi_elan_tnl.cpp) first picks the lights (box tests only; which copies merge is worked out once
+  per light generation, `lightPlan`) and rebuilds the set only when the pick (slots, copies, light
+  generation) differs from the last one built; otherwise the last set and its key stand, so the
+  renderer shares it without comparing. Runner, night attract demo (`--gpu-tnl --point-lights 1
+  --list-cull 3`): 87% of the sets reused (~40 built a frame instead of ~320); every reuse rebuilt
+  and compared, 0 stale; record digests identical to the old code as far as two runs of the old
+  code agree with each other (the night demo is not deterministic on Windows past render ~5300).
+  One trap on the way: the cache first lived in the function template's statics, one copy per
+  distance type, whose keys collided (4 stale sets caught by the check). New [prof] line
+  "point-lit light sets per frame: N built, M the last one again". Expected on the Wii: ~0.5-1 ms
+  off the recording of a drawn night frame.
+
+### Done after log 21 (log 22 confirmed)
+
+- **DISPLAY LISTS** (RENDERING, last row, default ON; `dlEntry` in naomi_elan_fetch.inc, `drawEntry`
+  in naomi_elan_gx.cpp). Item 5 below. A cached list's draws used to be sent by the CPU index by
+  index into the GX FIFO at every draw (`cached programs`: 1.75-1.9 ms a day-race render in log
+  21, ~25 ns a vertex). Now each program gets a display-list entry once, in a 1 MB ring of its
+  own: a short script of steps the CPU runs (set the array bases, call these bytes, CPU-feed these
+  strips) and the strips as GX bytes (`0x9A`, count, the index once per fetched attribute), each
+  call on 32 bytes and padded with NOPs, flushed from the cache. A draw is then a few CP writes
+  and `GX_CallDispList` (which flushes GX's pending state, checked in libogc's code) per base.
+  Entries follow their program's life (a rebuild clears them) and the ring's passes, like
+  programs; one per list for the attribute count it is drawn with. The GPU reads the bytes after
+  the CPU went on, so nothing may be written over an entry still queued: gxRend waits for the
+  previous render's GPU work before a render draws, so only this render's calls count, and a
+  write over one of them (or a ring pass after any) waits for the GPU first (`GX_DrawDone`, as
+  gxRend does mid-render before recycling textures). OFF: the old path. ON costs the page pool 1
+  MB (`_vmem.cpp` keeps that much more heap; the ring is taken at the first 3D).
+  Runner (`--display-lists 1`, race route with the in-car mirror drawn): every entry's bytes read
+  back as the GPU would and compared with the CPU draw, 0 mismatches beyond the GPU fetch check's
+  own (the 15 known menu lists, identical with display lists off: see the runner table); every
+  entry written checked against the ones still queued, 0 hazards. A race render draws ~520-730
+  lists from entries taking ~330-545 KB. With a 4 MB ring entries are rewritten exactly when their
+  program is (block for block); the 1 MB ring passed 5 times over frames 9300-13000 (~1200 extra
+  rewrites, 57 GPU waits), on a route that builds far more programs than a Wii race (log 21: 0-22
+  a block in steady stretches). The launcher's settings (MIRROR OFF, 1 MB) with the chase view
+  too: 290-690 lists from entries taking 210-490 KB, 3 ring passes and 18 GPU waits over frames
+  9000-13000, 0 hazards, the same 15 known mismatches. Expected on the Wii: most of `cached programs` off every drawn
+  frame, ~1.2-1.6 ms by day, ~1 at night; the GP does the same work. New [HW] line "ELAN display
+  lists a render" (lists drawn from one, entries written, ring passes, GPU waits and their ms);
+  `cached programs` in the "ELAN draw" line then times the calls.
+
+### Done after log 20 (log 21 read it)
+
+- **IN-CAR REFLECT** (RENDERING, last row; AS REFLECTIONS = legacy, 1 FRAME IN 16 = default,
+  FROZEN). The in-car view shows no body of the player's car; the car reflection map (`sh4` ~1.3
+  ms a build, ~0.33 ms a frame at the owner's REFLECTIONS 1 in 4) is seen there only on the
+  opponent's car. The ELAN counts MODEL commands with user clip mode 2 (`g_elan_mirror_seen`: the
+  rear-view mirror pass, drawn or not); `naomi_ReflectionSkip` treats the view as up while that
+  count moved since its last call, and one build past it, and then builds one frame in N instead
+  of REFLECTIONS' rate. The hook was already in the JIT and the runner. Expected ~0.25 ms off every
+  in-car frame, dropped or drawn, on the owner's settings (~0.3 with FROZEN). New [prof] line
+  "IN-CAR REFLECT: N of M frames without a reflection map build".
+  Runner (CPU path snapshots, REFLECTIONS 4): the race starts in the in-car view and `view`
+  toggles it with the chase view. The in-car view has ~75 plain, ~168 mirror (clip mode 2) and
+  ~230 clip-mode-3 models a frame, the chase view ~430-450 plain ones and no mirror model, so the
+  chase view always rebuilds as REFLECTIONS says. In-car with the opponent far ahead (frames
+  10275-13000, 110 snapshots), FROZEN gives the same pixels as the legacy run. With the opponent
+  alongside and pulling away (9530-9780), FROZEN changes up to 9.3K pixels of its body (1.9K by
+  more than 24/255); 1 FRAME IN 16 up to 3.7K, at most 7 by more than 24/255 except in the frame
+  just before a rebuild (463). 648 of 691 in-car builds not made at 16.
+- **TIRE SOUND default 4** (owner, log 20); MENU SOUND stays 5. A saved options.txt keeps its value.
+
+### Done after log 19 (log 20 confirmed)
 
 The owner wants 100% speed in the race with as many frames shown as possible, and asked for
 options that lower the picture for it. All three are on the RENDERING page.
@@ -545,19 +683,23 @@ logs comparable. The cost does not need measuring, and the question is closed.
 
 ## What is left, best first
 
-After log 19: the owner's target is 100% speed with ~45 fps shown under FRAMESKIP AUTO, i.e. a
-drawn race frame of ~17.5 ms (see "The target"). Log 20 should say how much MIRROR OFF and SMALL 3D
-give. Cheap next ideas: skip the reflection map entirely while the in-car view is up (the mirror
-models say when; the map is not seen there), and a lighter sound path at 100% speed (`arm` +
-`aica` ~2.2 ms every frame, dropped or not).
+After log 21: the owner's target is 100% speed with ~45 fps shown under FRAMESKIP AUTO. Log 21's
+day race gives S ~11.4 ms and D ~20.5 (34 shown); 45 there needs D ~18.5 (see "The target").
+DISPLAY LISTS (item 5) took 0.5-0.6 ms off a drawn frame in log 22; light-set reuse (night
+recording) is built for log 23. Next on a drawn frame: the colour lists the day course CPU-feeds
+(item 3, ~0.6-0.8 ms there), the rest of the per-list draw (item 4, ~2.1-2.4 us a list, ~1-1.4 ms
+over ~600 lists), the rest of the recording per list (~3.5 us by day). On a dropped frame besides
+the game's own code: sound (`arm` 1.2 + `aica` ~0.85 at 100%, item 8: the ARM7 already runs in
+batches of 4 timeslices and skips its idle loops; the AICA mixes ~6 voices at 44.1 kHz, half rate
+would halve it at a cost in sound quality) and the ELAN walk (~0.9 ms: ~1400 command headers a
+frame, each a likely cache miss; the next header is already prefetched). Not a lever: the car's
+reflection map (log 21, IN-CAR REFLECT changed nothing measurable).
 
 Numbers are kept because the items refer to each other. After log 18 the order is: item 1 (`elan`
 4.4-7 ms), item 6 (SH-4 9.0 ms after SOFT FLOAT: spread out, see "The target") and item 8 (sound,
 2.2 ms, never profiled).
-Sending the index draws as display lists would take `cached programs` (1.1 ms, 2-3 in heavy scenes)
-and the FIFO load off the CPU, at the price of a larger ring and a rewrite of the fetch programs
-(CP arrays cannot be set inside a display list). JIT COLD ENTRY needs an A/B before it counts as a
-gain.
+Sending the index draws as display lists (`cached programs`, 1.1-1.9 ms a render) is done after
+log 21 (item 5). JIT COLD ENTRY needs an A/B before it counts as a gain.
 
 1. **The cost of recording lists** (`elan`, log 12: 5.4 ms over ~1430 lists, ~2.7 us of it
    per list new with item 9). Done after log 12, log 13 confirms ~2.5 ms of the ~2.5 expected:
@@ -599,10 +741,11 @@ gain.
    one list in 32). Item 9 takes ~40% of the lists away. The lookup is done twice now (record
    and draw): keep the slot in the item. Cheaper page checks without a bitmap (item 2): a
    per-page pointer to the PTE and an uncached read of it needs no `pte_find`, `dcbf`, `sync`.
-5. **GX display lists** for cached programs, if the "ELAN draw a render" line still shows send
-   time dominating: an INDEX8 display-list ring (~400 KB for a race) would replace the 256 KB
-   program ring (and hold the boxes); `SetArray` is not allowed inside a display list, so one
-   list per array segment. The GP has the time (idle ~60% of a race frame).
+5. **GX display lists** for cached programs. Done after log 21 (DISPLAY LISTS): a 1 MB ring of
+   entries next to the program ring, INDEX16 as before (one call per array base, `SetArray`
+   being outside display lists). Left: INDEX8 bytes for segments under 256 vertices (half the
+   ring, at the cost of a second vertex format), entries written outside the render if the GPU
+   waits show up in the [HW] line.
 6. **SH-4 side (10.2 ms in log 13, largest bucket).** It is the game's own work: IPC ~0.55 with
    many L1 instruction misses. PC histogram while driving (runner, interpreter instruction counts, not
    Wii time; wait-for-frame loop left out): 0C048E80-0C0491BF ~20% (the reflection map, see log 14),

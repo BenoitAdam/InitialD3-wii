@@ -116,6 +116,11 @@ extern "C" bool rend_AddElanItem(u32 pcw, u32 isp, u32 tsp, u32 tcw, u32 item, f
 extern int g_elan_gx_preset;
 // Launch option: 1 = the GPU fetches unchanged lists' vertices itself (Wii).
 extern int g_elan_fetch_preset;
+// Launch option DISPLAY LISTS: 1 = a cached list's index draws are written
+// once as a GX display list the GPU reads itself (naomi_elan_fetch.inc), in a
+// ring of this size that the guest page pool gives up (_vmem.cpp).
+extern int g_elan_dl_preset;
+constexpr u32 kElanDlRingBytes = 1024u * 1024u;
 // Launch option NIGHT LIGHTS: 0 = lists lit by point lights stay on the CPU
 // (exact), 1 = the GPU path lights them with GX local lights (approximate).
 extern int g_elan_point_preset;

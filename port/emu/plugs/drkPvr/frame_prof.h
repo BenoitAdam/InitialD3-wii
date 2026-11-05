@@ -202,3 +202,9 @@ extern u32 g_fp_elan_pgro;         //   checks of read-only pages (PAGE GUARD), 
 extern u32 g_fp_elan_pgtb;         //   time base ticks in both;
 extern u32 g_fp_elan_pgset;        //   pages made read-only, and guards dropped (a store faulted, or
 extern u32 g_fp_elan_pgfault;      //   the page was mapped anew). All cumulative.
+extern u32 g_fp_elan_dlcalls;      // DISPLAY LISTS: lists drawn from a display-list entry; entries
+extern u32 g_fp_elan_dlbuilds;     //   written and their KB, ring passes, GPU waits before writing
+extern u32 g_fp_elan_dlkb;         //   over one still queued and their time base ticks (all
+extern u32 g_fp_elan_dlsyncs;      //   cumulative)
+extern u32 g_fp_elan_dlwraps;
+extern u32 g_fp_elan_dlwaittb;

@@ -8,7 +8,10 @@
 //        not resident); *written: written or moved since its last call
 //   u32  fetchRingPhys(const void* p)            physical address in the ring
 //   void fetchFlush(const void* p, u32 bytes)    CPU writes -> memory the GPU reads
-// and allocates s_pages, s_lists and s_prog (s_progWords words, 32-byte aligned).
+//   void fetchDlSync()                           waits until the GPU ran every
+//                                                display list called so far
+// and allocates s_pages, s_lists and s_prog (s_progWords words, 32-byte aligned),
+// and s_dl (s_dlBytes, 32-byte aligned) when display lists are on.
 //
 // A program stays valid while none of its list's pages is written or moved
 // (checked once a render). The GPU needs a triangle's three records in one run
@@ -69,6 +72,8 @@ struct FetchList
     u16 count;
     u8 vsize;
     u8 valid;               // a program was built (and not given up since)
+    u32 dl;                 // its display-list entry: ring offset | attributes fetched, 0 = none
+    u32 dlGen;              // ring pass the entry was written in
 };
 
 PageState* s_pages = nullptr;
@@ -420,6 +425,7 @@ bool buildProgram(const u32* vtx, u32 off, u32 count, u32 vs, FetchList& e)
     e.built = s_render;
     e.sum = progSum(b.out, box + kBoxWords - s_progHead);
     e.valid = 1;
+    e.dl = 0;                                   // its display list, if any, was another program's
     // Next program right after (on 4 bytes, for its box and patches): lining
     // programs up on cache lines took ~15% more of the ring, which the in-car
     // view (the mirror's lists too) then overran, rebuilding live programs.
@@ -468,6 +474,7 @@ const FetchList* fetchProgram(const u32* vtx, u32 off, u32 count, u32 vs, FetchO
         e->count = (u16)count;
         e->vsize = (u8)vs;
         e->valid = 0;
+        e->dl = 0;
         s_nLists++;
     }
     else if (newest <= e->built && programValid(*e))
@@ -567,4 +574,213 @@ inline void runProgram(const u16* p, const u16* end, Sink& sink)
             p++;
         }
     }
+}
+
+// ---- GX display lists (DISPLAY LISTS) --------------------------------------
+// A cached program's draws as bytes the GPU reads itself (GX_CallDispList),
+// written once from the program: a draw then costs the CPU a few words a call
+// instead of every index of every strip (`cached programs` in the [HW] line).
+// Array bases cannot be set inside a display list and CPU-fed strips are not
+// in one, so a list's entry is a short script the CPU runs:
+//   kDlBase | patch, pa         set the array bases (a program's kOpSeg/kOpPatch)
+//   kDlCall | offset, bytes     call the display list at that offset of the entry
+//   kDlDirect | i, j            the strips of vertices [i, j), CPU-fed
+// Entry, on 32 bytes in the display-list ring: u32 steps, strips, patch
+// vertices, bytes; the steps (two u32 each); each call's bytes on 32, padded
+// with NOPs to 32 (GX's rule). The index is repeated once per attribute
+// fetched, so the bytes depend on that count: a list keeps the entry of the
+// count it was last drawn with. Valid as programs are (ring passes) and while
+// its program is the one it was built from (a rebuild clears it).
+//
+// The GPU reads a call's bytes after the CPU has gone on: an entry must not be
+// overwritten while a call to it may still be queued. gxRend waits for the
+// previous render's GPU work before a render draws (gx_sync_pending), so only
+// this render's calls count: writing over one of them, or starting a ring pass
+// after any, waits for the GPU first (fetchDlSync).
+constexpr u32 kDlCall = 0x80000000u, kDlBase = 0x40000000u, kDlDirect = 0x20000000u;
+constexpr u32 kDlArg = 0x0FFFFFFFu;
+constexpr u32 kDlHeader = 16;
+constexpr u32 kDlNone = 0xFFFFFFFFu;
+constexpr u8 kGxStrip = 0x98 | 2;               // GX_TRIANGLESTRIP | GX_VTXFMT2, as GX_Begin sends it
+
+u8* s_dl = nullptr;
+u32 s_dlBytes = 0, s_dlHead = 0, s_dlGen = 1;
+u32 s_dlLow = kDlNone;                          // lowest entry of the previous pass called this render
+bool s_dlCalled = false;                        // an entry called this render (since the last wait)
+
+struct DlCounts
+{
+    u32 builds, bytes, wraps, syncs, tooBig;
+};
+DlCounts s_dlCounts = {};
+
+// Writes an entry (out set) or sizes it (out null): one walk of the program.
+struct DlBuilder
+{
+    u32 attrs;
+    u8* out;
+    u32 pos;                // entry bytes so far
+    u32* step;              // next step (writing)
+    u32 steps, strips, patchVerts;
+    int chunk;              // start of the open call's bytes, -1: none
+    bool inPatch;
+
+    void put8(u32 v)
+    {
+        if (out)
+            out[pos] = (u8)v;
+        pos++;
+    }
+    void put16(u32 v)
+    {
+        if (out)
+        {
+            out[pos] = (u8)(v >> 8);            // GX reads big-endian
+            out[pos + 1] = (u8)v;
+        }
+        pos += 2;
+    }
+    void addStep(u32 a, u32 b)
+    {
+        if (out)
+        {
+            step[0] = a;
+            step[1] = b;
+            step += 2;
+        }
+        steps++;
+    }
+    void open()
+    {
+        if (chunk < 0)
+            chunk = (int)pos;                   // pos is on 32 here
+    }
+    void close()
+    {
+        if (chunk < 0)
+            return;
+        while (pos & 31)
+            put8(0);                            // GX_NOP
+        addStep(kDlCall | (u32)chunk, pos - (u32)chunk);
+        chunk = -1;
+    }
+    void vertex(u32 k)
+    {
+        for (u32 a = 0; a < attrs; a++)
+            put16(k);
+    }
+    void begin(u32 n)
+    {
+        open();
+        put8(kGxStrip);
+        put16(n);
+        strips++;
+    }
+    void base(u32 pa, bool patch)
+    {
+        close();
+        addStep(kDlBase | (patch ? 1u : 0u), pa);
+        inPatch = patch;
+    }
+    void run(u32 s, u32 n, bool odd)
+    {
+        begin(n + (odd ? 1 : 0));
+        if (odd)
+            vertex(s);
+        for (u32 k = s; k < s + n; k++)
+            vertex(k);
+        if (inPatch)
+            patchVerts += n;
+    }
+    void list(const u16* p, u32 n)
+    {
+        begin(n);
+        for (u32 k = 0; k < n; k++)
+            vertex(p[k]);
+    }
+    void direct(u32 i, u32 j)
+    {
+        close();
+        addStep(kDlDirect | i, j);
+    }
+};
+
+inline bool dlValid(const FetchList& e, u32 attrs)
+{
+    const u32 off = e.dl & ~31u;
+    return e.dl && (e.dl & 31u) == attrs && (e.dlGen == s_dlGen || (e.dlGen + 1 == s_dlGen && off >= s_dlHead));
+}
+
+// A new render: none of its calls queued yet.
+inline void dlRenderStart()
+{
+    s_dlLow = kDlNone;
+    s_dlCalled = false;
+}
+
+// The GPU is through everything called so far.
+inline void dlSync()
+{
+    fetchDlSync();
+    s_dlCounts.syncs++;
+    s_dlLow = kDlNone;
+    s_dlCalled = false;
+}
+
+// The display-list entry of list e's program (valid) with `attrs` attributes
+// fetched, written now if it has none; null: draw from the program instead.
+const u8* dlEntry(FetchList& e, u32 attrs)
+{
+    if (!s_dl)
+        return nullptr;
+    if (dlValid(e, attrs))
+        return s_dl + (e.dl & ~31u);
+    const u16* p = s_prog + e.prog;
+    DlBuilder z = {attrs, nullptr, 0, nullptr, 0, 0, 0, -1, false};
+    runProgram(p, p + e.len, z);
+    z.close();
+    const u32 head = (kDlHeader + 8 * z.steps + 31) & ~31u;
+    const u32 size = head + z.pos;
+    if (size > s_dlBytes / 4)
+    {
+        s_dlCounts.tooBig++;
+        e.dl = 0;
+        return nullptr;
+    }
+    if (s_dlHead + size > s_dlBytes)
+    {
+        if (s_dlCalled)
+            dlSync();                           // this pass's entries called this render
+        s_dlHead = 0;
+        s_dlGen++;
+        s_dlLow = kDlNone;
+        s_dlCounts.wraps++;
+    }
+    if (s_dlLow != kDlNone && s_dlHead + size > s_dlLow)
+        dlSync();                               // over an entry of the previous pass called this render
+    u8* const entry = s_dl + s_dlHead;
+    DlBuilder w = {attrs, entry, head, (u32*)(entry + kDlHeader), 0, 0, 0, -1, false};
+    runProgram(p, p + e.len, w);
+    w.close();
+    u32* const h = (u32*)entry;
+    h[0] = w.steps;
+    h[1] = w.strips;
+    h[2] = w.patchVerts;
+    h[3] = size;
+    fetchFlush(entry + head, size - head);      // the calls' bytes: the GPU reads them from memory
+    e.dl = s_dlHead | attrs;
+    e.dlGen = s_dlGen;
+    s_dlHead += size;
+    s_dlCounts.builds++;
+    s_dlCounts.bytes += size;
+    return entry;
+}
+
+// List e's entry is being called this render.
+inline void dlNoteCall(const FetchList& e)
+{
+    s_dlCalled = true;
+    const u32 off = e.dl & ~31u;
+    if (e.dlGen != s_dlGen && off < s_dlLow)
+        s_dlLow = off;
 }

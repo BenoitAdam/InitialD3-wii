@@ -105,6 +105,8 @@ enum CoreOptionId
     OPT_SFX_MENU,
     OPT_SFX_TIRE,
     OPT_SMALL_CULL,
+    OPT_INCAR_REFLECT,
+    OPT_DISPLAY_LISTS,
     kCoreOptionCount
 };
 
@@ -286,12 +288,20 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     {"MENU SOUND    ", "menu cursor sound (left/right/up/down): 0 = muted, 10 = as the game", PAGE_AUDIO, 5, 11,
      {"0 (MUTED)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10 (AS THE GAME)"},
      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
-    {"TIRE SOUND    ", "tire squeal when the car slides or drifts: 0 = muted, 10 = as the game", PAGE_AUDIO, 5,
+    {"TIRE SOUND    ", "tire squeal when the car slides or drifts: 0 = muted, 10 = as the game", PAGE_AUDIO, 4,
      11, {"0 (MUTED)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10 (AS THE GAME)"},
      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
     // Needs 3D LIST CULL (the boxes): naomi_elan_tnl.cpp, tooSmall.
     {"SMALL 3D      ", "GPU T&L: 3D objects smaller than this on screen are not drawn (faster)", PAGE_DEPTH, 0, 4,
      {"DRAW ALL (LEGACY)", "UNDER 2 PIXELS", "UNDER 4 PIXELS", "UNDER 8 PIXELS"}, {0, 2, 4, 8}},
+    // In-car view = rear-view mirror models on screen (naomi_frontend.cpp,
+    // naomi_ReflectionSkip): only the opponent's car shows the reflection there.
+    {"IN-CAR REFLECT", "in-car view: only the opponent's car shows the reflection; rebuild it less often",
+     PAGE_DEPTH, 1, 3, {"AS REFLECTIONS", "1 FRAME IN 16", "FROZEN"}, {0, 16, -1}},
+    // GPU fetch's cached lists as GX display lists (naomi_elan_fetch.inc);
+    // the guest page pool gives up kElanDlRingBytes when ON (_vmem.cpp).
+    {"DISPLAY LISTS ", "3D VTX FETCH: cached 3D sent as GX display lists, the CPU no longer writes indices",
+     PAGE_DEPTH, 1, 2, {"OFF (LEGACY)", "ON (FASTER)"}, {0, 1}},
 };
 
 } // namespace idas3

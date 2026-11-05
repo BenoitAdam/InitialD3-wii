@@ -6,6 +6,7 @@
 
 int g_elan_gx_preset = 0;
 int g_elan_fetch_preset = 1;
+int g_elan_dl_preset = 0;
 int g_elan_point_preset = 0;
 int g_elan_box_preset = 0;
 
@@ -301,6 +302,16 @@ void fetchFlush(const void*, u32)
 {
 }
 
+// DISPLAY LISTS check: the entries called this render since the GPU was last
+// waited for (offset, bytes), which no entry written may overlap.
+std::vector<std::pair<u32, u32>> s_dlQueued;
+u32 s_dlHazards = 0;
+
+void fetchDlSync()
+{
+    s_dlQueued.clear();
+}
+
 #include "naomi_elan_fetch.inc"
 
 const u8* s_ram = nullptr;
@@ -459,10 +470,67 @@ struct CheckSink
     void direct(u32 i, u32 j) { cpuTriangles(vtx, vs, i, j, *tris); }
 };
 
+// The triangles a display-list entry draws, its call bytes read as the GPU
+// would (strips on GX_VTXFMT2 and NOPs only, every attribute's index the
+// same, calls on 32 bytes inside the ring). False: bytes the GPU must not see.
+bool dlTriangles(const u8* entry, const u32* vtx, u32 vs, u32 attrs, std::vector<Tri3>& out)
+{
+    const u32* h = (const u32*)entry;
+    const u32* s = h + kDlHeader / 4;
+    const u32 at = (u32)(entry - s_dl), size = h[3];
+    if ((at & 31) || at + size > s_dlBytes || ((kDlHeader + 8 * h[0] + 31) & ~31u) > size)
+        return false;
+    u32 basePa = 0;
+    std::vector<u64> v;
+    for (u32 k = 0; k < h[0]; k++, s += 2)
+    {
+        const u32 a = s[0], b = s[1];
+        if (a & kDlCall)
+        {
+            const u32 off = a & kDlArg;
+            if ((off & 31) || (b & 31) || !b || off + b > size)
+                return false;
+            const u8* p = entry + off;
+            const u8* const end = p + b;
+            while (p < end)
+            {
+                const u8 op = *p++;
+                if (op == 0)
+                    continue;                   // GX_NOP
+                if (op != kGxStrip || end - p < 2)
+                    return false;
+                const u32 n = (u32)p[0] << 8 | p[1];
+                p += 2;
+                if ((u32)(end - p) < n * attrs * 2)
+                    return false;
+                v.clear();
+                for (u32 i = 0; i < n; i++)
+                {
+                    const u32 idx = (u32)p[0] << 8 | p[1];
+                    for (u32 c = 1; c < attrs; c++)
+                        if (((u32)p[2 * c] << 8 | p[2 * c + 1]) != idx)
+                            return false;
+                    p += 2 * attrs;
+                    v.push_back(physRecord(basePa + idx * vs, vs));
+                }
+                addStrip(v, out);
+            }
+        }
+        else if (a & kDlBase)
+            basePa = b;
+        else if (a & kDlDirect)
+            cpuTriangles(vtx, vs, a & kDlArg, b, out);
+        else
+            return false;
+    }
+    return true;
+}
+
 struct FetchRec
 {
     u32 off, count, vsize;
     bool color;
+    u8 attrs;               // attributes the GPU fetches (the Wii's fmtKey): position, normal, UV
 };
 
 struct CheckTotals
@@ -473,6 +541,8 @@ struct CheckTotals
     u32 lightSetsMax;       // ...in its fullest render
     u32 draws, mismatches, overruns;
     u32 boxAsked, boxes, boxStale;  // lists recorded with 3D LIST CULL on, boxes found, boxes not holding the records
+    u32 dlDraws, dlMismatches;      // DISPLAY LISTS: draws from an entry, and those not drawing the CPU's triangles
+    u64 dlLiveBytes;                // ring bytes of the entries drawn (each once a render)
 };
 
 std::vector<FetchRec> s_fetchRecs;
@@ -504,7 +574,11 @@ void fetchNote(const ElanGxRecord& r)
     const u32 off = (u32)((const u8*)r.vtx - ram);
     if (!ram || off >= naomi_ElanRamSize())
         return;
-    s_fetchRecs.push_back({off, r.count, r.vsize, r.colorFromVertex});
+    // As the Wii's drawItem: normals when lit or environment-mapped, UVs when
+    // the layout has them and the list is not environment-mapped.
+    const bool env = r.envMap, uv = !env && (r.layout == 0x00A || r.layout == 0x00E || r.layout == 0x04A);
+    const u8 attrs = (u8)(1 + (r.lights.lit || env ? 1 : 0) + (uv ? 1 : 0));
+    s_fetchRecs.push_back({off, r.count, r.vsize, r.colorFromVertex != 0, attrs});
 }
 
 bool fetchCheckInit(u32 size)
@@ -520,6 +594,17 @@ bool fetchCheckInit(u32 size)
         return false;
     for (u32 k = 0; k < kRingGuard; k++)
         s_prog[s_progWords + k] = 0xA5A5;
+    if (g_elan_dl_preset)
+    {
+        // The Wii's ring size unless IDAS3_DL_RING_KB says otherwise; 32-byte
+        // aligned like the Wii's memalign, guard bytes after it.
+        s_dlBytes = kElanDlRingBytes;
+        if (const char* kb = getenv("IDAS3_DL_RING_KB"))
+            s_dlBytes = (u32)atoi(kb) << 10;
+        static std::vector<u64> ring;
+        ring.assign((s_dlBytes + kRingGuard) / 8 + 4, 0xA5A5A5A5A5A5A5A5ull);
+        s_dl = (u8*)(((uintptr_t)ring.data() + 31) & ~(uintptr_t)31);
+    }
     s_fetchNoPatches = g_elan_fetch_preset == 2;
     if (const char* sc = getenv("IDAS3_FETCH_SCATTER"))
         s_scatterPct = (u32)atoi(sc);
@@ -544,8 +629,12 @@ void elan_gx_census_render()
     s_renderSets.clear();
     s_lastSetKey = 0;
     takeWrites();                               // up to the draw, for pages not checked yet this render
+    // gxRend waits for the previous render's GPU work before it draws.
+    dlRenderStart();
+    s_dlQueued.clear();
+    static std::vector<std::pair<u32, u32>> drawnEntries;   // (offset, bytes) when called
 
-    static std::vector<Tri3> fromProgram, fromCpu;
+    static std::vector<Tri3> fromProgram, fromCpu, fromDl;
     for (const FetchRec& r : s_fetchRecs)
     {
         s_check.vertices += r.count;
@@ -587,8 +676,48 @@ void elan_gx_census_render()
                    "words: %u triangles against %u drawn by the CPU\n",
                    r.off, r.count, r.vsize, how == kFetchBuilt ? "new" : "cached", e->len,
                    (u32)fromProgram.size(), (u32)fromCpu.size());
+        if (!s_dl)
+            continue;
+        // DISPLAY LISTS: the entry the Wii would call, its bytes read back as
+        // the GPU would, against the CPU draw; and no entry written over one
+        // still queued (called this render since the last wait).
+        FetchList& fe = const_cast<FetchList&>(*e);
+        const u32 builds = s_dlCounts.builds;
+        const u8* entry = dlEntry(fe, r.attrs);
+        if (!entry)
+            continue;
+        const u32 at = (u32)(entry - s_dl), size = ((const u32*)entry)[3];
+        if (s_dlCounts.builds != builds)
+        {
+            for (const auto& q : s_dlQueued)
+                if (at < q.first + q.second && q.first < at + size)
+                    s_dlHazards++;
+            for (u32 k = 0; k < kRingGuard; k++)
+                if (s_dl[s_dlBytes + k] != 0xA5)
+                {
+                    s_check.overruns++;
+                    s_dl[s_dlBytes + k] = 0xA5;
+                }
+        }
+        dlNoteCall(fe);
+        s_dlQueued.push_back({at, size});
+        drawnEntries.push_back({at, size});
+        fromDl.clear();
+        const bool readable = dlTriangles(entry, vtx, r.vsize, r.attrs, fromDl);
+        std::sort(fromDl.begin(), fromDl.end());
+        s_check.dlDraws++;
+        if ((!readable || fromDl != fromCpu) && ++s_check.dlMismatches <= 8)
+            printf("[run]   DISPLAY LISTS check MISMATCH: list at ELAN +%X, %u vertices, %u attributes, entry at %u of "
+                   "%u bytes: %s, %u triangles against %u drawn by the CPU\n",
+                   r.off, r.count, r.attrs, at, size, readable ? "readable" : "BAD BYTES", (u32)fromDl.size(),
+                   (u32)fromCpu.size());
     }
     s_fetchRecs.clear();
+    std::sort(drawnEntries.begin(), drawnEntries.end());
+    drawnEntries.erase(std::unique(drawnEntries.begin(), drawnEntries.end()), drawnEntries.end());
+    for (const auto& d : drawnEntries)
+        s_check.dlLiveBytes += d.second;
+    drawnEntries.clear();
     std::sort(s_drawnPrograms.begin(), s_drawnPrograms.end());
     s_drawnPrograms.erase(std::unique(s_drawnPrograms.begin(), s_drawnPrograms.end()), s_drawnPrograms.end());
     for (const FetchList* e : s_drawnPrograms)
@@ -629,6 +758,15 @@ void elan_gx_census_render()
                s_check.draws, s_check.mismatches, s_check.overruns, c.builds, c.patches,
                c.patches ? (double)c.patchRecords / c.patches : 0.0, c.wraps, c.tooBig, c.aborted, c.staleCaught,
                c.resets);
+        if (s_dl)
+        {
+            const DlCounts& dc = s_dlCounts;
+            printf("[run]   DISPLAY LISTS per drawn render: %.0f lists drawn from an entry, entries drawn take %.0f KB of "
+                   "the ring's %u KB | %u draws checked, %u MISMATCHES, %u HAZARDS (entries written over queued ones) "
+                   "| so far: %u entries written (%u KB), %u ring passes, %u GPU waits, %u too big\n",
+                   s_check.dlDraws / d, s_check.dlLiveBytes / 1024.0 / d, s_dlBytes >> 10, s_check.dlDraws,
+                   s_check.dlMismatches, s_dlHazards, dc.builds, dc.bytes >> 10, dc.wraps, dc.syncs, dc.tooBig);
+        }
         if (s_check.boxAsked)
             printf("[run]   3D list boxes: %u lists asked, %u had a box (%.0f%%), every box checked against the "
                    "list's records: %u STALE\n",
@@ -797,6 +935,15 @@ void fetchFlush(const void* p, u32 bytes)
 {
     DCStoreRange((void*)p, bytes);
 }
+// Mid-render, as gxRend does before recycling textures: the GPU is through
+// every display list called so far.
+void fetchDlSync()
+{
+    FP_T0(t);
+    GX_DrawDone();
+    if (FRAME_PROF_ON())
+        g_fp_elan_dlwaittb += FP_TICKS32() - t;
+}
 #include "naomi_elan_fetch.inc"
 // Whether the GPU's vertex cache was invalidated since the frame started or
 // patch data was written into the ring.
@@ -906,6 +1053,7 @@ bool elan_gx_enabled()
 void elan_gx_frame_reset()
 {
     s_render++;
+    dlRenderStart();                            // gxRend waits for the last render's GPU work first
     s_vtxCacheStale = true;
     s_nItems = s_nXforms = s_nLsets = 0;
     s_loadedLights = 0xFFFFFFFFu;
@@ -1214,6 +1362,13 @@ void allocateFetch()
     }
     s_fetchNoPatches = g_elan_fetch_preset == 2;
     s_fetchOn = true;
+    // DISPLAY LISTS: _vmem.cpp left the page pool's heap headroom this much
+    // larger for it.
+    if (g_elan_dl_preset)
+    {
+        s_dl = (u8*)memalign(32, kElanDlRingBytes);
+        s_dlBytes = s_dl ? kElanDlRingBytes : 0;
+    }
     struct mallinfo mi = mallinfo();
     printf("[elan] GPU vertex fetch: on%s (%u KB of tables, %u KB of them for programs; heap %u KB free inside "
            "malloc, MEM2 arena %u KB left)\n",
@@ -1221,6 +1376,9 @@ void allocateFetch()
            (u32)((kElanPages * sizeof(PageState) + kFetchSlots * sizeof(FetchList) + s_progWords * 2) >> 10),
            s_progWords * 2 >> 10, (u32)mi.fordblks >> 10,
            (u32)((u8*)SYS_GetArena2Hi() - (u8*)SYS_GetArena2Lo()) >> 10);
+    if (g_elan_dl_preset)
+        printf("[elan] GX display lists: %s (%u KB ring)\n", s_dl ? "on" : "no memory, cached lists send their indices",
+               kElanDlRingBytes >> 10);
 }
 
 void setArrays(const Item& it, u32 pa, u32 fmtKey)
@@ -1307,6 +1465,40 @@ void drawProgram(const Item& it, const FetchList& e, u32 fmtKey, u32 alphaOr)
     }
 }
 
+// The same draws from the list's display-list entry (DISPLAY LISTS): the CPU
+// sets array bases and calls the GPU-read bytes; CPU-fed strips as before.
+void drawEntry(const Item& it, const u8* entry, u32 fmtKey, u32 alphaOr)
+{
+    FP_T0(t);
+    const u32* h = (const u32*)entry;
+    const u32* s = h + kDlHeader / 4;
+    for (u32 k = 0; k < h[0]; k++, s += 2)
+    {
+        const u32 a = s[0], b = s[1];
+        if (a & kDlCall)
+        {
+            useFormat(fmtKey | kFmtFetch);
+            GX_CallDispList((void*)(entry + (a & kDlArg)), b);   // flushes the GX state first
+        }
+        else if (a & kDlBase)
+            setArrays(it, b, fmtKey);
+        else
+        {
+            const u32 i = a & kDlArg;
+            useFormat(fmtKey);
+            kDraw[fmtKey](it, i, b, alphaOr, kEmit[fmtKey]);
+            g_fp_elan_gap += b - i;
+        }
+    }
+    if (FRAME_PROF_ON())
+    {
+        g_fp_elan_progtb += FP_TICKS32() - t;
+        g_fp_elan_strips += h[1];
+        g_fp_elan_patch += h[2];
+        g_fp_elan_dlcalls++;
+    }
+}
+
 // Program events worth a line in the log, once: they say how far the fetch
 // path got if the run ends badly.
 void noteFetchEvents()
@@ -1319,6 +1511,10 @@ void noteFetchEvents()
     g_fp_elan_wraps = c.wraps;
     g_fp_elan_bounds = c.bounds;
     g_fp_elan_gaps = c.gaps;
+    g_fp_elan_dlbuilds = s_dlCounts.builds;
+    g_fp_elan_dlkb = s_dlCounts.bytes >> 10;
+    g_fp_elan_dlsyncs = s_dlCounts.syncs;
+    g_fp_elan_dlwraps = s_dlCounts.wraps;
     if (c.patches && !patches)
         printf("[elan] GPU fetch: first patch (triangles over a gap between frames, %u records copied)\n",
                c.patchRecords);
@@ -1343,7 +1539,9 @@ void noteFetchEvents()
 bool fetchDraw(const Item& it, u32 fmtKey, u32 alphaOr)
 {
     FetchOutcome how;
-    const FetchList* e = fetchProgram(it.vtx, (u32)it.vtx - WII_GUEST_ELAN_EA, it.count, it.vsize, how);
+    FetchList* e = const_cast<FetchList*>(fetchProgram(it.vtx, (u32)it.vtx - WII_GUEST_ELAN_EA, it.count, it.vsize, how));
+    const u32 attrs = 1 + ((fmtKey >> 3) & 1) + (fmtKey & 1);
+    const u8* entry = e ? dlEntry(*e, attrs) : nullptr;
     if (how == kFetchWritten)
         g_fp_elan_wrote += it.count;
     noteFetchEvents();
@@ -1363,7 +1561,12 @@ bool fetchDraw(const Item& it, u32 fmtKey, u32 alphaOr)
         GX_InvVtxCache();                       // pages rewritten since may sit at the same addresses
         s_vtxCacheStale = false;
     }
-    const u32 attrs = 1 + ((fmtKey >> 3) & 1) + (fmtKey & 1);
+    if (entry)
+    {
+        dlNoteCall(*e);
+        drawEntry(it, entry, fmtKey, alphaOr);
+        return true;
+    }
     if (attrs == 1)
         drawProgram<1>(it, *e, fmtKey, alphaOr);
     else if (attrs == 2)
@@ -1474,8 +1677,13 @@ static void prefetchAhead(u32 index)
             const FetchList& e = s_lists[listHash(key, n1.count)];
             if (e.key == key && e.count == n1.count)
             {
-                __builtin_prefetch(s_prog + e.prog);
-                __builtin_prefetch(s_prog + e.prog + 16);
+                if (s_dl && e.dl)
+                    __builtin_prefetch(s_dl + (e.dl & ~31u));   // its display-list entry's steps
+                else
+                {
+                    __builtin_prefetch(s_prog + e.prog);
+                    __builtin_prefetch(s_prog + e.prog + 16);
+                }
             }
         }
     }

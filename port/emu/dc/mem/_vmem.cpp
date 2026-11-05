@@ -494,6 +494,7 @@ extern "C" void wii_boot_log(const char* fmt, ...);
 #if HOST_OS == OS_WII
 #include "wii/wii_fastmem.h"
 #include "plugs/drkPvr/gxRend.h"
+#include "naomi/naomi_elan_gx.h"
 #define WII_HEAP_KEEP_MEM1 (3u * 1024u * 1024u)
 // Heap left to the C code once the guest page pool takes the rest. Measured
 // on Initial D 3: ~6.8 MB used through the menus (3 MB of it in MEM1).
@@ -540,8 +541,9 @@ bool _vmem_reserve()
         IRQ_Restore(level);
     }
     // Headroom left to the C heap: the renderer's frame buffers and GX FIFO
-    // (MEM1), the CHD reader, audio and libogc allocations made after this.
-    if (!WiiGuestMem_Init(WII_HEAP_KEEP_MEM1, WII_HEAP_KEEP_MEM2))
+    // (MEM1), the CHD reader, audio and libogc allocations made after this,
+    // and with DISPLAY LISTS on their ring (naomi_elan_gx.cpp, allocateFetch).
+    if (!WiiGuestMem_Init(WII_HEAP_KEEP_MEM1, WII_HEAP_KEEP_MEM2 + (g_elan_dl_preset ? kElanDlRingBytes : 0u)))
         return false;
 
     aica_ram.size = ARAM_SIZE;

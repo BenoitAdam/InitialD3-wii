@@ -249,14 +249,21 @@ static void printHisto()
 // --reflection N: the launcher's REFLECTIONS, one reflection map build in N
 // (default 1 here, the game's own behaviour; the launcher's is 4).
 extern int g_reflection_rate_preset;
+extern "C" int g_incar_reflect_preset;
+extern "C" u32 g_reflection_incar_skips;
 extern void (*g_sh4_pc_hook)();
+
+static u32 s_reflectionStarts;          // builds started (row 0), made or not
 
 static void reflectionHook()
 {
     if ((next_pc & 0x1FFFFFFF) == 0x0C048E86)
         if (const u32 out = naomi_ReflectionExit(next_pc))
+        {
+            s_reflectionStarts += r[4] == 0;
             if (naomi_ReflectionSkip(r[4]))
                 next_pc = out;
+        }
 }
 
 // env IDAS3_SF_PROBE=LO:HI[:FROM] (hex range, decimal frame): each call into [LO, HI) from outside it, its
@@ -789,6 +796,21 @@ void host_on_vblank()
             lastP = es.gpuPlaceholders;
         }
         {
+            // IN-CAR REFLECT: where its mirror models are seen and its builds skipped.
+            static u32 lastSeen = 0, lastSkips = 0, lastStarts = 0;
+            if (g_incar_reflect_preset && (g_elan_mirror_seen != lastSeen || g_reflection_incar_skips != lastSkips))
+            {
+                snprintf(line, sizeof(line),
+                         "[run]   IN-CAR REFLECT per 60 frames: %u mirror models, %u of %u builds not made\n",
+                         g_elan_mirror_seen - lastSeen, g_reflection_incar_skips - lastSkips,
+                         s_reflectionStarts - lastStarts);
+                logLine(line);
+            }
+            lastSeen = g_elan_mirror_seen;
+            lastSkips = g_reflection_incar_skips;
+            lastStarts = s_reflectionStarts;
+        }
+        {
             static NaomiElanStats last = {};
             if (es.boxLists != last.boxLists || es.depthMeasured != last.depthMeasured)
             {
@@ -823,6 +845,15 @@ void host_on_vblank()
             {
                 snprintf(line, sizeof(line), "[run]   SMALL 3D per frame: %u lists not drawn\n",
                          (es.boxCulledSmall - last.boxCulledSmall) / 60);
+                logLine(line);
+            }
+            if (es.lightSetsBuilt != last.lightSetsBuilt || es.lightSetsReused != last.lightSetsReused)
+            {
+                snprintf(line, sizeof(line),
+                         "[run]   point-lit light sets per frame: %u built, %u the last one again (checked: %u STALE "
+                         "so far)\n",
+                         (es.lightSetsBuilt - last.lightSetsBuilt) / 60, (es.lightSetsReused - last.lightSetsReused) / 60,
+                         es.lightSetsStale);
                 logLine(line);
             }
             if (es.mirrorModels != last.mirrorModels)
@@ -1120,6 +1151,24 @@ int main(int argc, char** argv)
         // under this many pixels on screen are not drawn.
         g_small_cull_preset = atoi(sm);
     }
+    g_incar_reflect_preset = 0;         // the game's own behaviour unless asked
+    if (const char* ir = argValue(argc, argv, "--incar-reflect"))
+    {
+        // IN-CAR REFLECT: while the in-car view (its rear-view mirror models)
+        // is on screen, one reflection map build in N; -1 = none.
+        g_incar_reflect_preset = atoi(ir);
+        s_reflectionHook = true;
+        g_sh4_pc_hook = pcHook;
+    }
+    if (const char* dl = argValue(argc, argv, "--display-lists"))
+    {
+        // DISPLAY LISTS (with --gpu-tnl): every cached list's display-list
+        // entry is built as on the Wii, its bytes read back as the GPU would
+        // and compared with the CPU draw ("DISPLAY LISTS ... MISMATCHES",
+        // "HAZARDS": both must stay 0). Env IDAS3_DL_RING_KB: ring size.
+        extern int g_elan_dl_preset;
+        g_elan_dl_preset = atoi(dl);
+    }
     if (const char* mi = argValue(argc, argv, "--mirror"))
     {
         // MIRROR: 0 = the in-car view's rear-view mirror (models clipped inside
@@ -1213,6 +1262,9 @@ int main(int argc, char** argv)
         printf("[run] SOUND LEVELS: %u menu cursor key-ons, %u tire squeal key-ons recognised\n", g_sfx_hits[0],
                g_sfx_hits[1]);
     }
+    if (g_incar_reflect_preset)
+        printf("[run] IN-CAR REFLECT: %u reflection map builds not made in the in-car view\n",
+               g_reflection_incar_skips);
     for (int k = 0; k < 2 && s_softFloat; k++)
         printf("[run] SOFT FLOAT %s: %llu calls (%.1f a frame), %llu native, %llu checked, %llu MISMATCHES\n",
                kSfNames[k], (unsigned long long)s_sfCalls[k],

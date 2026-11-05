@@ -842,29 +842,92 @@ bool sameLight(const Light& a, const Light& b)
 // light that many times as bright. Past 8 lights, the parallel ones and the
 // point lights nearest the box (against their reach) are kept. False when a
 // light needs the CPU path.
-template <class DistSq>
-bool pointLightSet(ElanGxLightSet& out, DistSq distSq)
+//
+// Done in two steps, since neighbouring lists mostly keep the same lights: the
+// pick (which lights, how many copies of each) is a few box distances; the set
+// (cleared, converted with several divisions a light, compared) is only built
+// when the pick differs from the last one (pointLightRecord).
+struct LightPick
 {
+    u32 gen;                // s_lightGen: every light, the light model and the active list
+    u32 n;
+    u8 slot[8], copies[8];  // in the set's order
+
+    bool same(const LightPick& o) const
+    {
+        return gen == o.gen && n == o.n && !memcmp(slot, o.slot, n) && !memcmp(copies, o.copies, n);
+    }
+};
+
+// Once a light generation: whether a light needs the CPU path (routed to
+// offset/alpha/negative), and for each active light the earlier diffuse one
+// it is a copy of (sameLight), else itself. Identical lights lie at the same
+// distance from any box, so a copy is in reach exactly when its first is.
+struct LightPlan
+{
+    u32 gen;
+    bool refuse;
+    u8 canon[16];
+};
+LightPlan s_lightPlan = {};
+
+const LightPlan& lightPlan()
+{
+    LightPlan& p = s_lightPlan;
+    if (p.gen == s_lightGen)
+        return p;
+    p.gen = s_lightGen;
+    p.refuse = false;
     const LightModel& lm = s.lightModel;
-    memset(&out, 0, sizeof(out));                // padding too: sets are compared with memcmp
-    out.lit = true;
-    for (int c = 0; c < 3; c++)
-        out.ambient[c] = clamp01(lm.ambientBase[0][c]);
+    for (u32 k = 0; k < s.activeCount[0]; k++)
+    {
+        const int i = s.active[0][k];
+        const Light& l = s.lights[i];
+        p.refuse |= (l.routing & 0xE) != 0;
+        p.canon[k] = (u8)k;
+        if (!(lm.diffuseMask[0] >> i & 1))
+            continue;
+        for (u32 c = 0; c < k; c++)
+        {
+            const int ic = s.active[0][c];
+            if ((lm.diffuseMask[0] >> ic & 1) && sameLight(s.lights[ic], l))
+            {
+                p.canon[k] = (u8)c;
+                break;
+            }
+        }
+    }
+    return p;
+}
+
+template <class DistSq>
+bool pickLights(LightPick& out, DistSq distSq)
+{
+    const LightPlan& plan = lightPlan();
+    if (plan.refuse)
+        return false;
+    const LightModel& lm = s.lightModel;
     struct Pick
     {
         u8 slot, copies;
         float near;                              // squared distance / squared reach; parallel: -1
     };
     Pick pick[16];
+    s8 at[16];                                   // an active light's pick, -1: none
     u32 n = 0;
     for (u32 k = 0; k < s.activeCount[0]; k++)
     {
         const int i = s.active[0][k];
-        const Light& l = s.lights[i];
-        if (l.routing & 0xE)
-            return false;                        // routed to offset/alpha/negative
+        at[k] = -1;
         if (!(lm.diffuseMask[0] >> i & 1))
             continue;                            // specular only: no offset colour on this path
+        if (plan.canon[k] != k)
+        {
+            if (at[plan.canon[k]] >= 0)
+                pick[at[plan.canon[k]]].copies++;
+            continue;
+        }
+        const Light& l = s.lights[i];
         float near = -1.f;
         if (!l.parallel)
         {
@@ -873,13 +936,8 @@ bool pointLightSet(ElanGxLightSet& out, DistSq distSq)
                 continue;
             near = d2 / l.reachSq;
         }
-        u32 j = 0;
-        while (j < n && !sameLight(s.lights[pick[j].slot], l))
-            j++;
-        if (j < n)
-            pick[j].copies++;
-        else
-            pick[n++] = {(u8)i, 1, near};
+        at[k] = (s8)n;
+        pick[n++] = {(u8)i, 1, near};
     }
     if (n > 8)
     {
@@ -892,9 +950,26 @@ bool pointLightSet(ElanGxLightSet& out, DistSq distSq)
             for (u32 b = a; b > 0 && pick[b].slot < pick[b - 1].slot; b--)
                 std::swap(pick[b], pick[b - 1]);
     }
+    out.gen = s_lightGen;
+    out.n = n;
     for (u32 j = 0; j < n; j++)
     {
-        const Light& l = s.lights[pick[j].slot];
+        out.slot[j] = pick[j].slot;
+        out.copies[j] = pick[j].copies;
+    }
+    return true;
+}
+
+bool buildLightSet(const LightPick& p, ElanGxLightSet& out)
+{
+    const LightModel& lm = s.lightModel;
+    memset(&out, 0, sizeof(out));                // padding too: sets are compared with memcmp
+    out.lit = true;
+    for (int c = 0; c < 3; c++)
+        out.ambient[c] = clamp01(lm.ambientBase[0][c]);
+    for (u32 j = 0; j < p.n; j++)
+    {
+        const Light& l = s.lights[p.slot[j]];
         ElanGxLight& g = out.lights[out.count];
         if (l.parallel)
         {
@@ -902,16 +977,82 @@ bool pointLightSet(ElanGxLightSet& out, DistSq distSq)
             g.dir[1] = l.dirN.y;
             g.dir[2] = l.dirN.z;
             for (int c = 0; c < 3; c++)
-                g.color[c] = clamp01(2.f * pick[j].copies * l.color[c]);   // the ELAN's x2 light scale
+                g.color[c] = clamp01(2.f * p.copies[j] * l.color[c]);   // the ELAN's x2 light scale
         }
         else
         {
-            if (!gxPointLight(l, 2.f * pick[j].copies, g))
+            if (!gxPointLight(l, 2.f * p.copies[j], g))
                 return false;
             out.localMask |= (u8)(1u << out.count);
         }
         out.count++;
     }
+    return true;
+}
+
+template <class DistSq>
+bool pointLightSet(ElanGxLightSet& out, DistSq distSq)
+{
+    LightPick p;
+    return pickLights(p, distSq) && buildLightSet(p, out);
+}
+
+// The light set of a point-lit list into rec.lights / rec.lightKey: the last
+// one built when the pick is the same (copied back only if a parallel-lit list
+// overwrote it since). An unchanged set keeps its key, so the renderer shares
+// it without comparing; keys with the top bit set never meet a light
+// generation. False: CPU path.
+// The last set built, its pick and key: one for every caller (a function
+// template's statics would be one per DistSq type, with keys that collide).
+struct LastLightSet
+{
+    LightPick pick;                             // gen 0: none yet (s_lightGen starts at 1)
+    ElanGxLightSet set;
+    u32 key;
+};
+LastLightSet s_lastLightSet = {};
+
+template <class DistSq>
+bool pointLightRecord(ElanGxRecord& rec, DistSq distSq)
+{
+    LightPick& lastPick = s_lastLightSet.pick;
+    ElanGxLightSet& last = s_lastLightSet.set;
+    u32& key = s_lastLightSet.key;
+    LightPick p;
+    if (!pickLights(p, distSq))
+    {
+        rec.lightKey = 0;
+        return false;
+    }
+    if (p.same(lastPick))
+    {
+        if (rec.lightKey != key)
+        {
+            memcpy(&rec.lights, &last, sizeof(last));   // padding too: sets are compared with memcmp
+            rec.lightKey = key;
+        }
+        elan_Stats().lightSetsReused++;
+#if !defined(GEKKO)
+        // Runner: the set reused must be the one a build would give.
+        static ElanGxLightSet check;
+        if (!buildLightSet(p, check) || memcmp(&check, &rec.lights, sizeof(check)))
+            elan_Stats().lightSetsStale++;
+#endif
+        return true;
+    }
+    if (!buildLightSet(p, rec.lights))
+    {
+        rec.lightKey = 0;
+        return false;
+    }
+    elan_Stats().lightSetsBuilt++;
+    if (memcmp(&last, &rec.lights, sizeof(last)))
+    {
+        memcpy(&last, &rec.lights, sizeof(last));
+        key = (key + 1) | 0x80000000u;
+    }
+    lastPick = p;
+    rec.lightKey = key;
     return true;
 }
 
@@ -1416,24 +1557,11 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
 
     if (pointLit)
     {
-        // Built for every list (its box). An unchanged set keeps its key, so
-        // the renderer shares it without comparing; keys with the top bit set
-        // never meet a light generation.
-        const bool built = measure ? pointLightSet(r.lights, [&](Vec3 p) { return distanceSq(box, p); })
-                                   : pointLightSet(r.lights, lightDistance);
+        // Picked for every list (its box), built when the pick changes.
+        const bool built = measure ? pointLightRecord(r, [&](Vec3 p) { return distanceSq(box, p); })
+                                   : pointLightRecord(r, lightDistance);
         if (!built)
-        {
-            r.lightKey = 0;
             return false;
-        }
-        static ElanGxLightSet last;
-        static u32 key = 0;
-        if (memcmp(&last, &r.lights, sizeof(last)))
-        {
-            last = r.lights;
-            key = (key + 1) | 0x80000000u;
-        }
-        r.lightKey = key;
     }
     else if (r.lightKey != s_lightGen * 2u + (u32)listIsLit())
     {

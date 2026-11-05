@@ -744,6 +744,8 @@ void execute(const u8* data, u32 size, u32 depth)
             // model clipped to its rectangle). Not undone after the model, like
             // the hardware: the next model sets its own.
             rend_SetTileClipMode(pcw >> 16 & 3);
+            if ((pcw >> 16 & 3) == 2)
+                g_elan_mirror_seen++;
             if (stepOverModel(data, modelOffset, modelSize))
                 break;
             if ((pcw >> 16 & 3) == 2 && mirrorModel(data, modelOffset, modelSize, depth))
@@ -834,6 +836,9 @@ void execute(const u8* data, u32 size, u32 depth)
 } // namespace
 
 u32 g_elan_exec_seq = 0;
+extern "C" {
+u32 g_elan_mirror_seen = 0;
+}
 
 void elan_Execute(const u32* words, u32 bytes)
 {

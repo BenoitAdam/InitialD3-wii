@@ -267,19 +267,53 @@ extern "C" u32 naomi_IdleCycleScale(u32 pc, u32 bytes)
 // its opcodes, as the idle loop is.
 int g_reflection_rate_preset = 4;
 
+// IN-CAR REFLECT. The in-car view shows no car body of the player's: there the
+// map is only seen on the opponent's car (runner: ~9K pixels of it differ
+// when frozen while the opponent passes alongside, none once it is far). So
+// the view has its own rate: 0 = REFLECTIONS', N = one build in N, -1 = none.
+// The view is told by its rear-view mirror, models with user clip mode 2
+// (g_elan_mirror_seen, naomi_elan_cmd.cpp), which the chase view has none of.
+// It stays "up" one build past the last one that saw mirror models, so
+// whether the ELAN runs before or after the game's build in a frame makes no
+// difference.
+extern "C" {
+int g_incar_reflect_preset = 16;
+u32 g_reflection_incar_skips = 0;   // builds not made in the in-car view (log)
+}
+
 extern "C" u32 naomi_ReflectionExit(u32 pc)
 {
     const u32 exitPc = (pc & 0xE0000000) | 0x0C0491CE;
-    if (g_reflection_rate_preset < 2 || (pc & 0x1FFFFFFF) != 0x0C048E86 || ReadMem16(pc) != 0x9A3C ||
-        ReadMem16(exitPc) != 0x9029)
+    if ((g_reflection_rate_preset < 2 && !g_incar_reflect_preset) || (pc & 0x1FFFFFFF) != 0x0C048E86 ||
+        ReadMem16(pc) != 0x9A3C || ReadMem16(exitPc) != 0x9029)
         return 0;
     return exitPc;
 }
 
 extern "C" u32 naomi_ReflectionSkip(u32 row)
 {
-    static u32 builds = 0;
-    return row == 0 && ++builds % (u32)g_reflection_rate_preset != 0;
+    static u32 builds = 0, inCarBuilds = 0, lastMirror = 0, inCar = 0;
+    if (row != 0)
+        return 0;
+    if (g_incar_reflect_preset)
+    {
+        if (g_elan_mirror_seen != lastMirror)
+        {
+            lastMirror = g_elan_mirror_seen;
+            inCar = 2;
+        }
+        else if (inCar)
+            inCar--;
+        if (inCar)
+        {
+            if (g_incar_reflect_preset > 0 && ++inCarBuilds % (u32)g_incar_reflect_preset == 0)
+                return 0;
+            g_reflection_incar_skips++;
+            return 1;
+        }
+    }
+    const u32 rate = g_reflection_rate_preset < 1 ? 1u : (u32)g_reflection_rate_preset;
+    return ++builds % rate != 0;
 }
 
 void naomi_Run()

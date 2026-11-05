@@ -36,6 +36,8 @@ struct NaomiElanStats
     // walked without drawing, and the polygon lists / vertices in them.
     u32 mirrorModels, mirrorSummarised, mirrorLists, mirrorVertices;
     u32 boxCulledSmall;                     // SMALL 3D: lists dropped (their vertices in boxCulledVertices)
+    u32 lightSetsBuilt, lightSetsReused;    // point-lit lists (GPU path): light sets built, last one reused
+    u32 lightSetsStale;                     // host: ...reused where a build gives another set
     // Host census of boxed lists drawn: vertices by the box's nearest depth
     // (< 25, 50, 100, 200, 400, 800, 1600, more) and by its diagonal on screen
     // (< 2, 4, 8, 16, 32, 64, 128 pixels, more), and lists.
@@ -122,6 +124,9 @@ extern "C" int g_mirror_preset;
 // whose box spans fewer than this many pixels on screen are not drawn; 0 = all
 // drawn (naomi_elan_tnl.cpp, tooSmall).
 extern "C" int g_small_cull_preset;
+// MODEL commands with user clip mode 2 so far (the in-car view's rear-view
+// mirror): IN-CAR REFLECT tells the in-car view by it (naomi_frontend.cpp).
+extern "C" u32 g_elan_mirror_seen;
 // Executes a command stream (the 32-byte FIFO entry, or a display list in
 // ELAN RAM). `words` are host-order 32-bit values, as both buffers hold them.
 void elan_Execute(const u32* words, u32 bytes);

@@ -23,15 +23,34 @@ it exists.
 
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
 - Menus/attract/car select: 100% speed. Race: ~45-55 fps with every frame drawn
-  (FRAMESKIPPING 0). FRAMESKIP AUTO holds 100% but shows only ~27-30 fps in a race: a dropped
-  frame still costs ~12-13 ms (game code + sound), a drawn one ~20-21, and AUTO settles on
-  d = (16.7 - S) / (D - S) drawn. The owner finds that unplayable and wants 100% at ~45 fps: every
-  ms off a drawn frame helps (OPTIMIZATION.md, "The target").
-- Last real-Wii log analysed: **log 19** (2026-11-05): PAGE GUARD exact and stable (owner
+  (FRAMESKIPPING 0). FRAMESKIP AUTO holds 100% but shows only ~25-35 renders a second in a race
+  (logs 20-21): a dropped frame still costs ~11.5-13 ms (`sh4` 8.3-9.5, sound ~2.1, ELAN walk ~0.9),
+  a drawn one ~20-22.5, and AUTO settles on d = (16.7 - S) / (D - S) drawn. The owner wants 100% at
+  ~45 fps: every ms off either kind of frame helps (OPTIMIZATION.md, "The target").
+- Last real-Wii log analysed: **log 22** (2026-11-05, night Akina, every frame drawn, MIRROR OFF,
+  SMALL 3D 4 px): DISPLAY LISTS (RENDERING, last row, default ON) work: `cached programs`
+  0.75-1.4 -> 0.10-0.28 ms a render, no GPU wait, no ring pass, nothing wrong reported; a render's
+  CPU -0.5 to -0.6 ms at equal lists. 45-57 emulated fps, p50 18.1-21.2 (it drew more lists than log
+  20 at 8 px). At night the recording costs ~5-6 us a list (light sets). Built after it,
+  **awaiting log 23**: point-lit light sets reused while a list picks the same lights (no option;
+  runner: 87% reused, 0 stale).
+- Log 21 (2026-11-05, AUTO, SMALL 3D 4 px, in-car view, MIRROR ON in the owner's options.txt):
+  night Akina ~25 shown fps (log 20, same course with MIRROR OFF: ~31), a day course ~34 (S ~11.4,
+  D ~20.5 ms). IN-CAR REFLECT skips 15 builds in 16 as designed but `sh4` did not move (<0.1 ms):
+  the reflection map is cheap on a Wii, so turning reflections off entirely would gain nothing.
+- Log 20 (2026-11-05, two runs, in-car view all race, MIRROR OFF):
+  MIRROR OFF, SMALL 3D and SOUND LEVELS work (owner). Every frame drawn, SMALL 3D 8 px: 43.5-54.7
+  fps, p50 18.8-21.2 ms (`sh4` 9.2-9.6, `rend` 1.55-2.2, `elan` 4.2-4.95, `arm` 1.45, `aica`
+  1.1-1.25); at 8 px trees visibly clip (owner: acceptable). FRAMESKIP AUTO + 4 px: 100% speed,
+  43-61% of frames drawn; owner: "a little bit better but not that much". Owner set the sound
+  defaults: MENU SOUND 5, TIRE SOUND 4 (done). Built after it: IN-CAR REFLECT (RENDERING, default 1
+  FRAME IN 16): the car reflection map is rebuilt 1 frame in 16 while the in-car view (its mirror
+  models) is up, where only the opponent's car shows it.
+- Log 19 (2026-11-05): PAGE GUARD exact and stable (owner
   committed it) but small: page checks ~0.15 -> 0.055 ms a render. Race 41-44 fps in its heavy
   stretch, 45-51 at ~80K vertices; the owner set SOUND CLOCK REAL TIME, which makes sound cost
-  ~1.25x per frame below 100% speed (`arm` + `aica` 2.7-2.85 ms). Built after it, **awaiting log
-  20**, from the owner's requests: MIRROR (RENDERING, default OFF: the in-car view's rear-view
+  ~1.25x per frame below 100% speed (`arm` + `aica` 2.7-2.85 ms). Built after it, from the
+  owner's requests: MIRROR (RENDERING, default OFF: the in-car view's rear-view
   mirror, ~31% of that view's drawn lists, becomes an empty dark panel), SMALL 3D (RENDERING, default
   DRAW ALL: 3D lists and whole models under 2/4/8 pixels not drawn; at 4 px -27% drawn lists in the
   runner's race, look unchecked: the runner's snapshots cannot show GPU lists), REFLECTIONS gains 1
@@ -108,7 +127,7 @@ current work:
 | `port/emu/naomi/naomi_frontend.cpp` | Core init/run/settings, idle-loop skip (`naomi_IdleCycleScale`), assert/BIOS-entry traps |
 | `port/emu/naomi/naomi_board.cpp` | DIMM board, cart DMA, register counters |
 | `port/emu/naomi/naomi_softfloat.cpp` | SOFT FLOAT: the game's software double divide/multiply (GCC soft-float, SH-4 integer code) run natively, fingerprinted; called by the JIT at the routines' entry |
-| `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin + GPU light sets (point lights as GX local lights), `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs (+ each list's bounding box, `cachedBox`) |
+| `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin + GPU light sets (point lights as GX local lights), `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs (+ each list's bounding box, `cachedBox`) and their GX display-list entries (DISPLAY LISTS: `dlEntry`, its own ring, GPU waits before writing over a queued entry) |
 | `port/emu/plugs/drkPvr/gxRend.cpp` | PowerVR -> GX renderer (TA lists, ELAN items, VRAM present, tile clip, buffer caps) |
 | `port/emu/plugs/drkPvr/frame_prof.cpp` | FPROF per-frame profiler |
 | `port/emu/host/soft_renderer.cpp` | Windows software renderer for the runner (snapshots, stand-ins for the `rend_*` hooks) |
@@ -164,9 +183,9 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--cpi 2` | SH-4 cycles-per-instruction override used for all reference timelines |
 | `--snap-dir D --snap-every N` | software-rendered PNG every N frames |
 | `--press F:name,F:name,...` | press a button at frame F, e.g. `5000:coin,5300:start` (coin, start, view, up, down, left, right, gas, brake, test, service) |
-| `--gpu-tnl` | take the lists the Wii GPU path would take; runs the **GPU fetch check** (`[run] GPU fetch check`: program triangles vs the CPU draw; must stay at 0 mismatches) |
+| `--gpu-tnl` | take the lists the Wii GPU path would take; runs the **GPU fetch check** (`[run] GPU fetch check`: program triangles vs the CPU draw; must stay at 0 mismatches). Known exception, unexplained, in every driving-route run since at least 2026-11-05: 15 lists at two menu renders (frames ~5640, ELAN +17F1xxx-17F5xxx quads, and ~6720, +1750xxx-175Bxxx), cached programs whose records changed with no page write seen |
 | `--frameskip N`, `--model-skip 0/1`, `--fixes on/off` | same as the launcher options, for A/B runs |
-| `--point-lights 0/1` | NIGHT LIGHTS: 1 = point lights as GX local lights; without `--gpu-tnl` the CPU draws those lists lit the way GX would (snapshot preview) |
+| `--point-lights 0/1` | NIGHT LIGHTS: 1 = point lights as GX local lights; without `--gpu-tnl` the CPU draws those lists lit the way GX would (snapshot preview). With `--gpu-tnl`: `point-lit light sets per frame` line, every reused set rebuilt and compared (`STALE` must stay 0). The night attract demo (no presses, 9000 frames) is not deterministic on Windows past render ~5300: compare `record digest` lines only up to where two runs of the same code agree |
 | `--cull 0/1/2` | BACKFACE CULL in the snapshots: 2 = the polygons' cull modes (launcher ON), 1 = the other winding |
 | `--list-cull 0/1/2/3` | 3D LIST CULL with `--gpu-tnl`: 1 = behind the camera, 2 = out of view, 3 = also whole models (launcher default). Prints `3D list cull per frame` and `3D list boxes ... N STALE` (every box used is checked against its list's records, every model stepped over against its block: must stay at 0) and `record digest` (all that the renderer is handed: for a refactor of the recording side, two runs at the same value must match line for line; run them one at a time, four at once lost one) |
 | env `IDAS3_GX_DEPTH=N:F:rules;...` | each snapshot redrawn with the Wii's 24-bit Z (near N, far F; N 0 = exact) and other depth rules, `_diffK.png` + winning lists of the differing pixels; a config against itself with `j0.5` = pixels that flicker (rules in `soft_renderer.cpp`, `GxDepth`). Race: `0:1:geq+cull;0.00999:100100:geq+cull;0.00999:100100:geq+cull+j0.5+r1` |
@@ -181,7 +200,9 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--depth-plane 0/1` | DEPTH MEASURE: 1 = RACE PLANE, frames with no pin keep the race's near plane |
 | env `IDAS3_NEAR_TRACE=1` | a `[near]` line per render: pin, frame near plane, vertices measured and why |
 | env `IDAS3_CART_TRACE=1` | a `[cart]` line per read of the game image (offset, length) |
-| `--mirror 0/1` | MIRROR: 0 = models clipped inside the user clip rectangle (the in-car view's rear-view mirror) not drawn; `MIRROR OFF per frame` line. The runner's route is in the in-car view only between the `view` presses 9950 and 10550 |
+| `--incar-reflect N` | IN-CAR REFLECT (default 0 here = as REFLECTIONS, the launcher's is 16): while the in-car view's mirror models are on screen, one reflection map build in N, -1 = none; an `IN-CAR REFLECT per 60 frames` line and an exit line count the builds not made. The race starts in the in-car view; `view` toggles it with the chase view |
+| `--display-lists 0/1` | DISPLAY LISTS with `--gpu-tnl` (default 0 here, the launcher's is ON): every cached list's display-list entry is built as on the Wii, its bytes read back as the GPU would and compared with the CPU draw. `DISPLAY LISTS per drawn render` line: MISMATCHES (only where the GPU fetch check has them too) and HAZARDS (an entry written over one still queued) must stay 0; also the ring bytes the drawn entries take, ring passes and GPU waits. Env `IDAS3_DL_RING_KB`: ring size (the Wii's is 1024) |
+| `--mirror 0/1` | MIRROR: 0 = models clipped inside the user clip rectangle (the in-car view's rear-view mirror) not drawn; `MIRROR OFF per frame` line. The race starts in the in-car view (~9350) and each `view` press toggles in-car/chase: with presses at 9950, 10250, 10550 the route is in-car at 9350-9950 and 10300-10550 |
 | `--small N` | SMALL 3D with `--gpu-tnl`: lists and whole models under N pixels on screen not drawn; `SMALL 3D per frame` line. Snapshots cannot show it (GPU lists are not drawn in them) |
 | env `IDAS3_FAR_CENSUS=1` | drawn GPU-path vertices and lists by their box's nearest depth and by its size on screen |
 | env `IDAS3_AICA_KEYS=FROM:TO` | a `[keyon]` line per sound channel key-on in those frames: format, loop, address, loop points, pitch, levels and the sample fingerprint SOUND LEVELS matches. The exit line `SOUND LEVELS` counts the key-ons recognised |
@@ -194,9 +215,10 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 The runner uses the **compiled-in preset defaults**, not the launcher's (e.g. CPU T&L unless
 `--gpu-tnl`). Reference timeline at `--cpi 2`: first renders ~frame 1000, WARNING ~2400, SEGA
 ROSSO ~3500, title ~4100, attract manufacturer screen ~13000. Race route: coin at 5000, then
-start every 300 frames up to 11000; `view` presses at 9950, 10250 and 10550 cycle the camera
-(in-car view from ~10300). That route stops before the player gets control (the scene freezes
-from ~11700): to drive, keep pressing start up to 13100 and `gas` every 10 frames from 11500 (a
+start every 300 frames up to 11000; the race starts at ~9350 in the in-car view and each `view`
+press toggles in-car/chase (presses at 9950, 10250, 10550: chase from ~10000, in-car from ~10300,
+chase from ~10600; the chase view has no clip-mode-2 models). That route stops before the player
+gets control (the scene freezes from ~11700): to drive, keep pressing start up to 13100 and `gas` every 10 frames from 11500 (a
 press lasts 10 frames); the car then races in the in-car view (no steering: it ends up against
 the guardrail), and `view` presses during it (e.g. 12000, 12500) cycle the cameras.
 

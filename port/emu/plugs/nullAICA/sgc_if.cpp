@@ -367,7 +367,7 @@ static u32 sfx_Fingerprint(const ChannelCommonData* c)
 // TL steps of 0.375 dB; 0 attenuates by all of TL's range, which is silence.
 extern "C" {
 int g_sfx_menu_level_preset = 5;
-int g_sfx_tire_level_preset = 5;
+int g_sfx_tire_level_preset = 4;    // owner's choice after log 20
 u32 g_sfx_hits[2];          // key-ons recognised (menu, tyres), for the runner's census
 }
 

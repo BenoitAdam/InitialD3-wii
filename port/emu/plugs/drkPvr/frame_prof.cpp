@@ -183,6 +183,12 @@ u32 g_fp_elan_pgro = 0;
 u32 g_fp_elan_pgtb = 0;
 u32 g_fp_elan_pgset = 0;
 u32 g_fp_elan_pgfault = 0;
+u32 g_fp_elan_dlcalls = 0;
+u32 g_fp_elan_dlbuilds = 0;
+u32 g_fp_elan_dlkb = 0;
+u32 g_fp_elan_dlsyncs = 0;
+u32 g_fp_elan_dlwraps = 0;
+u32 g_fp_elan_dlwaittb = 0;
 
 #if HOST_OS == OS_WII
 // Event set being counted (index into kPmcSel), -1 = counters not programmed.
@@ -246,6 +252,7 @@ static u32 s_elan_f0 = 0, s_elan_b0 = 0, s_elan_w0 = 0, s_elan_g0 = 0, s_elan_p0
 static u32 s_elan_progs0 = 0, s_elan_patches0 = 0, s_elan_wraps0 = 0, s_elan_bounds0 = 0, s_elan_gaps0 = 0;
 static u32 s_elan_i0 = 0, s_elan_pt0 = 0, s_elan_s0 = 0;
 static u32 s_pg_chk0 = 0, s_pg_dirty0 = 0, s_pg_ro0 = 0, s_pg_tb0 = 0, s_pg_set0 = 0, s_pg_fault0 = 0;
+static u32 s_dl_calls0 = 0, s_dl_builds0 = 0, s_dl_kb0 = 0, s_dl_syncs0 = 0, s_dl_wraps0 = 0, s_dl_wait0 = 0;
 
 // Draw-done probe: the interrupt stamps every draw-done; a render that left
 // the GP busy takes the first stamp after its own end.
@@ -404,6 +411,20 @@ static void fp_hw_dump()
              (double)(g_fp_elan_pgdirty - s_pg_dirty0) / r, (double)pgRo / r, g_fp_elan_pgset - s_pg_set0,
              g_fp_elan_pgfault - s_pg_fault0);
     }
+    // DISPLAY LISTS: lists drawn from an entry, entries written, and the GPU
+    // waits that writing over a queued one took.
+    if (g_fp_elan_dlcalls != s_dl_calls0 || g_fp_elan_dlbuilds != s_dl_builds0)
+      fp_out("[HW] ELAN display lists a render: %.0f lists drawn from one | entries written %u (%u KB),"
+             " ring passes %u, GPU waits %u (%.2f ms in all)\n",
+             (double)(g_fp_elan_dlcalls - s_dl_calls0) / r, g_fp_elan_dlbuilds - s_dl_builds0,
+             g_fp_elan_dlkb - s_dl_kb0, g_fp_elan_dlwraps - s_dl_wraps0, g_fp_elan_dlsyncs - s_dl_syncs0,
+             fp_tb_ms(g_fp_elan_dlwaittb - s_dl_wait0));
+    s_dl_calls0 = g_fp_elan_dlcalls;
+    s_dl_builds0 = g_fp_elan_dlbuilds;
+    s_dl_kb0 = g_fp_elan_dlkb;
+    s_dl_syncs0 = g_fp_elan_dlsyncs;
+    s_dl_wraps0 = g_fp_elan_dlwraps;
+    s_dl_wait0 = g_fp_elan_dlwaittb;
     s_pg_chk0 = g_fp_elan_pgchk;
     s_pg_dirty0 = g_fp_elan_pgdirty;
     s_pg_ro0 = g_fp_elan_pgro;
