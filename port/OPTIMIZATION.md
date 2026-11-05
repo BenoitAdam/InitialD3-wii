@@ -22,6 +22,34 @@ So ~2.7 ms must still go for a full-speed, every-frame-drawn race, and the SH-4 
 frame. Scenes differ: at the race's start (90-105K vertices in, 73-84K on the GPU) log 17 gives
 43-45 fps, `elan` 6.4-7.0.
 
+**FRAMESKIP AUTO's arithmetic.** AUTO drops renders only while the game is behind real time
+(`spg_PaceErrorSec`, an absolute schedule), so it settles on the share of drawn frames that holds
+100%: d = (16.7 - S) / (D - S), with D a drawn race frame and S a dropped one. A dropped frame
+still runs the game's code and the sound (`sh4` ~9, sound ~2.2 at 100%, the ELAN walk of what is
+not a model): S ~12-13 ms. With D ~20-21 ms that is d ~0.45, ~27 fps shown, which the owner read
+as "a 30 fps limit" (log 19). It is no cap: every ms off D adds ~6-8 shown fps under AUTO, every ms
+off S more. 45 fps shown at 100% needs D ~17.5 ms with today's S.
+
+Log 19 (2026-11-05, PAGE GUARD ON, SOUND CLOCK REAL TIME chosen by the owner, otherwise as log 18):
+- **PAGE GUARD works and is exact**: a whole race, no glitch, no crash (owner: "more fast and
+  stable", committed). But the checks were cheap already. A race render checks 480-690 pages in
+  0.051-0.063 ms (91-125 ns each), 94-97% of them read-only. Fitted over the blocks: a guarded
+  check ~60 ns, an unguarded clean one ~0.2-0.3 us, a written page ~1.35 us (clear C, `tlbie`,
+  store 4 KB of cache). So the old cost was ~0.12-0.17 ms a render and the gain ~0.07-0.1 ms; the
+  ~17-22 pages written each render are most of what is left. "Guards dropped" is 0 in a steady
+  race and comes in bursts (100-490) at loads and course changes.
+- **Race** (driven by the owner, not log 17's line): heavy stretch 11280-11760 at 41-44 fps
+  (100-105K vertices in, 75-84K on the GPU, `elan` 6.2-6.7 a frame); steady 12480-13440 at
+  45.1-51.3 fps at ~80K in (53-64K on the GPU), p50 19.7-20.6 ms. Typical frame there: `sh4`
+  9.0-9.2, `rend` 2.3-2.6, `elan` 4.5-4.8, `arm` 1.55-1.6, `aica` 1.15-1.25.
+- **REAL TIME costs sound time below 100% speed**: the ARM7 and AICA follow the wall clock, so at
+  ~80% they run ~1.25x per emulated frame: `arm` + `aica` 2.7-2.85 ms against 2.2-2.3 in log 17.
+  It comes back at 100% (and helps AUTO there). The owner's choice; not a regression.
+- Night demo 55.5-60.9 fps (frames 5040-6720), as in log 17.
+- Same race-load hitches as before: f11041 154.8 ms (`tex` 72.9, `mem` 34.6, `elan` 25.7, `rend`
+  20.9), f11283 101.9 ms (`tex` 46.8, `sh4` 29). Guest memory 1712 KB free at frame 10980, 36
+  reclaims, 0 failed allocations; 3.2-3.7 MB free through the race.
+
 Log 18 (2026-11-04, SOFT FLOAT NATIVE, otherwise as log 17):
 - **SOFT FLOAT works: `sh4` -0.31 to -0.45 ms** in the steady race windows (frames 13320-14040:
   9.31-9.47 -> 8.93-9.13), the 0.3-0.5 expected. Control: the night demo replays the same frames
@@ -229,7 +257,8 @@ render. Menus, attract mode and car select run at 100%.
 | 11-01 | REFLECTIONS default 1 in 4, MEM SWEEP, GX FIFO WAKE | log 16: 48-51 fps at 80-86K vertices, night demo 55.5-60.8 fps, `cached programs` 2.9 -> 2.2 ms in heavy scenes; MEM SWEEP SHORT still untested (the "hang" was TEST) |
 | 11-01 | GX FIFO SIZE | log 17: FIFO never full, `rend` + `elan` 7.7 -> 6.6-6.8 ms, race 48.8-54.7 fps at ~80K vertices, p50 19.2-19.6; MEM SWEEP SHORT: race hitches 261 -> 158 ms |
 | 11-04 | SOFT FLOAT (native double divide and multiply) | log 18: `sh4` -0.31 to -0.45 ms in the race (night demo control unchanged); race not comparable (heavier scenes driven) |
-| 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | awaiting log 19 |
+| 11-05 | MIRROR OFF (in-car view), SMALL 3D, REFLECTIONS 1 in 8 (owner: downgrade options for speed) | awaiting log 20 |
+| 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
 
@@ -322,7 +351,43 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
-### Done after log 18 (awaiting log 19)
+### Done after log 19 (awaiting log 20)
+
+The owner wants 100% speed in the race with as many frames shown as possible, and asked for
+options that lower the picture for it. All three are on the RENDERING page.
+- **MIRROR** (default OFF). In the in-car view the game draws its rear-view mirror as a second
+  pass of the scene from behind, models whose MODEL command has user clip mode 2 (inside the TA's
+  user clip rectangle). OFF: such a model is not drawn (`mirrorModel`, naomi_elan_cmd.cpp): stepped
+  over from its summary when its block is unchanged since it was walked (the mirror shows the main
+  view's own models, so most are), else walked with its lists dropped (`s_dropLists`), which
+  leaves every state as drawing would; its lists take no depth slice, and a walk inside it never
+  rewrites a summary (no boxes). Runner, in-car stretch of the route (frames 10380-10500): drawn
+  lists 760 -> 525 a render (-31%), fetched vertices 81.7K -> 61K, 174 models a frame not drawn
+  (101 from summaries), 0 mismatches, 0 stale. Snapshots: only the mirror's rectangle
+  (161,32)-(479,95) changes, to the dark panel behind the mirror; every other pixel and every
+  frame outside the in-car view is identical. Expected on the Wii: ~1.5-2 ms in the in-car view.
+- **SMALL 3D** (default DRAW ALL; 2, 4 or 8 pixels). A list or a whole model whose box diagonal,
+  at its nearest depth, spans fewer pixels than that is not drawn (`tooSmall`,
+  naomi_elan_tnl.cpp; `BoxView::scale` = the projection's x scale times the matrix's longest
+  axis). Needs 3D LIST CULL. A model is small only if all its lists are. Runner census of the
+  drawn race lists (`IDAS3_FAR_CENSUS`): ~100-160 of ~600 under 4 px a render (far trees, posts),
+  8K of 55K vertices under 2 px. At 4 px: drawn lists 592-617 -> 431-451 (-27%), triangles
+  30.5-35.4K -> 26.3-28.2K, ~45 more whole models stepped over, 0 stale, 0 mismatches. The look is
+  unchecked (snapshots draw no GPU lists): far objects under 4 px are dots; a distant opponent
+  may blink out. Expected ~1 ms a frame on the Wii at 4 px.
+- **REFLECTIONS 1 FRAME IN 8** (new value): the remaining 1-in-4 cost of the car's reflection
+  map (~0.35 ms of `sh4` a frame) halved, on dropped frames too. In the in-car view the map is not
+  seen at all (log 15's snapshots), so 8 costs nothing there.
+- **SOUND LEVELS** (AUDIO page, last rows, not a speed item): MENU SOUND and TIRE SOUND, 0 =
+  muted to 10 = as the game, default 5 (-12 dB: level n plays at (n/10)^2 of the amplitude). At
+  each key-on the sample is fingerprinted (format, loop flag, loop points, first 32 bytes in guest
+  byte order) and a match adds attenuation to the channel's direct and effect sends until its next
+  key-on (sgc_if.cpp). Menu cursor `5D13B4DD` (one-shot 16-bit, full level, keyed 1-6 frames after
+  each steering move on the make, course and card screens and never without one); tire squeal
+  `AE718FA6` (a looped ~330 Hz whine, keyed at the start's wheelspin and at each slide under
+  steering, never when driving straight). The rail impact keyed with it (`2E3AE289`) is left alone.
+
+### Done after log 18 (log 19 confirmed)
 
 - **PAGE GUARD** (RECOMPILER 2, last row, default ON; `WiiGuestMem_ElanGpuPage` and `pte_map`,
   wii_fastmem.cpp). The GPU fetch checks every ELAN page a render uses once a render (~800 in a
@@ -480,6 +545,12 @@ logs comparable. The cost does not need measuring, and the question is closed.
 
 ## What is left, best first
 
+After log 19: the owner's target is 100% speed with ~45 fps shown under FRAMESKIP AUTO, i.e. a
+drawn race frame of ~17.5 ms (see "The target"). Log 20 should say how much MIRROR OFF and SMALL 3D
+give. Cheap next ideas: skip the reflection map entirely while the in-car view is up (the mirror
+models say when; the map is not seen there), and a lighter sound path at 100% speed (`arm` +
+`aica` ~2.2 ms every frame, dropped or not).
+
 Numbers are kept because the items refer to each other. After log 18 the order is: item 1 (`elan`
 4.4-7 ms), item 6 (SH-4 9.0 ms after SOFT FLOAT: spread out, see "The target") and item 8 (sound,
 2.2 ms, never profiled).
@@ -509,10 +580,8 @@ gain.
    `elan` is still 5.5 ms. Next steps there: prefetch the next list's table entries in the
    walk, a per-page PTE pointer with an uncached read for page checks (item 2), compiled models
    (list descriptors kept per model, no ELAN RAM read for a model that did not change).
-2. **Cheaper fetch validation.** ~800 page checks a race render (PTE lookup + `dcbf` + `sync`,
-   a few cache misses each). Done after log 18: PAGE GUARD (read-only pages, see above); log 19
-   gives its cost and gain. Next if it is still large: a per-page PTE pointer and an uncached
-   read of the C bit for the pages written too often to guard.
+2. **Cheaper fetch validation.** Done: PAGE GUARD (log 19: ~0.055 ms a race render left, ~60%
+   of it the ~20 pages written each render, ~1.35 us each). Not worth more work.
 3. **Colour lists through the GPU fetch, with a TEV swap table** (log 13: pointless on Akina,
    ~30 vertices a render). They stay CPU-fed (4.6K vertices a render on the runner's route,
    ~220 ns each against ~55 fetched) because their colour word is ARGB and

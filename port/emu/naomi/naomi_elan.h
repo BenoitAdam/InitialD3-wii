@@ -32,6 +32,14 @@ struct NaomiElanStats
     u32 boxLists, boxCulledBehind, boxCulledSide, boxCulledVertices, depthMeasured;
     u32 modelsCulled, modelListsCulled;     // ...and whole models stepped over on drawn frames
     u32 modelCheckStale;                    // host: ...that walking them shows were wrongly summarised
+    // MIRROR OFF: models inside the user clip not drawn, from their summary or
+    // walked without drawing, and the polygon lists / vertices in them.
+    u32 mirrorModels, mirrorSummarised, mirrorLists, mirrorVertices;
+    u32 boxCulledSmall;                     // SMALL 3D: lists dropped (their vertices in boxCulledVertices)
+    // Host census of boxed lists drawn: vertices by the box's nearest depth
+    // (< 25, 50, 100, 200, 400, 800, 1600, more) and by its diagonal on screen
+    // (< 2, 4, 8, 16, 32, 64, 128 pixels, more), and lists.
+    u32 farBins[8], sizeBins[8], sizeBinLists[8];
     // Host census of those lists' strips (what the GPU path's index builder makes of them).
     u32 gpuIndices, gpuStrips, gpuFanVertices, gpuStripsWithFans, gpuPlaceholders;
     u32 gpuTriangles, gpuTriangleMismatches;    // ...and the per-strip draw checked against the joined strip
@@ -107,6 +115,13 @@ extern "C" void rend_SetTileClipMode(u32 mode);
 // Launch option DROPPED 3D: 1 = dropped frames step over model lists without
 // side effects (naomi_elan_cmd.cpp), 0 = they walk everything.
 extern "C" int g_elan_model_skip_preset;
+// Launch option MIRROR: 0 = models clipped inside the user clip rectangle (the
+// in-car view's rear-view mirror) are not drawn, 1 = drawn (naomi_elan_cmd.cpp).
+extern "C" int g_mirror_preset;
+// Launch option SMALL 3D (GPU T&L with 3D LIST CULL): lists and whole models
+// whose box spans fewer than this many pixels on screen are not drawn; 0 = all
+// drawn (naomi_elan_tnl.cpp, tooSmall).
+extern "C" int g_small_cull_preset;
 // Executes a command stream (the 32-byte FIFO entry, or a display list in
 // ELAN RAM). `words` are host-order 32-bit values, as both buffers hold them.
 void elan_Execute(const u32* words, u32 bytes);

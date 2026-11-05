@@ -62,6 +62,12 @@ extern "C" int get_adpcm_loop_preset();
 extern "C" int get_aica_ca_clamp_preset();
 #define AICA_CA_CLAMP_FIX() (get_aica_ca_clamp_preset() != 0)
 
+#if !defined(GEKKO)
+#include "host/host_hooks.h"
+#include <stdio.h>
+#include <stdlib.h>
+#endif
+
 // x.15
 s32  volume_lut[16];
 u32  SendLevel[16] = {0xF000<<3,14<<3,13<<3,12<<3,11<<3,10<<3,9<<3,8<<3,
@@ -336,6 +342,72 @@ struct ChannelCommonData
 #endif
 };
 
+// SOUND LEVELS: a key-on's sample, by what it is rather than where it sits in
+// sound RAM: format, loop flag, loop points and its first 32 bytes (read in
+// the ARM's byte order, so the Wii and the runner agree).
+static u32 sfx_Fingerprint(const ChannelCommonData* c)
+{
+    u32 addr = (c->SA_hi << 16) | c->SA_low;
+    if (c->PCMS == 0)
+        addr &= ~1u;
+    u32 h = 0x811C9DC5u;
+    const u32 head[4] = {(u32)c->PCMS | (u32)c->SSCTL << 2 | (u32)c->LPCTL << 3, c->LSA, c->LEA, 0};
+    for (int i = 0; i < 3; i++)
+        h = (h ^ head[i]) * 0x01000193u;
+    for (u32 i = 0; i < 32; i++)
+        h = (h ^ aica_ram_l[AICA_LANE8((addr + i) & AICA_RAM_MASK)]) * 0x01000193u;
+    return h;
+}
+
+// SOUND LEVELS (launcher, AUDIO page): two of the game's sounds, the menu
+// cursor and the tyres' squeal, made quieter. 0 = muted, 10 = as the game plays
+// them. A channel keyed on with one of their samples gets extra attenuation on
+// its direct and effect sends until its next key-on. Level n plays at
+// (n / 10)^2 of the amplitude (5: -12 dB, about half as loud to the ear), in
+// TL steps of 0.375 dB; 0 attenuates by all of TL's range, which is silence.
+extern "C" {
+int g_sfx_menu_level_preset = 5;
+int g_sfx_tire_level_preset = 5;
+u32 g_sfx_hits[2];          // key-ons recognised (menu, tyres), for the runner's census
+}
+
+// Menu cursor: one-shot 16-bit PCM, 21380 samples played at 22 kHz, full level
+// (TL 3, DISDL 15), keyed on 1-6 frames after the steering moves the cursor on
+// the make, course and card screens (runner, IDAS3_AICA_KEYS).
+static const u32 kSfxMenu[] = {0x5D13B4DDu};
+// Tyre squeal: a looped 16-bit PCM whine (~330 Hz, the most tonal of the race's
+// loops), keyed on at the start's wheelspin and each time the car slides under
+// steering, never while it runs straight; level then follows the slide. The
+// short full-level one-shot keyed with it when the car hits the rail (2E3AE289)
+// is the impact, left alone.
+static const u32 kSfxTire[] = {0xAE718FA6u};
+
+static u32 sfx_LevelAtt(int level)
+{
+    static const u8 kAtt[11] = {255, 107, 75, 56, 42, 32, 24, 17, 10, 5, 0};
+    return kAtt[level < 0 ? 0 : level > 10 ? 10 : level];
+}
+
+static u32 sfx_KeyOnAtt(const ChannelCommonData* c)
+{
+    if (g_sfx_menu_level_preset >= 10 && g_sfx_tire_level_preset >= 10)
+        return 0;
+    const u32 fp = sfx_Fingerprint(c);
+    for (u32 k : kSfxMenu)
+        if (k && fp == k)
+        {
+            g_sfx_hits[0]++;
+            return sfx_LevelAtt(g_sfx_menu_level_preset);
+        }
+    for (u32 k : kSfxTire)
+        if (k && fp == k)
+        {
+            g_sfx_hits[1]++;
+            return sfx_LevelAtt(g_sfx_tire_level_preset);
+        }
+    return 0;
+}
+
 enum _EG_state
 {
     EG_Attack  = 0,
@@ -399,6 +471,7 @@ struct ChannelEx
         u32        DRAtt;
         u32        DSPAtt;
         SampleType* DSPOut;
+        u32        userAtt;     // SOUND LEVELS, set at key-on
     } VolMix;
 
     void (FASTCALL* StepAEG)(ChannelEx* ch);
@@ -577,6 +650,13 @@ struct ChannelEx
             adpcm.Reset(this);
             StepStreamInitial(this);
 
+            const u32 userAtt = sfx_KeyOnAtt(ccd);
+            if (userAtt != VolMix.userAtt)
+            {
+                VolMix.userAtt = userAtt;
+                UpdateAtts();
+            }
+
             // Filter removed: the buggy SFX never showed up while SA=0x2A04E
             // was excluded, meaning it likely reuses that same raw waveform
             // (a single wavetable sample pitched/retriggered for both BGM
@@ -592,6 +672,25 @@ struct ChannelEx
                        ccd->TL, ccd->OCT, ccd->FNS,
                        ccd->KRS, ccd->DL, ccd->D1R, ccd->D2R, ccd->RR, AEG_EffRate(ccd->RR));
 #if !defined(GEKKO)
+            // Runner, env IDAS3_AICA_KEYS=FROM:TO: every key-on in those frames,
+            // with the sample's fingerprint (how SOUND LEVELS finds its sounds).
+            {
+                static int s_from = -2, s_to = 0;
+                if (s_from == -2)
+                {
+                    s_from = -1;
+                    if (const char* e = getenv("IDAS3_AICA_KEYS"))
+                        sscanf(e, "%d:%d", &s_from, &s_to);
+                }
+                const int f = (int)g_host_render.vblanks;
+                if (s_from >= 0 && f >= s_from && f <= s_to)
+                    printf("[keyon] f%d ch %2d %s %s SA %05X LSA %u LEA %u OCT %d FNS %u TL %u DISDL %u PAN %u IMXL %u "
+                           "AR %u D1R %u RR %u fp %08X\n",
+                           f, ChanelNumber, ccd->SSCTL ? "noise" : stream_names[ccd->PCMS] + 3,
+                           ccd->LPCTL ? "loop" : "once", (ccd->SA_hi << 16) | ccd->SA_low, ccd->LSA, ccd->LEA,
+                           (int)(ccd->OCT ^ 8) - 8, ccd->FNS, ccd->TL, ccd->DISDL, ccd->DIPAN, ccd->IMXL, ccd->AR,
+                           ccd->D1R, ccd->RR, sfx_Fingerprint(ccd));
+            }
             // Windows census: long looping channels are streams the SH4 keeps
             // refilling (music with vocals), not notes the sound CPU sequences.
             {
@@ -704,7 +803,7 @@ struct ChannelEx
     }
     void UpdateAtts()
     {
-        u32 attFull = ccd->TL + SendLevel[ccd->DISDL];
+        u32 attFull = ccd->TL + SendLevel[ccd->DISDL] + VolMix.userAtt;
         u32 attPan  = attFull + SendLevel[(~ccd->DIPAN) & 0xF];
 
         if (ccd->DIPAN & 0x10)
@@ -717,7 +816,7 @@ struct ChannelEx
             VolMix.DLAtt = attPan;
             VolMix.DRAtt = attFull;
         }
-        VolMix.DSPAtt = ccd->TL + SendLevel[ccd->IMXL];
+        VolMix.DSPAtt = ccd->TL + SendLevel[ccd->IMXL] + VolMix.userAtt;
     }
     void UpdateFEG() { /* TODO */ }
 

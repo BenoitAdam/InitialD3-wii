@@ -66,6 +66,10 @@ extern "C" int g_mem_sweep_preset;
 extern "C" int g_fifo_size_preset;
 extern "C" int g_soft_float_preset;
 extern "C" int g_page_guard_preset;
+extern "C" int g_mirror_preset;
+extern "C" int g_sfx_menu_level_preset;
+extern "C" int g_sfx_tire_level_preset;
+extern "C" int g_small_cull_preset;
 extern "C" int g_sound_realtime_preset;
 extern int g_audio_buffers_preset;    // emu/host/presets_generated.cpp (wii/wii_audio.cpp)
 extern int g_audio_block_preset;
@@ -251,6 +255,16 @@ void logMemoryActivity(const NaomiFrameInfo& info)
                    (es.modelsCulled - s_prevBox.modelsCulled) / frames,
                    (es.modelListsCulled - s_prevBox.modelListsCulled) / frames,
                    (es.depthMeasured - s_prevBox.depthMeasured) / frames, canvasW, canvasH);
+        if (es.boxCulledSmall != s_prevBox.boxCulledSmall)
+            log::write("[prof]   SMALL 3D per frame: %u lists not drawn (whole models among the culled above)\n",
+                       (es.boxCulledSmall - s_prevBox.boxCulledSmall) / frames);
+        if (es.mirrorModels != s_prevBox.mirrorModels)
+            log::write("[prof]   MIRROR OFF per frame: %u models not drawn (%u from their summary), %u lists, %u "
+                       "vertices\n",
+                       (es.mirrorModels - s_prevBox.mirrorModels) / frames,
+                       (es.mirrorSummarised - s_prevBox.mirrorSummarised) / frames,
+                       (es.mirrorLists - s_prevBox.mirrorLists) / frames,
+                       (es.mirrorVertices - s_prevBox.mirrorVertices) / frames);
         const NaomiStats& ns = naomi_Stats();
         log::write("[prof]   cart DMA: %u transfers, %u KB, %u status polls while one ran (totals)\n",
                    ns.cartDmaCount, ns.cartDmaBytes >> 10, ns.cartDmaPolls);
@@ -334,7 +348,8 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_elan_point_preset,    &g_isp_cull_preset,     &g_elan_box_preset,     &g_reflection_rate_preset,
         &g_depth_plane_preset,   &g_cold_entry_preset,   &g_dimm_ahead_preset,   &g_fifo_wake_preset,
         &g_mem_sweep_preset,     &g_fifo_size_preset,    &g_soft_float_preset,
-        &g_page_guard_preset};
+        &g_page_guard_preset,    &g_mirror_preset,       &g_sfx_menu_level_preset, &g_sfx_tire_level_preset,
+        &g_small_cull_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

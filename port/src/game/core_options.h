@@ -101,6 +101,10 @@ enum CoreOptionId
     OPT_FIFO_SIZE,
     OPT_SOFT_FLOAT,
     OPT_PAGE_GUARD,
+    OPT_MIRROR,
+    OPT_SFX_MENU,
+    OPT_SFX_TIRE,
+    OPT_SMALL_CULL,
     kCoreOptionCount
 };
 
@@ -111,8 +115,8 @@ struct CoreOption
     int page;
     int defaultIndex;          // position in names[] chosen by default
     int count;
-    const char* names[5];      // 17 characters at most
-    int values[5];             // the preset value behind each name
+    const char* names[11];     // 17 characters at most
+    int values[11];            // the preset value behind each name
 };
 
 inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
@@ -255,8 +259,8 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
      PAGE_DEPTH, 3, 4, {"OFF (LEGACY)", "BEHIND CAMERA", "OUT OF VIEW", "VIEW + MODELS"}, {0, 1, 2, 3}},
     // The game rebuilds the car's reflection map in software. 1 in 4 is the Wii's
     // default (owner, log 15: looks fine from the outside cameras).
-    {"REFLECTIONS   ", "how often the car body's reflection map is rebuilt: less often is faster", PAGE_DEPTH, 3, 4,
-     {"EVERY FRAME", "1 FRAME IN 2", "1 FRAME IN 3", "1 FRAME IN 4"}, {1, 2, 3, 4}},
+    {"REFLECTIONS   ", "how often the car body's reflection map is rebuilt: less often is faster", PAGE_DEPTH, 3, 5,
+     {"EVERY FRAME", "1 FRAME IN 2", "1 FRAME IN 3", "1 FRAME IN 4", "1 FRAME IN 8"}, {1, 2, 3, 4, 8}},
     // Frames with no pin (fly-bys, replays): see recordForGpu.
     {"DEPTH MEASURE ", "fly-bys and replays: keep the race's near plane (faster) or measure the exact one", PAGE_DEPTH,
      1, 2, {"EXACT (LEGACY)", "RACE PLANE"}, {0, 1}},
@@ -274,6 +278,20 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
      PAGE_RECOMPILER_2, 1, 2, {"EMULATED (LEGACY)", "NATIVE"}, {0, 1}},
     {"PAGE GUARD    ", "unchanged 3D data made read-only: no check each frame, writes still seen",
      PAGE_RECOMPILER_2, 1, 2, {"OFF (LEGACY)", "ON (READ-ONLY)"}, {0, 1}},
+    // Models clipped inside the TA's user clip rectangle: the in-car view's
+    // rear-view mirror (naomi_elan_cmd.cpp, mirrorModel).
+    {"MIRROR        ", "in-car view: the rear-view mirror draws the scene twice; OFF is faster", PAGE_DEPTH, 1,
+     2, {"ON (LEGACY)", "OFF (FASTER)"}, {1, 0}},
+    // SOUND LEVELS (sgc_if.cpp): two sounds recognised by their sample.
+    {"MENU SOUND    ", "menu cursor sound (left/right/up/down): 0 = muted, 10 = as the game", PAGE_AUDIO, 5, 11,
+     {"0 (MUTED)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10 (AS THE GAME)"},
+     {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
+    {"TIRE SOUND    ", "tire squeal when the car slides or drifts: 0 = muted, 10 = as the game", PAGE_AUDIO, 5,
+     11, {"0 (MUTED)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10 (AS THE GAME)"},
+     {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
+    // Needs 3D LIST CULL (the boxes): naomi_elan_tnl.cpp, tooSmall.
+    {"SMALL 3D      ", "GPU T&L: 3D objects smaller than this on screen are not drawn (faster)", PAGE_DEPTH, 0, 4,
+     {"DRAW ALL (LEGACY)", "UNDER 2 PIXELS", "UNDER 4 PIXELS", "UNDER 8 PIXELS"}, {0, 2, 4, 8}},
 };
 
 } // namespace idas3

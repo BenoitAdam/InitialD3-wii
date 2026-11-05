@@ -614,6 +614,7 @@ static void memoryCensus(u32 frame)
 static u32 s_frameLimit = 600;
 static u64 s_startUs = 0;
 extern u32 g_ccn_ici_count;   // emu/dc/sh4/ccn.cpp
+extern "C" u32 g_sfx_hits[2];   // plugs/nullAICA/sgc_if.cpp, SOUND LEVELS
 
 // --press F:name[,F:name...]: hold a control for 10 frames from frame F
 // (coin, start, view, up, down = shifter, left, right = steering, gas,
@@ -799,6 +800,38 @@ void host_on_vblank()
                          (es.boxCulledVertices - last.boxCulledVertices) / 60,
                          (es.modelsCulled - last.modelsCulled) / 60, (es.modelListsCulled - last.modelListsCulled) / 60,
                          es.modelCheckStale, (es.depthMeasured - last.depthMeasured) / 60);
+                logLine(line);
+            }
+            if (getenv("IDAS3_FAR_CENSUS"))
+            {
+                u32 f[8], z[8], zl[8];
+                for (int k = 0; k < 8; k++)
+                {
+                    f[k] = (es.farBins[k] - last.farBins[k]) / 60;
+                    z[k] = (es.sizeBins[k] - last.sizeBins[k]) / 60;
+                    zl[k] = (es.sizeBinLists[k] - last.sizeBinLists[k]) / 60;
+                }
+                snprintf(line, sizeof(line),
+                         "[run]   drawn boxed vertices by nearest depth <25 %u <50 %u <100 %u <200 %u <400 %u <800 %u "
+                         "<1600 %u more %u | by size on screen <2px %u/%u <4 %u/%u <8 %u/%u <16 %u/%u <32 %u/%u "
+                         "<64 %u/%u <128 %u/%u more %u/%u (vertices/lists)\n",
+                         f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], z[0], zl[0], z[1], zl[1], z[2], zl[2], z[3],
+                         zl[3], z[4], zl[4], z[5], zl[5], z[6], zl[6], z[7], zl[7]);
+                logLine(line);
+            }
+            if (es.boxCulledSmall != last.boxCulledSmall)
+            {
+                snprintf(line, sizeof(line), "[run]   SMALL 3D per frame: %u lists not drawn\n",
+                         (es.boxCulledSmall - last.boxCulledSmall) / 60);
+                logLine(line);
+            }
+            if (es.mirrorModels != last.mirrorModels)
+            {
+                snprintf(line, sizeof(line),
+                         "[run]   MIRROR OFF per frame: %u models not drawn (%u from their summary), %u lists, %u "
+                         "vertices\n",
+                         (es.mirrorModels - last.mirrorModels) / 60, (es.mirrorSummarised - last.mirrorSummarised) / 60,
+                         (es.mirrorLists - last.mirrorLists) / 60, (es.mirrorVertices - last.mirrorVertices) / 60);
                 logLine(line);
             }
             last = es;
@@ -1081,6 +1114,18 @@ int main(int argc, char** argv)
         extern int g_elan_box_preset;
         g_elan_box_preset = atoi(lc);
     }
+    if (const char* sm = argValue(argc, argv, "--small"))
+    {
+        // SMALL 3D (with --gpu-tnl and --list-cull): lists and whole models
+        // under this many pixels on screen are not drawn.
+        g_small_cull_preset = atoi(sm);
+    }
+    if (const char* mi = argValue(argc, argv, "--mirror"))
+    {
+        // MIRROR: 0 = the in-car view's rear-view mirror (models clipped inside
+        // the user clip rectangle) is not drawn.
+        g_mirror_preset = atoi(mi);
+    }
     if (const char* cu = argValue(argc, argv, "--cull"))
     {
         // BACKFACE CULL: 2 = the polygons' own cull modes (the launcher's ON),
@@ -1163,6 +1208,11 @@ int main(int argc, char** argv)
 
     if (s_probeHi)
         printProbe(g_host_render.vblanks - s_probeFrom);
+    {
+        // SOUND LEVELS (sgc_if.cpp): key-ons recognised by their sample.
+        printf("[run] SOUND LEVELS: %u menu cursor key-ons, %u tire squeal key-ons recognised\n", g_sfx_hits[0],
+               g_sfx_hits[1]);
+    }
     for (int k = 0; k < 2 && s_softFloat; k++)
         printf("[run] SOFT FLOAT %s: %llu calls (%.1f a frame), %llu native, %llu checked, %llu MISMATCHES\n",
                kSfNames[k], (unsigned long long)s_sfCalls[k],

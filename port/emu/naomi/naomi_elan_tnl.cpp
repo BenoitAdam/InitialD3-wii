@@ -24,6 +24,9 @@
 #include "naomi_elan_gx.h"
 
 int g_depth_plane_preset = 0;     // DEPTH MEASURE, 1 = RACE PLANE (launch page)
+extern "C" {
+int g_small_cull_preset = 0;      // SMALL 3D, in pixels (launch page)
+}
 extern int g_trans_sort_preset;   // renderer presets (launch page)
 extern int g_autosort_preset;
 
@@ -951,6 +954,7 @@ struct BoxView
     float width, height;
     BoxRow z, edge[4];
     bool edges;
+    float scale;            // pixels per unit at depth 1: the projection's x scale times the matrix's
 };
 BoxView s_boxView = {};
 
@@ -969,6 +973,17 @@ const BoxView& boxView()
     v.z.set(t[2], t[5], t[8], t[11]);
     constexpr float kMargin = 8.f;
     const float fx = s.proj[0], tx = s.proj[1], fy = s.proj[2], ty = s.proj[3];
+    {
+        // The longest the matrix makes a model-space axis (exact for a rotation
+        // with a uniform scale, the instances' kind).
+        float m = 0.f;
+        for (int c = 0; c < 3; c++)
+        {
+            const float n = t[3 * c] * t[3 * c] + t[3 * c + 1] * t[3 * c + 1] + t[3 * c + 2] * t[3 * c + 2];
+            m = n > m ? n : m;
+        }
+        v.scale = std::fabs(fx) * std::sqrt(m);
+    }
     const struct
     {
         float f, e;     // f X + e Z (or f Y + e Z)
@@ -988,6 +1003,18 @@ inline bool outOfPicture(const BoxView& v, const float* box)
 {
     return v.edges && (v.edge[0].top(box) < 0.f || v.edge[1].top(box) < 0.f || v.edge[2].top(box) < 0.f ||
                        v.edge[3].top(box) < 0.f);
+}
+
+// SMALL 3D: the box's diagonal, seen from its nearest depth zlo, spans fewer
+// than g_small_cull_preset pixels (an upper bound of the object's size on
+// screen: far trees, posts, signs, a distant car).
+inline bool tooSmall(const BoxView& v, const float* box, float zlo)
+{
+    if (!g_small_cull_preset || zlo <= 0.f)
+        return false;
+    const float dx = box[3] - box[0], dy = box[4] - box[1], dz = box[5] - box[2];
+    const float lim = (float)g_small_cull_preset * zlo;
+    return v.scale * v.scale * (dx * dx + dy * dy + dz * dz) < lim * lim;
 }
 
 // Point lights against the model-space box: the light taken into model
@@ -1278,9 +1305,11 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
         const bool empty = mbox[0] > mbox[3];        // placeholders only
         const bool behind = empty || zhi < nearZ;
         const bool reach = zlo <= nearZ * 1.5f;
-        if (behind || (g_elan_box_preset >= 2 && outOfPicture(view, mbox)))
+        const bool side = !behind && g_elan_box_preset >= 2 && outOfPicture(view, mbox);
+        const bool small = !behind && !side && !reach && tooSmall(view, mbox, zlo);
+        if (behind || side || small)
         {
-            (behind ? st.boxCulledBehind : st.boxCulledSide)++;
+            (behind ? st.boxCulledBehind : side ? st.boxCulledSide : st.boxCulledSmall)++;
             st.boxCulledVertices += count;
             if (!behind && reach)
             {
@@ -1357,6 +1386,33 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
         s_depth.pinPlane = nearZ;
     if (r.nearW < s_depth.nearest)
         s_depth.nearest = r.nearW;
+#if !defined(GEKKO)
+    if (boxed)
+    {
+        const BoxView& view = boxView();
+        const float zlo = view.z.bottom(mbox);
+        int fb = 0;
+        for (float lim = 25.f; fb < 7 && zlo >= lim; lim *= 2.f)
+            fb++;
+        st.farBins[fb] += count;
+        // Diagonal in view units: the matrix may scale, so through the rows.
+        const float* t = s.matrix.tm;
+        const float d[3] = {mbox[3] - mbox[0], mbox[4] - mbox[1], mbox[5] - mbox[2]};
+        float diag2 = 0.f;
+        for (int row = 0; row < 3; row++)
+        {
+            const float v = t[row] * d[0] + t[3 + row] * d[1] + t[6 + row] * d[2];
+            diag2 += v * v;
+        }
+        // On screen, in pixels: the projection's x scale over the depth.
+        const float ratio = zlo > nearZ ? std::fabs(s.proj[0]) * std::sqrt(diag2) / zlo : 1e9f;
+        int sb = 0;
+        for (float lim = 2.f; sb < 7 && ratio >= lim; lim *= 2.f)
+            sb++;
+        st.sizeBins[sb] += count;
+        st.sizeBinLists[sb]++;
+    }
+#endif
 
     if (pointLit)
     {
@@ -1635,7 +1691,8 @@ bool tnl_BoxHidden(const float* box)
     const BoxView& view = boxView();
     if (box[0] > box[3] || view.z.top(box) < nearZ)
         return true;
-    return view.z.bottom(box) > nearZ * 1.5f && outOfPicture(view, box);
+    const float zlo = view.z.bottom(box);
+    return zlo > nearZ * 1.5f && (outOfPicture(view, box) || tooSmall(view, box, zlo));
 }
 
 void tnl_ModelHidden(const u32* lastMaterial, u32 listsIndexed)

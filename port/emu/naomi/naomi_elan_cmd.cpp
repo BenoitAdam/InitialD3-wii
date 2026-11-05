@@ -34,6 +34,7 @@
 
 extern "C" {
 int g_elan_model_skip_preset = 1;
+int g_mirror_preset = 1;
 }
 
 namespace {
@@ -133,6 +134,7 @@ struct alignas(32) ModelEntry
 constexpr u32 kModelSlots = 2048;
 ModelEntry s_models[kModelSlots];
 ModelWalk* s_walk = nullptr;        // the innermost model list being walked
+int s_dropLists = 0;                // inside a model MIRROR OFF does not draw
 
 inline u32 skelMix(u32 h, u32 w)
 {
@@ -312,20 +314,14 @@ void checkHiddenModel(const u8* list, u32 listSize, const ModelEntry& m)
 }
 #endif
 
-// On a drawn frame: the model is out of the picture and has left its block
-// unwritten, so walking it would have dropped each of its lists. False: walk it.
-bool hiddenModel(const u8* list, u32 listSize, u32 offset, u32 size)
+const u8* elanRamPtr(u32 offset, u32& size);
+void execute(const u8* data, u32 size, u32 depth);
+
+// What walking a model none of whose lists is drawn leaves behind, from its
+// summary: its last material (deferred), the list type, the counts.
+void skipFromSummary(const u8* list, const ModelEntry& m, u32 indexed)
 {
-    if (g_elan_box_preset != 3 || s_ta.secondHalfPending || rend_NextFrameSkipped())
-        return false;
-    const ModelEntry& m = modelSlot(offset, size);
-    if (m.offset != offset || m.size != size || !tnl_BoxHidden(m.box) || !m.boxed || m.typeIn != s_ta.listType ||
-        !elan_gx_unwritten_since(list, listSize, m.boxRender))
-        return false;
-#if !defined(GEKKO)
-    checkHiddenModel(list, listSize, m);
-#endif
-    tnl_ModelHidden(m.lastGmp ? (const u32*)(list + m.lastGmp - 1) : nullptr, m.indexed);
+    tnl_ModelHidden(m.lastGmp ? (const u32*)(list + m.lastGmp - 1) : nullptr, indexed);
     s_ta.listType = m.typeOut;
     if (m.ich)
         s_ta.vertexSize = 32;
@@ -334,9 +330,6 @@ bool hiddenModel(const u8* list, u32 listSize, u32 offset, u32 size)
     st.n2Commands += m.cmds;
     st.ichLists += m.ich;
     st.ichVertices += m.verts;
-    st.boxCulledVertices += m.verts;
-    st.modelsCulled++;
-    st.modelListsCulled += m.ich;
     if (s_walk)
     {
         ModelWalk w = {};
@@ -348,6 +341,78 @@ bool hiddenModel(const u8* list, u32 listSize, u32 offset, u32 size)
         w.states = m.states;
         w.pure = true;
         mergeWalk(*s_walk, w);
+    }
+}
+
+// On a drawn frame: the model is out of the picture and has left its block
+// unwritten, so walking it would have dropped each of its lists. False: walk it.
+bool hiddenModel(const u8* list, u32 listSize, u32 offset, u32 size)
+{
+    if (g_elan_box_preset != 3 || s_ta.secondHalfPending || rend_NextFrameSkipped() || s_dropLists)
+        return false;
+    const ModelEntry& m = modelSlot(offset, size);
+    if (m.offset != offset || m.size != size || !tnl_BoxHidden(m.box) || !m.boxed || m.typeIn != s_ta.listType ||
+        !elan_gx_unwritten_since(list, listSize, m.boxRender))
+        return false;
+#if !defined(GEKKO)
+    checkHiddenModel(list, listSize, m);
+#endif
+    skipFromSummary(list, m, m.indexed);
+    NaomiElanStats& st = elan_Stats();
+    st.boxCulledVertices += m.verts;
+    st.modelsCulled++;
+    st.modelListsCulled += m.ich;
+    return true;
+}
+
+// MIRROR OFF, a drawn frame: a model clipped inside the user clip rectangle
+// (the in-car view's rear-view mirror: the scene again, from behind) is not
+// drawn. Stepped over from its summary when its block is unchanged since it was
+// walked (the mirror shows the main view's own models), else walked with its
+// lists dropped (s_dropLists), which leaves every state exactly as drawing them
+// would. Its lists take no depth slice either way.
+bool mirrorModel(const u8* data, u32 offset, u32 size, u32 depth)
+{
+    if (g_mirror_preset || s_ta.secondHalfPending || rend_NextFrameSkipped())
+        return false;
+    u32 listSize = size;
+    const u8* list = elanRamPtr(offset, listSize);
+    if (!list)
+        return false;
+    NaomiElanStats& st = elan_Stats();
+    st.mirrorModels++;
+    const ModelEntry& m = modelSlot(offset, size);
+    if (m.used && m.boxed && m.offset == offset && m.size == size && m.typeIn == s_ta.listType &&
+        elan_gx_unwritten_since(list, listSize, m.boxRender))
+    {
+#if !defined(GEKKO)
+        checkHiddenModel(list, listSize, m);
+#endif
+        skipFromSummary(list, m, 0);
+        st.mirrorSummarised++;
+        st.mirrorLists += m.ich;
+        st.mirrorVertices += m.verts;
+        return true;
+    }
+    st.lists++;
+    ModelWalk* const outer = s_walk;
+    ModelWalk walk = {};
+    if (outer)
+    {
+        walk.skel = 0x811C9DC5u;
+        walk.pure = !s_ta.secondHalfPending;
+        s_walk = &walk;
+    }
+    s_dropLists++;
+    tnl_BeginModel((const u32*)data);
+    execute(list, listSize, depth + 1);
+    tnl_EndModel();
+    s_dropLists--;
+    // Its summary is left as it was: lists not drawn have no box.
+    if (outer)
+    {
+        s_walk = outer;
+        mergeWalk(*outer, walk);
     }
     return true;
 }
@@ -650,7 +715,17 @@ void execute(const u8* data, u32 size, u32 depth)
             __builtin_prefetch(data + used);
             __builtin_prefetch(data + used + 32);
 #endif
-            if (used <= size)
+            if (used <= size && s_dropLists)
+            {
+                // MIRROR OFF: the list type tnl_DrawList would return, nothing drawn.
+                const int type = s_ta.listType >= 0 ? s_ta.listType : (int)(pcw >> 24 & 7);
+                if (!(type & 1))
+                    s_ta.listType = type;
+                s_ta.vertexSize = 32;
+                st.mirrorLists++;
+                st.mirrorVertices += count;
+            }
+            else if (used <= size)
             {
                 s_ta.listType = tnl_DrawList((const u32*)data, vsize, s_ta.listType);
                 s_ta.vertexSize = 32;
@@ -670,6 +745,8 @@ void execute(const u8* data, u32 size, u32 depth)
             // the hardware: the next model sets its own.
             rend_SetTileClipMode(pcw >> 16 & 3);
             if (stepOverModel(data, modelOffset, modelSize))
+                break;
+            if ((pcw >> 16 & 3) == 2 && mirrorModel(data, modelOffset, modelSize, depth))
                 break;
             u32 listSize = modelSize;
             const u8* list = elanRamPtr(modelOffset, listSize);
@@ -699,7 +776,8 @@ void execute(const u8* data, u32 size, u32 depth)
                 walk.indexed = tnl_ListsIndexed() - indexed;
                 if (s_ta.secondHalfPending)
                     walk.pure = false;
-                rememberModel(modelOffset, modelSize, walk, typeIn, s_ta.listType);
+                if (!s_dropLists)            // lists not drawn have no box: keep the summary
+                    rememberModel(modelOffset, modelSize, walk, typeIn, s_ta.listType);
                 if (outer)
                     mergeWalk(*outer, walk);
             }

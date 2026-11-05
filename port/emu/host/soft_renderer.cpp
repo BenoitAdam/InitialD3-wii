@@ -1311,7 +1311,9 @@ void StartRender()
     if (render_end_pending_cycles < 50000)
         render_end_pending_cycles = 50000;
 
-    const bool periodic = s_snapEvery && g_host_render.vblanks - s_lastSnap >= s_snapEvery;
+    // env IDAS3_SNAP_FROM=F: periodic snapshots only from frame F on.
+    static const u32 snapFrom = getenv("IDAS3_SNAP_FROM") ? (u32)strtoul(getenv("IDAS3_SNAP_FROM"), nullptr, 0) : 0;
+    const bool periodic = s_snapEvery && g_host_render.vblanks >= snapFrom && g_host_render.vblanks - s_lastSnap >= s_snapEvery;
     if (!s_snapDir.empty() && (periodic || s_snapRequested))
     {
         s_lastSnap = g_host_render.vblanks;
