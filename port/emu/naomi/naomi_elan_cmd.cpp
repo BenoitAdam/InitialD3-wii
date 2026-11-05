@@ -35,6 +35,7 @@
 extern "C" {
 int g_elan_model_skip_preset = 1;
 int g_mirror_preset = 1;
+int g_elan_prefetch_preset = 1;
 }
 
 namespace {
@@ -69,6 +70,7 @@ constexpr u32 kMaxDepth = 64;          // display lists calling lists
 // followed as a jump, not a call; the cap only stops a corrupt circular chain.
 constexpr u32 kMaxChain = 65536;
 constexpr u32 kDmaCycles = 512;        // texture DMA latency before status bit 0
+constexpr u32 kPrefetchAhead = 256;    // ELAN PREFETCH: bytes asked for ahead of the walk
 
 // Where the TA stream stands across commands: the vertex size depends on
 // the last polygon header, and a 64-byte parameter may straddle two FIFO
@@ -605,8 +607,25 @@ void execute(const u8* data, u32 size, u32 depth)
     }
     NaomiElanStats& st = elan_Stats();
     u32 chain = 0;
+    // ELAN PREFETCH: the lists a frame walks outside any model are matrices,
+    // materials, lights and model calls back to back, and on a Wii each header
+    // is a cache miss the walk waits for (log 25: ~0.5 us a command on a dropped
+    // frame). There the lines kPrefetchAhead bytes ahead are asked for. Not
+    // inside a model (nor a mirror model MIRROR OFF walks), where polygon
+    // lists' vertices lie between the headers.
+    const u8* ahead = data;
     while (size >= 32)
     {
+#if defined(__GNUC__)
+        if (g_elan_prefetch_preset && !s_walk && !s_dropLists)
+        {
+            const u8* const limit = data + (size < kPrefetchAhead ? size : kPrefetchAhead);
+            if (ahead < data)
+                ahead = data;
+            for (; ahead < limit; ahead += 32)
+                __builtin_prefetch(ahead);
+        }
+#endif
         if (s_ta.secondHalfPending)
         {
             walkImpure();
@@ -618,6 +637,7 @@ void execute(const u8* data, u32 size, u32 depth)
         }
 
         const u32 pcw = word(data, 0);
+        st.walkRead++;
         if (!isNaomi2(pcw))
         {
             walkImpure();
@@ -717,6 +737,8 @@ void execute(const u8* data, u32 size, u32 depth)
             __builtin_prefetch(data + used);
             __builtin_prefetch(data + used + 32);
 #endif
+            if (ahead < data + used)
+                ahead = data + used;            // ELAN PREFETCH: not the vertices
             if (used <= size && s_dropLists)
             {
                 // MIRROR OFF: the list type tnl_DrawList would return, nothing drawn.
@@ -807,6 +829,7 @@ void execute(const u8* data, u32 size, u32 depth)
                         chain++;
                         data = list;
                         size = listSize;
+                        ahead = data;
                         continue;
                     }
                     if (chain >= kMaxChain)

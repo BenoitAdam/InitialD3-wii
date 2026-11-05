@@ -23,21 +23,37 @@ it exists.
 
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
 - Menus/attract/car select: 100% speed. Race, every frame drawn (FRAMESKIPPING 0, MIRROR OFF,
-  SMALL 3D 4 px): the day course of logs 21/23 at ~100% in the in-car view (57.5-61 fps, p50
-  16.5-16.8 ms) and 52-56 fps from the chase camera; night Akina 49-54 fps (p50 18-20). FRAMESKIP
-  AUTO settles on d = (16.7 - S) / (D - S) drawn (S a dropped frame, ~11.5-13 ms: `sh4` 8.3-9.5,
-  sound ~2.1-2.8, ELAN walk ~0.9; D a drawn one). The owner wants 100% at ~45 fps shown: by day
-  that should now hold (D ~17.5: ~52 shown), at night D ~19 and S ~13 give ~35-40 (OPTIMIZATION.md,
-  "The target").
-- Last real-Wii log analysed: **log 24** (2026-11-05, night Akina uphill, two runs). Every frame
+  SMALL 3D 4 px): the day course of logs 21/23 at **100% in the in-car view** (log 25: 59.4-60.1
+  fps the whole race, p50 15.5-16.3 ms) and 52-56 fps from the chase camera (log 23, before COLOUR
+  LISTS); night Akina 49-54 fps (p50 18-20). FRAMESKIP AUTO settles on d = (16.7 - S) / (D - S)
+  drawn (S a dropped frame, ~13.4 ms at night: `sh4` 9.5, sound ~2.3, ELAN walk ~1.2; D a drawn
+  one, ~19-20 at night). The owner wants 100% at ~45 fps shown: by day it holds (in-car every frame
+  drawn), at night log 25 gives 100% with ~36 shown (29-46); 45 needs ~1.3 ms off both S and D, or
+  ~1.7 off D alone (OPTIMIZATION.md, "The target").
+- Last real-Wii log analysed: **log 25** (2026-11-05, two runs). Day course, every frame drawn,
+  in-car all race: 59.4-60.1 emulated fps, p50 15.5-16.3 (log 23: 57.5-60.9, 16.5-16.8); COLOUR
+  LISTS took the 1.1-1.6K CPU-fed colour vertices a render to 0, "the rest" of the draw 2.9-4.3 ->
+  2.0-2.1 us a list, a render's CPU -0.35 to -0.42 ms at equal lists; owner: no colour problem.
+  Night Akina, FRAMESKIP AUTO, AUDIO STATS ON: the audio fix works (`snd` 0.0%, 0 drops, 0 waits,
+  ring 1-3 of 4, no underrun in the race), 59.6-59.9 emulated fps, 29-46 renders shown a second
+  (~36 on average; log 20 ~31, log 24 ~12), p50 16.85-17.2 (fully loaded). Night `sh4` is 9.4-9.5
+  against 7.7-8.3 by day, in both drawn and dropped frames (game code: the runner's night demo
+  spends its instructions differently, partly in FPU code over 32-byte records at 0C0225A0, but in
+  no single routine worth replacing). Built after it, **awaiting log 26**: ELAN PREFETCH (RENDERING 2,
+  second row, default ON): the ELAN walk asks for the cache lines 256 bytes ahead of it in the lists
+  outside models (a dropped race frame's walk reads ~1700 command headers on the runner, so ~0.7
+  us each on a Wii: about one miss apiece; a drawn one ~3400); new
+  `[prof]   ELAN walk:` line splits the walk between dropped and other frames (ms, commands read,
+  ns a command).
+- Log 24 (2026-11-05, night Akina uphill, two runs). Every frame
   drawn: as log 23 (48-54 fps, p50 17.7-20.1; COLOUR LISTS took Akina's ~24 CPU-fed colour vertices
   to 0, nothing wrong seen). FRAMESKIP AUTO: only 80-88% speed and ~12 renders shown a second,
   because the emulation sat ~25% of the time in the audio ring's pacing wait (`snd` bucket, tail
   frames 20-29 ms; 0 in logs 20/21 AUTO and in the every-frame run). With SOUND CLOCK REAL TIME the
   wait cannot pace anything and feeds itself (waited time becomes samples that refill the ring);
-  stalls that empty the ring ratchet its level up until it is full. Fixed after it, **awaiting log
-  25**: with REAL TIME the audio push never waits (free-run, a full ring drops one block); AUDIO
-  SYNC only paces the EMULATED clock now (hints updated). Not tested on hardware yet.
+  stalls that empty the ring ratchet its level up until it is full. Fixed after it (log 25
+  confirmed): with REAL TIME the audio push never waits (free-run, a full ring drops one block);
+  AUDIO SYNC only paces the EMULATED clock now (hints updated).
 - Log 23 (2026-11-05, two runs, every frame drawn, MIRROR OFF,
   SMALL 3D 4 px): night Akina: the light-set reuse works (10-64 sets built a frame, 206-410 reused),
   recording 3.65-4.5 -> 2.85-3.6 us a list with a box, ~0.5 ms off a drawn night frame (log 22,
@@ -46,7 +62,7 @@ it exists.
   now as big as the recording at night and twice it by day. Built after it: COLOUR LISTS (new
   page RENDERING 2, after RENDERING, default GPU FETCH): colour lists through the GPU fetch as RGB8
   read one byte into their ARGB word, when their alpha is 255 or not used (runner race: all of
-  them, ~1.2-1.3K vertices a render). Its day-course gain is still unmeasured on a Wii.
+  them, ~1.2-1.3K vertices a render). Log 25 measured it by day (see above).
 - Log 22 (2026-11-05, night Akina, every frame drawn, MIRROR OFF, SMALL 3D 4 px): DISPLAY LISTS
   (RENDERING, last row, default ON) work: `cached programs` 0.75-1.4 -> 0.10-0.28 ms a render, no
   GPU wait, no ring pass; a render's CPU -0.5 to -0.6 ms at equal lists. At night the recording
@@ -206,7 +222,8 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--cull 0/1/2` | BACKFACE CULL in the snapshots: 2 = the polygons' cull modes (launcher ON), 1 = the other winding |
 | `--list-cull 0/1/2/3` | 3D LIST CULL with `--gpu-tnl`: 1 = behind the camera, 2 = out of view, 3 = also whole models (launcher default). Prints `3D list cull per frame` and `3D list boxes ... N STALE` (every box used is checked against its list's records, every model stepped over against its block: must stay at 0) and `record digest` (all that the renderer is handed: for a refactor of the recording side, two runs at the same value must match line for line; run them one at a time, four at once lost one) |
 | env `IDAS3_GX_DEPTH=N:F:rules;...` | each snapshot redrawn with the Wii's 24-bit Z (near N, far F; N 0 = exact) and other depth rules, `_diffK.png` + winning lists of the differing pixels; a config against itself with `j0.5` = pixels that flicker (rules in `soft_renderer.cpp`, `GxDepth`). Race: `0:1:geq+cull;0.00999:100100:geq+cull;0.00999:100100:geq+cull+j0.5+r1` |
-| `--histo-from F` | PC histogram from frame F, top 64 ranges of 64 bytes (best tool when stuck without a hang); the wait-for-frame loop 0C20C840 + 0C211880 is ~half of it here (the runner has no idle skip). Env `IDAS3_HISTO_FILE=path` writes every bucket, to compare two parts of the game |
+| `--histo-from F` | PC histogram from frame F, top 64 ranges of 64 bytes (best tool when stuck without a hang); the wait-for-frame loop 0C20C840 + 0C211880 is ~half of it here (the runner has no idle skip). Env `IDAS3_HISTO_FILE=path` writes every bucket, to compare two parts of the game. Not with `--work-from` in the same run: both use the one SH-4 step hook and the histogram comes out empty |
+| `--arm-histo-from F` | the ARM7 sound CPU's ticks by 64-byte range of its code from frame F (the Windows interpreter, which has no idle skip), top 40 at exit, plus ticks a frame |
 | `--disasm A:B[,C:D]` | SH-4 code of those hex ranges at the end of the run (opcode + format string; run past ~frame 4600 for the game's code) |
 | `--work-from F[:T]` | a `[work]` line per frame from F: SH-4 instructions outside the wait loop (what a Wii frame really has to run), the reflection routine, the copy loop, CHD hunks decoded. With T, frames over T instructions and the others get a PC histogram each, heaviest difference first |
 | `--trace-from PC`, `--trace-at F`, `--trace-pc a,b`, `--watch ADDR`, `--path-after-elan` | SH-4 tracing (`--trace-at`: arm at frame F; 40 hits per address) |
@@ -239,6 +256,13 @@ chase from ~10600; the chase view has no clip-mode-2 models). That route stops b
 gets control (the scene freezes from ~11700): to drive, keep pressing start up to 13100 and `gas` every 10 frames from 11500 (a
 press lasts 10 frames); the car then races in the in-car view (no steering: it ends up against
 the guardrail), and `view` presses during it (e.g. 12000, 12500) cycle the cameras.
+That route's race is **Myogi by day** (Legend of the Street, race 1 against IGGY, counter-clockwise,
+day, dry), not the owner's night Akina. The course select screen shows ~7440-7520 (strip
+Shomaru, Tsuchisaka, Myogi (default), Usui, Akagi...), then the opponent screen (~7570-7700: IGGY
+race 1, KENJI race 2 clockwise day...). `left`/`right` move those cursors, but the window is short
+and shifts by tens of frames between runs (a press at 7480 was lost in the strip's scroll-in, ones
+at 7530+ moved the opponent cursor): a night race on the runner is not reached yet. Menu snapshots
+need the CPU path (no `--gpu-tnl`: GPU-path lists are not drawn in snapshots, menus come out blank).
 
 **Real Wii (the reference):** the owner runs the build with SPEED OVERLAY + PROFILER and sends
 `idas3wii_log.txt` (numbered "REAL WII LOG n"). Hand them a short list of what to test and which

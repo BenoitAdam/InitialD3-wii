@@ -6595,14 +6595,22 @@ static bool ShouldSkipFrame() // Returns true when the current frame should be d
 static bool s_skip_verdict_valid = false;
 static bool s_skip_verdict = false;
 
+extern "C" {
+u32 g_rend_dropped_renders = 0;              // renders the frameskip dropped (profiler)
+}
+
 static bool TakeSkipVerdict()
 {
+    bool skip;
     if (s_skip_verdict_valid)
     {
         s_skip_verdict_valid = false;
-        return s_skip_verdict;
+        skip = s_skip_verdict;
     }
-    return ShouldSkipFrame();
+    else
+        skip = ShouldSkipFrame();
+    g_rend_dropped_renders += skip;
+    return skip;
 }
 
 extern "C" bool rend_NextFrameSkipped()
@@ -6613,6 +6621,13 @@ extern "C" bool rend_NextFrameSkipped()
         s_skip_verdict_valid = true;
     }
     return s_skip_verdict;
+}
+
+// The profiler's question: is the frame being built already known to be
+// dropped? Never takes the verdict (that would move AUTO's decision earlier).
+extern "C" bool rend_FrameKnownSkipped()
+{
+    return s_skip_verdict_valid && s_skip_verdict;
 }
 
 // ── TRANS_SORT(): per-strip back-to-front sort of the translucent list ──────

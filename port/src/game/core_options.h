@@ -109,6 +109,7 @@ enum CoreOptionId
     OPT_INCAR_REFLECT,
     OPT_DISPLAY_LISTS,
     OPT_COLOUR_FETCH,
+    OPT_ELAN_PREFETCH,
     kCoreOptionCount
 };
 
@@ -308,6 +309,10 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // alphaOpaque): only when their vertex alpha is 255 or not used.
     {"COLOUR LISTS  ", "3D VTX FETCH: vertex-coloured 3D read by the GPU too (when its alpha is opaque)",
      PAGE_DEPTH_2, 1, 2, {"CPU (LEGACY)", "GPU FETCH"}, {0, 1}},
+    // The ELAN command walk asks for the cache lines ahead of it in the lists
+    // outside models (naomi_elan_cmd.cpp, kPrefetchAhead). Speed only.
+    {"ELAN PREFETCH ", "3D command walk loads its next commands ahead (dropped frames walk faster)",
+     PAGE_DEPTH_2, 1, 2, {"OFF (LEGACY)", "ON (FASTER?)"}, {0, 1}},
 };
 
 } // namespace idas3

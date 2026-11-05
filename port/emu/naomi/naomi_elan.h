@@ -60,6 +60,10 @@ struct NaomiElanStats
     u64 taNs;           // ...of which feeding the TA (inside and outside T&L)
     u64 convNs;         // ...of which the per-vertex loop (transform, lighting, strip assembly)
     u64 gpuNs;          // ...of which recording lists for the GPU path
+    // The walk on frames already known to be dropped (rend_FrameKnownSkipped):
+    // its time, and command headers read (a run of TA parameters counts once).
+    u64 execNsDropped;
+    u32 walkRead, walkReadDropped;
 };
 
 #if !defined(GEKKO)
@@ -110,6 +114,11 @@ NaomiElanStats& elan_Stats();
 // the host): whether the frame now being built will be dropped by frame
 // skipping. Asking takes the verdict early; StartRender then uses the same one.
 extern "C" bool rend_NextFrameSkipped();
+// Whether that verdict is already taken and says dropped (never takes it), and
+// how many renders the frameskip has dropped so far: the profiler's split of
+// the ELAN walk between drawn and dropped frames.
+extern "C" bool rend_FrameKnownSkipped();
+extern "C" u32 g_rend_dropped_renders;
 // Also the renderer's: a MODEL command's PCW bits 16-17 (user clip: 0 off,
 // 2 inside, 3 outside the TA's User Tile Clip rectangle) become the TA's tile
 // clip mode for the polygons that follow, as a Group_En polygon header would.
@@ -120,6 +129,9 @@ extern "C" int g_elan_model_skip_preset;
 // Launch option MIRROR: 0 = models clipped inside the user clip rectangle (the
 // in-car view's rear-view mirror) are not drawn, 1 = drawn (naomi_elan_cmd.cpp).
 extern "C" int g_mirror_preset;
+// Launch option ELAN PREFETCH: 1 = the walk asks for the cache lines ahead of
+// it in the lists outside models (naomi_elan_cmd.cpp), 0 = it does not.
+extern "C" int g_elan_prefetch_preset;
 // Launch option SMALL 3D (GPU T&L with 3D LIST CULL): lists and whole models
 // whose box spans fewer than this many pixels on screen are not drawn; 0 = all
 // drawn (naomi_elan_tnl.cpp, tooSmall).

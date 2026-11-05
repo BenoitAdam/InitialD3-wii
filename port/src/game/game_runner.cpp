@@ -219,6 +219,7 @@ void logStatus(const char* why, const NaomiFrameInfo& info)
 u32 s_prevIch = 0, s_prevGpu = 0, s_prevLit = 0;
 u64 s_prevExec = 0, s_prevTnl = 0, s_prevGpuNs = 0, s_prevConv = 0, s_prevTa = 0;
 NaomiElanStats s_prevBox = {};        // the 3D LIST CULL counters at the last line
+u32 s_prevDropped = 0;                 // g_rend_dropped_renders at the last line
 
 void logMemoryActivity(const NaomiFrameInfo& info)
 {
@@ -294,6 +295,22 @@ void logMemoryActivity(const NaomiFrameInfo& info)
         log::write("[prof]   ELAN ms per frame: %.2f total = %.2f commands + %.2f T&L | T&L: %.2f GPU lists, %.2f CPU "
                    "vertex loop, %.2f other | TA feed (in both) %.2f\n",
                    all, all - tnl, tnl, gpu, conv, tnl - gpu - conv, ta);
+        // The command walk (T&L left out) on dropped frames and on the others.
+        const u32 dropped = g_rend_dropped_renders - s_prevDropped;
+        const u32 kept = frames > dropped ? frames - dropped : 0;
+        const double walkDropped = elan_TimeMs(es.execNsDropped - s_prevBox.execNsDropped);
+        const double walkKept = (all - tnl) * frames - walkDropped;
+        const u32 readDropped = es.walkReadDropped - s_prevBox.walkReadDropped;
+        const u32 readKept = es.walkRead - s_prevBox.walkRead - readDropped;
+        if (dropped)
+            log::write("[prof]   ELAN walk: %u dropped frames, %.2f ms each, %u commands read each (%.0f ns a command) | "
+                       "%u other frames, %.2f ms each, %u read each (%.0f ns)\n",
+                       dropped, walkDropped / dropped, readDropped / dropped,
+                       readDropped ? walkDropped * 1e6 / readDropped : 0.0, kept, kept ? walkKept / kept : 0.0,
+                       kept ? readKept / kept : 0u, readKept ? walkKept * 1e6 / readKept : 0.0);
+        else
+            log::write("[prof]   ELAN walk: no dropped frame | %.2f ms a frame, %u commands read (%.0f ns a command)\n",
+                       walkKept / frames, readKept / frames, readKept ? walkKept * 1e6 / readKept : 0.0);
     }
     const NaomiElanStats& es = naomi_ElanStats();
     s_prevBox = es;
@@ -305,6 +322,7 @@ void logMemoryActivity(const NaomiFrameInfo& info)
     s_prevGpuNs = es.gpuNs;
     s_prevConv = es.convNs;
     s_prevTa = es.taNs;
+    s_prevDropped = g_rend_dropped_renders;
     prev = m;
     prevUs = now;
     prevFrame = info.vblanks;
@@ -360,7 +378,8 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_depth_plane_preset,   &g_cold_entry_preset,   &g_dimm_ahead_preset,   &g_fifo_wake_preset,
         &g_mem_sweep_preset,     &g_fifo_size_preset,    &g_soft_float_preset,
         &g_page_guard_preset,    &g_mirror_preset,       &g_sfx_menu_level_preset, &g_sfx_tire_level_preset,
-        &g_small_cull_preset,    &g_incar_reflect_preset, &g_elan_dl_preset,     &g_elan_colour_fetch_preset};
+        &g_small_cull_preset,    &g_incar_reflect_preset, &g_elan_dl_preset,     &g_elan_colour_fetch_preset,
+        &g_elan_prefetch_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

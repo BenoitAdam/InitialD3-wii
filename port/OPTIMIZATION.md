@@ -30,6 +30,31 @@ not a model): S ~12-13 ms. With D ~20-21 ms that is d ~0.45, ~27 fps shown, whic
 as "a 30 fps limit" (log 19). It is no cap: every ms off D adds ~6-8 shown fps under AUTO, every ms
 off S more. 45 fps shown at 100% needs D ~17.5 ms with today's S.
 
+Log 25 (2026-11-05, two runs, MIRROR OFF, SMALL 3D 4 px, REAL TIME sound, in-car view all race):
+- **Day course, every frame drawn** (logs 21/23's course; its race intro at frame 5280 here, 5520
+  in log 23): **100% the whole race**, 59.4-60.1 emulated fps over frames 5520-8040, p50 15.46-16.34
+  (log 23 in-car: 57.5-60.9 fps, p50 16.45-16.84), p99 17.7-18.6. COLOUR LISTS works: "CPU-fed
+  (colour, other)" 1.1-1.6K a render -> 0, "the rest" of the ELAN draw 2.9-4.3 -> 2.0-2.1 us a list
+  (day lists now cost what night ones do), a render's CPU at equal lists 1.83 -> 1.43 ms (344
+  lists), 1.68 -> 1.34 (312), 1.61 -> 1.19 (240): -0.35 to -0.42 ms, `rend` 1.55-2.40 -> 1.02-1.78.
+  Owner: no colour problem. Rest of the frame as log 23: `sh4` 7.7-8.3, `elan` 3.2-3.7 (walk
+  2.2-2.6, recording 1.0-1.6, 2.4-2.7 us a box), `arm` 1.35, `aica` 1.0-1.3. The chase camera
+  (log 23: 51.8-55.9 fps with 2.1-2.3K colour vertices) was not driven.
+- **Night Akina, FRAMESKIP AUTO, AUDIO STATS ON**: the audio fix works. `snd` 0.0% all run, the
+  ring at 1-3 blocks of 4, 0 drops and 0 waits; 3 underruns in all, at boot and loading screens,
+  none in the race. 59.6-59.9 emulated fps from the race start (overlay 99.7-100.2%), 29-46 renders
+  shown a second, ~36 on average (log 20, MIRROR OFF + 8 px: ~31; log 21, MIRROR ON: ~25; log 24:
+  ~12), 57-77% drawn, p50 16.85-17.2: the frame budget fully used, as AUTO should. Typical frames
+  (mostly dropped): `sh4` 9.4-9.5, `arm` 1.3, `aica` 1.0, `elan` 1.5-2.2, `rend` 0.8-1.0; tail
+  (drawn): `elan` 5.2-5.8, `rend` 1.5-2.6. ELAN commands average 1.85-2.07 ms a frame at ~60%
+  drawn against ~2.4 on a drawn frame, so a **dropped frame still walks ~1.2 ms of commands** (a
+  dropped frame of frames 6960-7080: ~490 models stepped over from their summaries, ~1600 polygon
+  lists not walked, ~190 walked and not drawn, ~1650 state commands not decoded). So S ~13.4 (`sh4` 9.5, sound 2.3, walk 1.2, the rest ~0.4) and D ~19-20.
+- **Night `sh4` is ~1.3 ms over day's** (9.4-9.5 against 7.7-8.3), drawn and dropped frames alike,
+  in every log since 20: per-frame game work, not rendering.
+- What 45 shown at night takes: d = 0.75, so 0.75 D + 0.25 S <= 16.7: ~1.7 ms off D alone, or
+  ~1.3 ms off both (game code, sound, the dropped part of the walk).
+
 Log 24 (2026-11-05, night Akina uphill, two runs, MIRROR OFF, SMALL 3D 4 px, REAL TIME sound):
 - **Every frame drawn**: as log 23, as expected (COLOUR LISTS only matters by day): 48.2-54.1
   emulated fps, p50 17.7-20.1, recording 2.9-3.6 us a list with a box, 8-64 light sets built a frame
@@ -366,8 +391,9 @@ render. Menus, attract mode and car select run at 100%.
 | 11-05 | IN-CAR REFLECT (reflection map rebuilt 1 frame in 16 in the in-car view) | log 21: 112-113 builds of 120 skipped as designed, but `sh4` unchanged within 0.1 ms against log 20 on the same course: a build costs the Wii far less than the 1.3 ms assumed |
 | 11-05 | DISPLAY LISTS (cached lists' index draws written once as GX display lists) | log 22 (night Akina, every frame drawn): `cached programs` 0.75-1.4 -> 0.10-0.28 ms a render, render CPU -0.5 to -0.6 ms at equal lists and vertices; no GPU wait, no ring pass in the race |
 | 11-05 | Point-lit light sets reused while a list picks the same lights | log 23 (night Akina, every frame drawn): 80-97% of sets reused, recording 3.65-4.5 -> 2.85-3.6 us a list with a box, `elan` -0.5 ms at equal load; day course in-car ~100% every frame drawn |
-| 11-05 | COLOUR LISTS (colour lists through the GPU fetch as RGB8) | log 24 (night only): Akina's ~24 colour vertices to 0, frame as log 23; the day course, where it matters, not run yet |
-| 11-05 | Audio push never waits with SOUND CLOCK REAL TIME | log 24 AUTO had 25% of the time in that wait (80-88% speed, ~12 shown/s); awaiting log 25 |
+| 11-05 | COLOUR LISTS (colour lists through the GPU fetch as RGB8) | log 25 (day course, in-car, every frame drawn): colour vertices 1.1-1.6K -> 0, render CPU -0.35 to -0.42 ms, **100% the whole race** (59.4-60.1 fps, p50 15.5-16.3) |
+| 11-05 | Audio push never waits with SOUND CLOCK REAL TIME | log 25 (night, AUTO): `snd` 25% -> 0, 0 drops; 100% speed with ~36 renders shown a second (29-46) |
+| 11-05 | ELAN PREFETCH (run-ahead dcbt in the lists outside models), walk split by dropped/drawn frames | awaiting log 26 |
 | 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
@@ -461,7 +487,31 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
-### Done after log 24 (awaiting log 25)
+### Done after log 25 (awaiting log 26)
+
+- **ELAN PREFETCH** (RENDERING 2, second row, default ON; OFF (LEGACY) keeps the old walk).
+  Log 25's night AUTO run puts a dropped frame's command walk at ~1.2 ms. The runner's day race
+  with every other frame dropped (`--frameskip 1`, new `[run]   elan walk:` line) reads 1620-1740
+  command headers on a dropped frame (~490 model calls stepped over from their summaries at
+  night, the matrices, materials and lights between them skipped after their header) and ~3300 on
+  a drawn one: ~0.7 us a header on a Wii, about one cache miss each, the walk waiting for every
+  one. The lists outside models (the per-frame lists the game writes into ELAN RAM with
+  store queues, ~140 KB a race frame) are read in order, so `execute` (naomi_elan_cmd.cpp) now asks
+  for the lines `kPrefetchAhead` = 256 bytes ahead of the walk there (dcbt; one that misses the TLB is
+  dropped, which in a list only loses the first lines of each new 4 KB page). Not inside models, where polygon lists'
+  vertices (read by the GPU, not the CPU) lie between the headers; at a top-level polygon list the
+  run-ahead jumps over its vertices. Nothing else changes (the runner's digests cannot move:
+  MSVC has no `__builtin_prefetch`). Expected: the dropped-frame walk well under 1.2 ms, the drawn
+  one under 2.4, if the 750CL keeps several prefetches in flight; to read in log 26's new line.
+- **`[prof]   ELAN walk:` line** (PROFILER): the walk's time (T&L left out) and the command
+  headers it read, on frames already known to be dropped (`rend_FrameKnownSkipped`, which never
+  takes the verdict, so AUTO decides exactly as before) and on the others, per frame and per
+  command. Dropped renders come from `g_rend_dropped_renders` (counted where the verdict is used).
+  The runner prints the same as `[run]   elan walk:`.
+- Runner: `--arm-histo-from F`, the ARM7's ticks by code range (see the sound item in "What is
+  left").
+
+### Done after log 24 (log 25 confirmed: `snd` 0, night AUTO at 100% with ~36 shown)
 
 - **No audio pacing with SOUND CLOCK REAL TIME** (wii_audio.cpp `wii_audio_push_sample`): in that
   mode the ring runs free whatever AUDIO SYNC says (a full ring drops the block being written, one
@@ -470,7 +520,7 @@ From the `[CC]` and `[HOT]` censuses of a race:
   SOUND CLOCK's now say so). No option: the old behaviour cannot pace a real-time clock, it only
   stalled the game (log 24). The same result was available by hand with AUDIO SYNC = 0 (FREE RUN).
 
-### Done after log 23 (log 24: no change at night, as expected; day course not run yet)
+### Done after log 23 (log 25 confirmed: day in-car at 100% every frame drawn)
 
 - **COLOUR LISTS** (new page RENDERING 2, the first row; default GPU FETCH, CPU (LEGACY) keeps the
   old path; runner `--colour-fetch`). Colour lists (layouts 0x042/0x04A with the vertex colour as
@@ -766,11 +816,19 @@ there; the push runs free in that mode since (Done after log 24).
 
 ## What is left, best first
 
-After log 23: the owner's target is 100% speed with ~45 fps shown under FRAMESKIP AUTO. The day
-course of logs 21/23 now runs its in-car view at ~100% with every frame drawn (D ~16.5-17.7 ms:
-~52 shown under AUTO); night Akina has D ~18-20 (~40 shown) and needs ~1.5 ms more. DISPLAY
-LISTS (item 5, log 22) and the light-set reuse (log 23) took ~0.5 ms each off a drawn frame;
-COLOUR LISTS (item 3) is built for log 24. Next
+After log 25: the owner's target is 100% speed with ~45 fps shown under FRAMESKIP AUTO. The day
+course runs its in-car view at 100% with every frame drawn (log 25, COLOUR LISTS); night Akina
+under AUTO gives 100% with ~36 shown (S ~13.4, D ~19-20) and needs ~1.3 ms off both S and D, or
+~1.7 off D alone. ELAN PREFETCH is built for log 26 (the walk: ~1.2 ms a dropped frame, ~2.4 a
+drawn one). Night `sh4` is ~1.3 ms over day's in every log; the runner's night demo runs no more
+SH-4 instructions than the day race (690-825K against 800-815K a frame, reflection routine
+included), but spends them differently: 0C022580-0C022A3F (FPU code over 32-byte records, likely
+the per-object light choice) 4.7% against 1.8% (day histogram of 2026-11-01), and ~6% in five
+regions the day race does not run (0C0D1000, 0C0E7000, 0C140000, 0C1A9000, 0C206000, ~1% each).
+So on a Wii the gap is game code spread over several routines, no kernel to replace (the same
+shape as log 16's race-vs-demo gap).
+DISPLAY LISTS (item 5, log 22) and the light-set reuse (log 23) took ~0.5 ms each off a drawn
+frame; COLOUR LISTS (item 3) ~0.4 by day (log 25). Next
 on a drawn frame: the ELAN command walk (2.0-2.8 ms, now the largest ELAN cost: compiled models,
 item 1), the rest of the per-list draw (item 4, ~2.1-2.4 us a list, ~0.8-1.4 ms), the recording
 (~2.5 us a box by day, ~3.2 at night). On a dropped frame besides
@@ -842,7 +900,20 @@ log 21 (item 5). JIT COLD ENTRY needs an A/B before it counts as a gain.
    getcode ~390, sync_sr ~275, interrupt ~270 a frame): not the lever.
 7. **Overlap CPU and GPU.** The GP is still drawing ~2.5 ms after the CPU finishes the render;
    async render is on, but the next frame's SH-4 work could start earlier.
-8. **Sound side (~2.5-3 ms: ARM7 + AICA).** Not profiled yet.
+8. **Sound side (~2.3 ms a race frame at 100%: `arm` 1.3 + `aica` 1.0).** First look after log
+   25. ARM7: the runner's `--arm-histo-from` over the day race's driving stretch (frames
+   11600-13000) gives ~167.6K ticks a frame, the full clock the port gives it (200 MHz / 20 =
+   10 MHz), spread over ~25 code ranges (the largest 9%, 000A40-000A7F; others at 000600-001140
+   and 007180-007540). So the driver is busy, not spinning in one poll loop the idle skip could
+   charge for. nullDC4Wii measured batching at 1 -> 4 slices worth only 7.4 -> 6.2% `arm` (the
+   port uses 4), with 8 and 16 making music wobble, and a halved ARM clock broke audio timing in
+   other games: no cheap ARM lever. On a Wii, JIT CCALLS also turns on the ARM JIT's census
+   (`[ARMJIT]` / `[ARMHOT]` lines once a second: instructions a second, hottest blocks, time in C).
+   AICA: ~0.7 ms of `aica` is voice mixing (`vox`, ~5 voices, ~150 cycles a voice-sample through
+   `ChannelStepFast`'s calls) and ~0.35 ms the per-sample rest (`libAICA_TimeStep`: three timers,
+   two interrupt updates and the sample push, 44,100 times a second). Mixing a channel several
+   samples at a time would cut both but changes how the ARM sees channel positions between
+   samples: a project of its own, checkable on Windows by hashing every output sample.
 9. **Texture decode bursts**: tail frames with ~110 decodes (~10 ms). Spread or pre-decode.
 10. **Loading screens (35-60% speed)**: AICA wave RAM uploads over the G2 bus (SB_FFST polls,
     suspend registers): the same poll-credit trick as the cart DMA would help.

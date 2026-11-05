@@ -255,9 +255,16 @@ static void commandWrite(u32 addr, u32 data)
     {
         s_stats.commands++;
         FP_T0(t0);                      // FRAME_PROF "elan" bucket (frame_prof.cpp)
+        const u32 read0 = s_stats.walkRead;
         ELAN_TIME_BEGIN(tx);
         elan_Execute(s_cmd, sizeof(s_cmd));
-        ELAN_TIME_END(execNs, tx);
+        const u64 spent = elan_NowNs() - tx;
+        s_stats.execNs += spent;
+        if (rend_FrameKnownSkipped())
+        {
+            s_stats.execNsDropped += spent;
+            s_stats.walkReadDropped += s_stats.walkRead - read0;
+        }
         FP_ACC(disc, t0);
         FP_BUMP(n_disc);
         if (!elan_DmaBusy())

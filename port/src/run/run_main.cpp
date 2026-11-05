@@ -246,6 +246,40 @@ static void printHisto()
     }
 }
 
+// --arm-histo-from <frame>: from that frame on, the ARM7 sound CPU's ticks by
+// 64-byte range of its code (the Windows interpreter, no idle skip), printed at
+// exit: what its 1.3 ms a race frame on a Wii is spent on.
+extern void (*g_arm_histo_hook)(u32 pc, u32 ticks);
+static u32 s_armHistoFrom;
+static std::vector<u64> s_armHisto;     // by (pc & 0x7FFFFF) >> 6
+static u64 s_armHistoTicks;
+
+static void armHistoHook(u32 pc, u32 ticks)
+{
+    const u32 bucket = (pc & 0x7FFFFF) >> 6;
+    if (bucket < s_armHisto.size())
+        s_armHisto[bucket] += ticks;
+    s_armHistoTicks += ticks;
+}
+
+static void printArmHisto(u32 frames)
+{
+    std::vector<std::pair<u64, u32>> hot;
+    for (u32 i = 0; i < s_armHisto.size(); i++)
+        if (s_armHisto[i])
+            hot.push_back({s_armHisto[i], i});
+    std::sort(hot.begin(), hot.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    printf("[armhisto] %llu ticks over %u frames (%.0f a frame)\n", (unsigned long long)s_armHistoTicks, frames,
+           frames ? s_armHistoTicks / (double)frames : 0.0);
+    u64 running = 0;
+    for (size_t i = 0; i < hot.size() && i < 40; i++)
+    {
+        running += hot[i].first;
+        printf("[armhisto]   %06X-%06X  %5.1f%%  (%5.1f%% so far)\n", hot[i].second << 6, (hot[i].second << 6) + 63,
+               100.0 * hot[i].first / (double)s_armHistoTicks, 100.0 * running / (double)s_armHistoTicks);
+    }
+}
+
 // --reflection N: the launcher's REFLECTIONS, one reflection map build in N
 // (default 1 here, the game's own behaviour; the launcher's is 4).
 extern int g_reflection_rate_preset;
@@ -756,6 +790,16 @@ void host_on_vblank()
         lastTa = es.taNs;
         lastConv = es.convNs;
         logLine(line);
+        // Commands the walk read (headers; summarised models' commands are not read).
+        static u32 lastRead = 0, lastReadDropped = 0, lastDropped = 0;
+        const u32 dropped = g_rend_dropped_renders - lastDropped;
+        const u32 readDropped = es.walkReadDropped - lastReadDropped;
+        snprintf(line, sizeof(line), "[run]   elan walk: %u commands read a frame | dropped frames %u, %u read each\n",
+                 (es.walkRead - lastRead) / 60, dropped, dropped ? readDropped / dropped : 0u);
+        lastRead = es.walkRead;
+        lastReadDropped = es.walkReadDropped;
+        lastDropped = g_rend_dropped_renders;
+        logLine(line);
         static u32 lastIn = 0, lastLit = 0, lastEvals = 0;
         const u32 dIn = es.ichVertices - lastIn, dLit = es.litVertices - lastLit, dEv = es.lightEvals - lastEvals;
         snprintf(line, sizeof(line),
@@ -917,6 +961,11 @@ void host_on_vblank()
         s_histo.assign(RAM_SIZE >> 6, 0);
         g_sh4_step_hook = histoHook;
     }
+    if (s_armHistoFrom && frame == s_armHistoFrom)
+    {
+        s_armHisto.assign(0x800000 >> 6, 0);
+        g_arm_histo_hook = armHistoHook;
+    }
     if (s_workFrom && frame >= s_workFrom)
     {
         if (frame == s_workFrom)
@@ -973,6 +1022,8 @@ int main(int argc, char** argv)
             g_area1_write_hook = area1Hook;
     if (const char* h = argValue(argc, argv, "--histo-from"))
         s_histoFrom = (u32)strtoul(h, nullptr, 0);
+    if (const char* h = argValue(argc, argv, "--arm-histo-from"))
+        s_armHistoFrom = (u32)strtoul(h, nullptr, 0);
     if (const char* w = argValue(argc, argv, "--work-from"))
     {
         char* end = nullptr;
@@ -1199,6 +1250,8 @@ int main(int argc, char** argv)
     naomi_Run();
     if (!s_histo.empty())
         printHisto();
+    if (!s_armHisto.empty())
+        printArmHisto(s_frameLimit > s_armHistoFrom ? s_frameLimit - s_armHistoFrom : 0);
     printWork();
     naomi_BoardLogCounters();
 

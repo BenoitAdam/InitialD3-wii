@@ -1256,14 +1256,27 @@ extern "C" bool rend_NextFrameSkipped()
     return s_skip;
 }
 
+extern "C" bool rend_FrameKnownSkipped()
+{
+    return s_skipValid && s_skip;
+}
+
+extern "C" {
+u32 g_rend_dropped_renders = 0;              // renders the frameskip dropped (profiler)
+}
+
 static bool takeSkipVerdict()
 {
+    bool skip;
     if (s_skipValid)
     {
         s_skipValid = false;
-        return s_skip;
+        skip = s_skip;
     }
-    return decideSkip();
+    else
+        skip = decideSkip();
+    g_rend_dropped_renders += skip;
+    return skip;
 }
 
 // IDAS3_RENDER_TRACE=FROM:TO prints every RENDER_START between those vblanks

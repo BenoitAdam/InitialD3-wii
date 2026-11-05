@@ -483,6 +483,11 @@ void CPUFiq()
 	pin on arm7
 */
 
+#if !defined(ARM7_USE_CACHED)
+// Windows runner (--arm-histo-from): each instruction's address and the ticks it charged.
+void (*g_arm_histo_hook)(u32 pc, u32 ticks) = nullptr;
+#endif
+
 #ifdef _MUDFLAP
 __attribute__ ((optimize("O0")))
 #endif
@@ -516,7 +521,10 @@ void arm_Run(u32 CycleCount)
 				CPUFiq();
 			}
 
+			const u32 histoPc = armNextPC, histoTicks = clockTicks;
 			#include "arm-new.h"
+			if (g_arm_histo_hook)
+				g_arm_histo_hook(histoPc, clockTicks - histoTicks);
 
 			if (arm_race_pending)
 			{
