@@ -30,6 +30,23 @@ not a model): S ~12-13 ms. With D ~20-21 ms that is d ~0.45, ~27 fps shown, whic
 as "a 30 fps limit" (log 19). It is no cap: every ms off D adds ~6-8 shown fps under AUTO, every ms
 off S more. 45 fps shown at 100% needs D ~17.5 ms with today's S.
 
+Log 24 (2026-11-05, night Akina uphill, two runs, MIRROR OFF, SMALL 3D 4 px, REAL TIME sound):
+- **Every frame drawn**: as log 23, as expected (COLOUR LISTS only matters by day): 48.2-54.1
+  emulated fps, p50 17.7-20.1, recording 2.9-3.6 us a list with a box, 8-64 light sets built a frame
+  and 208-425 reused. Akina's ~24 CPU-fed colour vertices a render went to 0; nothing wrong seen.
+- **FRAMESKIP AUTO**: 48.5-54.4 emulated fps (80-88%) and only 11.7-13.9 renders shown a second (AUTO
+  at its 1-in-4 floor, being behind), where log 20 held 100% with 43-61% drawn. Cause: `snd`, the
+  audio ring's pacing wait, 24-27% of the time from the race start (tail frames 20-29 ms in it,
+  typical frame 0.3; 0 in logs 20/21 AUTO and in this log's every-frame run). With SOUND CLOCK
+  REAL TIME the samples come from real elapsed time (stalls over 50 ms dropped), so the wait cannot
+  pace the emulation; and it feeds itself, since the time spent waiting is turned into samples at
+  the next `armUpdateARM`, which fill the ring again. How it gets full: a stall that empties the
+  ring makes the callback play concealment without consuming, and the stall's samples are produced
+  anyway (under 50 ms): each such stall raises the ring's level by up to a block, and the race start
+  has many. Logs 20/21 did not reach the full ring by chance. Fixed after log 24 (below). The
+  dropped frames cost S ~13.6 ms here at 85% speed (`sh4` 9.4, ELAN 1.4, `arm` 1.3, `aica` 0.95,
+  `rend` 0.4), so with the fix AUTO should give ~35-40 shown at night (D ~19).
+
 Log 23 (2026-11-05, two runs, every frame drawn, MIRROR OFF, SMALL 3D 4 px, REAL TIME sound, the
 in-car view most of the time):
 - **Night Akina uphill** (log 22's settings): the light-set reuse works, 10-64 sets built a frame
@@ -349,7 +366,8 @@ render. Menus, attract mode and car select run at 100%.
 | 11-05 | IN-CAR REFLECT (reflection map rebuilt 1 frame in 16 in the in-car view) | log 21: 112-113 builds of 120 skipped as designed, but `sh4` unchanged within 0.1 ms against log 20 on the same course: a build costs the Wii far less than the 1.3 ms assumed |
 | 11-05 | DISPLAY LISTS (cached lists' index draws written once as GX display lists) | log 22 (night Akina, every frame drawn): `cached programs` 0.75-1.4 -> 0.10-0.28 ms a render, render CPU -0.5 to -0.6 ms at equal lists and vertices; no GPU wait, no ring pass in the race |
 | 11-05 | Point-lit light sets reused while a list picks the same lights | log 23 (night Akina, every frame drawn): 80-97% of sets reused, recording 3.65-4.5 -> 2.85-3.6 us a list with a box, `elan` -0.5 ms at equal load; day course in-car ~100% every frame drawn |
-| 11-05 | COLOUR LISTS (colour lists through the GPU fetch as RGB8) | awaiting log 24 |
+| 11-05 | COLOUR LISTS (colour lists through the GPU fetch as RGB8) | log 24 (night only): Akina's ~24 colour vertices to 0, frame as log 23; the day course, where it matters, not run yet |
+| 11-05 | Audio push never waits with SOUND CLOCK REAL TIME | log 24 AUTO had 25% of the time in that wait (80-88% speed, ~12 shown/s); awaiting log 25 |
 | 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
@@ -443,7 +461,16 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
-### Done after log 23 (awaiting log 24)
+### Done after log 24 (awaiting log 25)
+
+- **No audio pacing with SOUND CLOCK REAL TIME** (wii_audio.cpp `wii_audio_push_sample`): in that
+  mode the ring runs free whatever AUDIO SYNC says (a full ring drops the block being written, one
+  23 ms skip, and its level comes back down) instead of blocking the emulation for the rest of the
+  race. AUDIO SYNC keeps pacing the EMULATED clock, where waiting is what makes 100% (its hint and
+  SOUND CLOCK's now say so). No option: the old behaviour cannot pace a real-time clock, it only
+  stalled the game (log 24). The same result was available by hand with AUDIO SYNC = 0 (FREE RUN).
+
+### Done after log 23 (log 24: no change at night, as expected; day course not run yet)
 
 - **COLOUR LISTS** (new page RENDERING 2, the first row; default GPU FETCH, CPU (LEGACY) keeps the
   old path; runner `--colour-fetch`). Colour lists (layouts 0x042/0x04A with the vertex colour as
@@ -716,8 +743,9 @@ speed and it is only right at 100%. REAL TIME broke it at the 2026-10-17 speeds 
 the refills), but the owner finds it OK with the log 15 build. Its cost is not measured: at 70%
 speed it should run ~1.4x the sound work per emulated frame, up to ~1 ms on `arm` + `aica`.
 Owner's decision (2026-11-01): good music matters more than those fps below 100%, so REAL TIME
-becomes the default once the speed tests are over. The default stays EMULATED until then, to keep
-logs comparable. The cost does not need measuring, and the question is closed.
+is the default (SOUND CLOCK). The cost does not need measuring, and the question is closed.
+With REAL TIME nothing may wait on the audio ring: log 24 (AUTO, night) spent 25% of its time
+there; the push runs free in that mode since (Done after log 24).
 
 ## Tried and dropped
 

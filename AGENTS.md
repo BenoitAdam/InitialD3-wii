@@ -27,17 +27,26 @@ it exists.
   16.5-16.8 ms) and 52-56 fps from the chase camera; night Akina 49-54 fps (p50 18-20). FRAMESKIP
   AUTO settles on d = (16.7 - S) / (D - S) drawn (S a dropped frame, ~11.5-13 ms: `sh4` 8.3-9.5,
   sound ~2.1-2.8, ELAN walk ~0.9; D a drawn one). The owner wants 100% at ~45 fps shown: by day
-  that should now hold (D ~17.5: ~52 shown), at night D ~19 gives ~40 (OPTIMIZATION.md, "The
-  target").
-- Last real-Wii log analysed: **log 23** (2026-11-05, two runs, every frame drawn, MIRROR OFF,
+  that should now hold (D ~17.5: ~52 shown), at night D ~19 and S ~13 give ~35-40 (OPTIMIZATION.md,
+  "The target").
+- Last real-Wii log analysed: **log 24** (2026-11-05, night Akina uphill, two runs). Every frame
+  drawn: as log 23 (48-54 fps, p50 17.7-20.1; COLOUR LISTS took Akina's ~24 CPU-fed colour vertices
+  to 0, nothing wrong seen). FRAMESKIP AUTO: only 80-88% speed and ~12 renders shown a second,
+  because the emulation sat ~25% of the time in the audio ring's pacing wait (`snd` bucket, tail
+  frames 20-29 ms; 0 in logs 20/21 AUTO and in the every-frame run). With SOUND CLOCK REAL TIME the
+  wait cannot pace anything and feeds itself (waited time becomes samples that refill the ring);
+  stalls that empty the ring ratchet its level up until it is full. Fixed after it, **awaiting log
+  25**: with REAL TIME the audio push never waits (free-run, a full ring drops one block); AUDIO
+  SYNC only paces the EMULATED clock now (hints updated). Not tested on hardware yet.
+- Log 23 (2026-11-05, two runs, every frame drawn, MIRROR OFF,
   SMALL 3D 4 px): night Akina: the light-set reuse works (10-64 sets built a frame, 206-410 reused),
   recording 3.65-4.5 -> 2.85-3.6 us a list with a box, ~0.5 ms off a drawn night frame (log 22,
   same settings). Day course (log 21's): in-car ~100%, chase 52-56 fps; there ~1.1-2.3K CPU-fed
   colour vertices a render cost ~0.3-0.65 ms. The ELAN command walk (2.0-2.8 ms a drawn frame) is
-  now as big as the recording at night and twice it by day. Built after it, **awaiting log 24**:
-  COLOUR LISTS (new page RENDERING 2, after RENDERING, default GPU FETCH): colour lists through
-  the GPU fetch as RGB8 read one byte into their ARGB word, when their alpha is 255 or not used
-  (runner race: all of them, ~1.2-1.3K vertices a render).
+  now as big as the recording at night and twice it by day. Built after it: COLOUR LISTS (new
+  page RENDERING 2, after RENDERING, default GPU FETCH): colour lists through the GPU fetch as RGB8
+  read one byte into their ARGB word, when their alpha is 255 or not used (runner race: all of
+  them, ~1.2-1.3K vertices a render). Its day-course gain is still unmeasured on a Wii.
 - Log 22 (2026-11-05, night Akina, every frame drawn, MIRROR OFF, SMALL 3D 4 px): DISPLAY LISTS
   (RENDERING, last row, default ON) work: `cached programs` 0.75-1.4 -> 0.10-0.28 ms a render, no
   GPU wait, no ring pass; a render's CPU -0.5 to -0.6 ms at equal lists. At night the recording
@@ -298,6 +307,10 @@ GUARD's read-only pages); `[CC]` JIT call-outs into C
   takes every list) and grew to ~1.5 MB in the night attract demo. Use fixed buffers.
 - The GX renderer's buffers were sized for Dreamcast: ELAN output is chunked (<=1024 vertices a
   header) and the NAOMI 2 caps raised (`GX_VERTEX_CAP`, `GX_LIST_CAP`).
+- Sound with SOUND CLOCK REAL TIME is produced from real elapsed time (`armUpdateARM`, stalls
+  over 50 ms not caught up), so nothing may block on the audio ring in that mode: a block there
+  turns into more samples (log 24: 25% of the time in `snd`, AUTO at 80% speed). `snd` in FPROF is
+  that wait (`SndWaitTicks`); AUDIO STATS ON logs the ring's underruns, drops and waits.
 - Writing the log with fflush+fsync per line cost ~10 ms spikes: keep log writes going through
   the async ring during the game.
 - Text on screen is 8x16 sprites whose 13th vertex word repeats the character code (handy to

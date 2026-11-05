@@ -86,6 +86,7 @@
 extern "C" int get_audio_block_preset();   // 0=1024, 1=1536, 2=2048 samples
 extern "C" int get_audio_drc_preset();     // 0=off, 1=+-1%, 2=+-3%, 3=+-15%
 extern "C" int get_audio_stats_preset();   // 0=off, 1=one line/sec to ndclog
+extern "C" int g_sound_realtime_preset;    // SOUND CLOCK: 1 = real time (never pace, see push)
 
 // Set to 1 by wii_audio_aica_ready() once AICA_Init() has run. Until then
 // wii_audio_push_sample() is a no-op.
@@ -547,10 +548,19 @@ void wii_audio_push_sample(s16 l, s16 r)
     // second source of crackle at AudioBuffers=0, on top of the plain overruns,
     // and the depth is also what gives dynamic rate control something to steer
     // when emulation is left unpaced.
+    //
+    // SOUND CLOCK = REAL TIME (arm_aica.cpp armUpdateARM): the samples follow
+    // the real clock, so waiting here cannot pace anything, and it feeds on
+    // itself: the time spent waiting becomes samples at the next call, which
+    // fill the ring again. A ring filled once (an emulation stall that empties
+    // it plays concealment and consumes nothing, then the stall's samples are
+    // produced anyway: each such stall raises the level by a block) then
+    // stayed full for good, ~25% of the time spent here (real Wii, log 24,
+    // FRAMESKIP AUTO at night). Free-run instead: a full ring drops one block.
     {
         int want = (int)settings.emulator.AudioBuffers;
         if (want <= 0) { ring_paced = 0; want = AUD_RING_FREERUN; }
-        else           { ring_paced = 1; }
+        else           { ring_paced = g_sound_realtime_preset ? 0 : 1; }
         if (want > AUD_RING_MAX) want = AUD_RING_MAX;
         ring_slots = want;
     }
