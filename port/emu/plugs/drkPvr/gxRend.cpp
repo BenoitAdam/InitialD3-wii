@@ -6801,6 +6801,30 @@ static u32 s_tileclip_applied = 0; // packed tileclip currently in the GX scisso
 static bool s_cmp_scissor_on = false;
 static s32  s_cmp_sx0 = 0, s_cmp_sy0 = 0, s_cmp_sx1 = 0, s_cmp_sy1 = 0;
 
+// 2 PLAYERS (emu/naomi/naomi_2p.cpp): each render is one car's view, drawn
+// into its half of the picture; the other half keeps the other car's last view
+// in the EFB, which split2p_copy_disp() never clears.
+extern "C" int naomi_2pHalf();             // -1 whole picture, 0 left, 1 right
+extern "C" int naomi_2pNextHalf();         // half the next drawn view goes to
+extern "C" void naomi_2pDrawn(int half);   // a view reached the screen
+extern "C" float g_split2p_picture_aspect; // the whole picture's (4:3 or full-width 16:9)
+static int s_2p_half_now = -1;   // half of the render in flight
+static int s_2p_last_half = -1;  // half of the last render drawn
+static u32 s_2p_mid = 320;       // EFB x where the right half starts
+
+// Both halves to the XFB, each its own copy: the copy clears only its source
+// rectangle, so only the half the next view goes to is cleared. The XFB's
+// stride stays the full width (GX_SetDispCopyDst at init).
+static void split2p_copy_disp(void* xfb)
+{
+  const int next = naomi_2pNextHalf();
+  GX_SetDispCopySrc(0, 0, s_2p_mid, rmode->efbHeight);
+  GX_CopyDisp(xfb, next != 1 ? GX_TRUE : GX_FALSE);
+  GX_SetDispCopySrc(s_2p_mid, 0, rmode->fbWidth - s_2p_mid, rmode->efbHeight);
+  GX_CopyDisp((u8*)xfb + s_2p_mid * VI_DISPLAY_PIX_SZ, next != 0 ? GX_TRUE : GX_FALSE);
+  GX_SetDispCopySrc(0, 0, rmode->fbWidth, rmode->efbHeight);
+}
+
 // Open the GX scissor to whatever the pass in flight is allowed to touch: the
 // compose band, or the whole EFB. Also drops apply_tile_clip's cache, which no
 // longer describes the applied rect.
@@ -8228,6 +8252,24 @@ void DoRender()
     vp_w = rmode->fbWidth * ratio;
     vp_x = (rmode->fbWidth - vp_w) * 0.5f;
   }
+  // 2 PLAYERS: this render is one car's view, squeezed into its half of the
+  // picture. The halves meet on a 16-pixel boundary: split2p_copy_disp()
+  // copies each one to the XFB on its own, and XFB addresses step by 32 bytes.
+  s_2p_half_now = s_rtt_pass ? -1 : naomi_2pHalf();
+  if (!s_rtt_pass)
+    g_split2p_picture_aspect = RATIO_FULL_WIDTH() ? 16.f / 9.f : 4.f / 3.f; // the views' aspect is half this
+  if (s_2p_half_now >= 0)
+  {
+    s_2p_mid = ((u32)(vp_x + vp_w * 0.5f) + 8u) & ~15u;
+    const float right = vp_x + vp_w;
+    if (s_2p_half_now == 0)
+      vp_w = (float)s_2p_mid - vp_x;
+    else
+    {
+      vp_x = (float)s_2p_mid;
+      vp_w = right - vp_x;
+    }
+  }
   s_clip_sx = vp_w / dc_width;
   s_clip_sy = (float)rmode->efbHeight / dc_height;
   s_clip_ox = vp_x;
@@ -8263,10 +8305,26 @@ void DoRender()
       s_cmp_scissor_on = false; // degenerate band: draw it unclipped, not blank
     }
   }
+  else if (s_2p_half_now >= 0)
+  {
+    // The compose band machinery keeps everything this view draws, background
+    // and tile clips (the rear-view mirror) included, inside its half.
+    s_cmp_sx0 = s_2p_half_now ? (s32)s_2p_mid : 0;
+    s_cmp_sx1 = s_2p_half_now ? (s32)rmode->fbWidth : (s32)s_2p_mid;
+    s_cmp_sy0 = 0;
+    s_cmp_sy1 = (s32)rmode->efbHeight;
+    s_cmp_scissor_on = true;
+  }
   else
   {
     s_cmp_scissor_on = false;
   }
+
+  // Leaving split screen: the half the last view did not clear still holds
+  // its depth. Clear the whole EFB (into the back XFB, which this frame's
+  // copy overwrites) before drawing over it.
+  if (s_2p_half_now < 0 && s_2p_last_half >= 0)
+    GX_CopyDisp(frameBuffer[fb], GX_TRUE);
 
   GX_SetViewport(vp_x, vp_y, vp_w, rmode->efbHeight, 0, 1);
 
@@ -8281,7 +8339,7 @@ void DoRender()
   // partial ones: a full-screen pass following a partial one would otherwise
   // render inside the band the partial one left behind.)
   const bool tileclip_on = g_split_screen_cached;   // SPLIT_SCREEN(), or a NAOMI 2 model clip
-  if (tileclip_on || s_rtt_pass || SPLIT_COMPOSE())
+  if (tileclip_on || s_rtt_pass || SPLIT_COMPOSE() || s_2p_half_now >= 0 || s_2p_last_half >= 0)
     split_open_scissor();
   GX_InvVtxCache();
   // TMEM_CACHE(): keep the GPU texture cache warm across frames; stale entries
@@ -10741,7 +10799,14 @@ void DoRender()
     return;
   }
 
-  GX_CopyDisp(frameBuffer[fb], GX_TRUE);
+  if (s_2p_half_now >= 0)
+  {
+    split2p_copy_disp(frameBuffer[fb]);
+    naomi_2pDrawn(s_2p_half_now);
+  }
+  else
+    GX_CopyDisp(frameBuffer[fb], GX_TRUE);
+  s_2p_last_half = s_2p_half_now;
   if (async_render)
   {
     // Queue a draw-done token after the display copy and return without
@@ -10908,13 +10973,14 @@ void PresentFramebuffer()
   // apply_tile_clip), and a composed pass leaves both a sub-rect scissor and a
   // shifted viewport origin; this fullscreen quad must not inherit either.
   // Preset-gated so the legacy state flow is untouched.
-  if (g_split_screen_cached || SPLIT_COMPOSE())
+  if (g_split_screen_cached || SPLIT_COMPOSE() || s_2p_last_half >= 0)
   {
     s_cmp_scissor_on = false;
     GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
     GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
     s_tileclip_applied = 0;
   }
+  s_2p_last_half = -1;   // this copy clears the whole EFB
 
   // In 4:3 mode, draw the 2D framebuffer into a centred 4:3 sub-rectangle
   // so logo screens and 2D content have the same correct framing as 3D.

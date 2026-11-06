@@ -380,6 +380,12 @@ void readGameControls(GameControls& c)
     c.quit = exitRequested();
 }
 
+void readGameControlsTwo(GameControls& p1, GameControls& p2)
+{
+    readGameControls(p1);
+    p2 = GameControls();
+}
+
 std::vector<std::string> gameControlsHelp()
 {
     return {"Windows: the game runs in the headless runner (idas3wii_run)."};

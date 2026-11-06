@@ -110,6 +110,7 @@ enum CoreOptionId
     OPT_DISPLAY_LISTS,
     OPT_COLOUR_FETCH,
     OPT_ELAN_PREFETCH,
+    OPT_TWO_PLAYER,
     kCoreOptionCount
 };
 
@@ -313,6 +314,11 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // outside models (naomi_elan_cmd.cpp, kPrefetchAhead). Speed only.
     {"ELAN PREFETCH ", "3D command walk loads its next commands ahead (dropped frames walk faster)",
      PAGE_DEPTH_2, 1, 2, {"OFF (LEGACY)", "ON (FASTER?)"}, {0, 1}},
+    // Split screen (emu/naomi/naomi_2p.cpp): the game draws one car's in-car
+    // view a frame, the cars taking turns, each into its half of the picture;
+    // the second pad drives the opponent's car.
+    {"2 PLAYERS     ", "split screen races: controller 2 (GC port 2 / Wiimote 2) drives the CPU car",
+     PAGE_GENERAL, 0, 2, {"OFF", "SIDE BY SIDE"}, {0, 1}},
 };
 
 } // namespace idas3

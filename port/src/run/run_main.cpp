@@ -156,6 +156,70 @@ static void watchHook(u32 pc, u32)
     }
 }
 
+// env IDAS3_ACCESS=LO:HI[:FROM[:TO]][;...]: every SH-4 read and write into
+// guest [LO, HI] (hex, any mirror) during frames FROM-TO, by instruction
+// address, printed at exit: which code uses a game variable.
+extern void (*g_mem_access_hook)(u32 addr, u32 size, u32 write, u64 data);
+struct AccessStat
+{
+    u32 count, size, lo, hi, firstFrame, lastFrame;
+    u64 first, last;
+};
+struct AccessRange
+{
+    u32 lo, hi, from, to;
+};
+// pc << 33 | pr << 1 | write: a shared routine (memory copy, matrix store) is
+// told apart by its caller (pr, its return address while it is a leaf).
+static std::map<u64, AccessStat> s_access;
+static std::vector<AccessRange> s_accRanges;
+
+static void accessHook(u32 addr, u32 size, u32 write, u64 data)
+{
+    const u32 a = addr & 0x1FFFFFFF;
+    const u32 f = g_host_render.vblanks;
+    bool hit = false;
+    for (const AccessRange& rg : s_accRanges)
+        hit |= a + size > rg.lo && a <= rg.hi && f >= rg.from && f <= rg.to;
+    if (!hit)
+        return;
+    if (!write && size == 2 && a == (next_pc & 0x1FFFFFFF))
+        return;   // instruction fetch
+    if (!write && (a & 0x1E000000) == 0x0C000000)
+    {
+        data = 0;
+        memcpy(&data, &mem_b.data[a & (RAM_SIZE - 1)], size);
+    }
+    AccessStat& s = s_access[(u64)(curr_pc & 0x1FFFFFFF) << 33 | (u64)(pr & 0x1FFFFFFF) << 1 | write];
+    if (!s.count)
+    {
+        s.size = size;
+        s.lo = s.hi = a;
+        s.first = data;
+        s.firstFrame = f;
+    }
+    s.count++;
+    s.lo = a < s.lo ? a : s.lo;
+    s.hi = a > s.hi ? a : s.hi;
+    s.last = data;
+    s.lastFrame = f;
+}
+
+static void printAccess()
+{
+    for (const AccessRange& rg : s_accRanges)
+        printf("[access] %08X-%08X, frames %u-%u\n", rg.lo, rg.hi, rg.from, rg.to);
+    printf("[access] %u instructions\n", (u32)s_access.size());
+    for (const auto& e : s_access)
+    {
+        const AccessStat& s = e.second;
+        const u32 pc = (u32)(e.first >> 33), caller = (u32)(e.first >> 1) & 0x1FFFFFFF;
+        printf("[access]   pc %08X pr %08X op %04X %s%u x%-7u %08X-%08X frames %u-%u  first %llX last %llX\n", pc,
+               caller, ReadMem16(pc | 0x0C000000), (e.first & 1) ? "W" : "R", s.size * 8, s.count, s.lo, s.hi,
+               s.firstFrame, s.lastFrame, (unsigned long long)s.first, (unsigned long long)s.last);
+    }
+}
+
 // --area1-census: count the SH-4 stores to VRAM's 32-bit interface (area 1)
 // by instruction address and width; every 600 frames the busiest are printed
 // with their opcode, then the counts restart.
@@ -671,12 +735,25 @@ static void pollPresses(NaomiInputs& in)
 {
     naomi_DefaultInputs(in);
     const u32 f = g_host_render.vblanks;
+    Naomi2pPad pad2 = {};   // 2 PLAYERS: the second pad (names ending in 2)
     for (const Press& p : s_presses)
     {
         if (f < p.frame || f >= p.frame + 10)
             continue;
         const std::string& n = p.name;
-        if (n == "coin")
+        if (n == "left2")
+            pad2.steer = -0.75f;
+        else if (n == "right2")
+            pad2.steer = 0.75f;
+        else if (n == "gas2")
+            pad2.accel = 1.f;
+        else if (n == "brake2")
+            pad2.brake = 1.f;
+        else if (n == "up2")
+            pad2.shiftUp = true;
+        else if (n == "down2")
+            pad2.shiftDown = true;
+        else if (n == "coin")
             in.coin[0] = true;
         else if (n == "start")
             in.players[0] |= NAOMI_JVS_START;
@@ -699,6 +776,7 @@ static void pollPresses(NaomiInputs& in)
         else if (n == "service")
             in.players[0] |= NAOMI_JVS_SERVICE;
     }
+    naomi_2pSetPad(pad2);
 }
 
 static void logLine(const char* text)
@@ -708,9 +786,59 @@ static void logLine(const char* text)
     log::write("%s", text);
 }
 
+// env IDAS3_DUMP_AT=F1,F2,...: guest RAM dumped at those frames, to
+// IDAS3_DUMP_DIR (default .) as ram_F.bin, for finding game variables by
+// comparing dumps (never commit them).
+static void dumpRamAt(u32 frame)
+{
+    static const char* at = getenv("IDAS3_DUMP_AT");
+    if (!at)
+        return;
+    for (const char* c = at; *c;)
+    {
+        char* end = nullptr;
+        const u32 f = (u32)strtoul(c, &end, 10);
+        if (end == c)
+            break;
+        if (f == frame)
+        {
+            const char* dir = getenv("IDAS3_DUMP_DIR");
+            char path[512];
+            snprintf(path, sizeof(path), "%s/ram_%u.bin", dir ? dir : ".", frame);
+            if (FILE* out = fopen(path, "wb"))
+            {
+                fwrite(mem_b.data, 1, RAM_SIZE, out);
+                fclose(out);
+                printf("[run] RAM dumped to %s\n", path);
+            }
+        }
+        c = *end == ',' ? end + 1 : end;
+    }
+}
+
+// env IDAS3_POKE=FROM-TO:ADDR=VALUE[;...]: a 32-bit guest word written at
+// every vblank from FROM to TO (hex address and value), for trying out a game
+// variable's effect on the snapshots.
+static void pokeAt(u32 frame)
+{
+    static const char* pk = getenv("IDAS3_POKE");
+    for (const char* c = pk; c && *c;)
+    {
+        u32 from = 0, to = 0, addr = 0, value = 0;
+        if (sscanf(c, "%u-%u:%x=%x", &from, &to, &addr, &value) != 4)
+            break;
+        if (frame >= from && frame <= to)
+            WriteMem32(addr, value);
+        c = strchr(c, ';');
+        c = c ? c + 1 : nullptr;
+    }
+}
+
 void host_on_vblank()
 {
     const u32 frame = g_host_render.vblanks;
+    dumpRamAt(frame);
+    pokeAt(frame);
     if (frame % 60 == 0 || frame == s_frameLimit)
     {
         const NaomiStats& st = naomi_Stats();
@@ -1142,6 +1270,21 @@ int main(int argc, char** argv)
         logLine("[run] core initialisation failed\n");
         return 1;
     }
+    if (const char* acc = getenv("IDAS3_ACCESS"))
+    {
+        for (const char* c = acc; c;)
+        {
+            AccessRange rg = {0, 0, 0, ~0u};
+            if (sscanf(c, "%x:%x:%u:%u", &rg.lo, &rg.hi, &rg.from, &rg.to) < 2)
+                break;
+            rg.lo &= 0x1FFFFFFF;
+            rg.hi &= 0x1FFFFFFF;
+            s_accRanges.push_back(rg);
+            c = strchr(c, ';');
+            c = c ? c + 1 : nullptr;
+        }
+        g_mem_access_hook = accessHook;
+    }
     if (const char* w = argValue(argc, argv, "--watch"))
     {
         s_watchAddr = (u32)strtoul(w, nullptr, 16);
@@ -1227,6 +1370,12 @@ int main(int argc, char** argv)
         // TSP UseAlpha is off, checked like the others; "(N more fetched)".
         extern int g_elan_colour_fetch_preset;
         g_elan_colour_fetch_preset = atoi(cf);
+    }
+    if (const char* tp = argValue(argc, argv, "--two-player"))
+    {
+        // 2 PLAYERS: split screen, the second pad (presses gas2, left2...)
+        // drives the CPU car. Snapshots show both halves (split_F.png).
+        g_two_player_preset = atoi(tp);
     }
     if (const char* mi = argValue(argc, argv, "--mirror"))
     {
@@ -1316,6 +1465,11 @@ int main(int argc, char** argv)
         }
     }
 
+    if (g_mem_access_hook)
+    {
+        g_mem_access_hook = nullptr;
+        printAccess();
+    }
     if (s_probeHi)
         printProbe(g_host_render.vblanks - s_probeFrom);
     {

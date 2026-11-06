@@ -390,87 +390,103 @@ static float padTrigger(u8 v)
     return x < 0.f ? 0.f : x > 1.f ? 1.f : x;
 }
 
+// One controller slot: GameCube port i and Wiimote i (with its expansion),
+// added to c.
+static void addPad(int i, GameControls& c)
+{
+    // GameCube pad: stick steers, R/L analog triggers are the pedals.
+    const u16 p = PAD_ButtonsHeld(i);
+    if (padAxis(PAD_StickX(i)) != 0.f)
+        c.steer = padAxis(PAD_StickX(i));
+    c.accel = std::max(c.accel, padTrigger(PAD_TriggerR(i)));
+    c.brake = std::max(c.brake, padTrigger(PAD_TriggerL(i)));
+    c.shiftUp |= (p & (PAD_BUTTON_A | PAD_BUTTON_UP)) != 0;
+    c.shiftDown |= (p & (PAD_BUTTON_B | PAD_BUTTON_DOWN)) != 0;
+    c.view |= (p & PAD_BUTTON_X) != 0;
+    c.start |= (p & PAD_BUTTON_START) != 0;
+    c.coin |= (p & PAD_TRIGGER_Z) != 0;
+    c.test |= (p & PAD_BUTTON_LEFT) != 0;
+    c.service |= (p & PAD_BUTTON_RIGHT) != 0;
+    c.quit |= (p & PAD_TRIGGER_Z) && (p & PAD_BUTTON_START) && (p & PAD_BUTTON_Y);
+
+    // Wiimote (+ Nunchuk or Classic Controller).
+    WPADData* w = WPAD_Data(i);
+    if (!w || w->err != WPAD_ERR_NONE)
+        return;
+    const u32 b = WPAD_ButtonsHeld(i);
+    c.start |= (b & (WPAD_BUTTON_PLUS | WPAD_CLASSIC_BUTTON_PLUS)) != 0;
+    c.coin |= (b & (WPAD_BUTTON_MINUS | WPAD_CLASSIC_BUTTON_MINUS)) != 0;
+    c.quit |= (b & (WPAD_BUTTON_HOME | WPAD_CLASSIC_BUTTON_HOME)) != 0;
+    if (w->exp.type == WPAD_EXP_NUNCHUK || w->exp.type == WPAD_EXP_CLASSIC)
+    {
+        // Test / service on the D-pad (a bare Wiimote shifts with it).
+        c.test |= (b & (WPAD_BUTTON_LEFT | WPAD_CLASSIC_BUTTON_LEFT)) != 0;
+        c.service |= (b & (WPAD_BUTTON_RIGHT | WPAD_CLASSIC_BUTTON_RIGHT)) != 0;
+    }
+    if (w->exp.type == WPAD_EXP_NUNCHUK)
+    {
+        // Nunchuk stick steers; A accelerates, B (trigger) brakes;
+        // Z / C shift up / down; 1 changes the view.
+        if (stickX(w->exp.nunchuk.js) != 0.f)
+            c.steer = stickX(w->exp.nunchuk.js);
+        if (b & WPAD_BUTTON_A)
+            c.accel = 1.f;
+        if (b & WPAD_BUTTON_B)
+            c.brake = 1.f;
+        c.shiftUp |= (b & WPAD_NUNCHUK_BUTTON_Z) != 0;
+        c.shiftDown |= (b & WPAD_NUNCHUK_BUTTON_C) != 0;
+        c.view |= (b & WPAD_BUTTON_1) != 0;
+    }
+    else if (w->exp.type == WPAD_EXP_CLASSIC)
+    {
+        // Classic: left stick steers, R / L (analog or ZR / ZL) are the
+        // pedals, a / b shift up / down, x changes the view.
+        const classic_ctrl_t& cc = w->exp.classic;
+        if (stickX(cc.ljs) != 0.f)
+            c.steer = stickX(cc.ljs);
+        c.accel = std::max(c.accel, (b & WPAD_CLASSIC_BUTTON_ZR) ? 1.f : cc.r_shoulder);
+        c.brake = std::max(c.brake, (b & WPAD_CLASSIC_BUTTON_ZL) ? 1.f : cc.l_shoulder);
+        c.shiftUp |= (b & WPAD_CLASSIC_BUTTON_A) != 0;
+        c.shiftDown |= (b & WPAD_CLASSIC_BUTTON_B) != 0;
+        c.view |= (b & WPAD_CLASSIC_BUTTON_X) != 0;
+    }
+    else
+    {
+        // Wiimote alone, held sideways: 2 accelerates, 1 brakes,
+        // the D-pad (rotated) steers and shifts.
+        if (b & WPAD_BUTTON_UP)
+            c.steer = -1.f;
+        if (b & WPAD_BUTTON_DOWN)
+            c.steer = 1.f;
+        if (b & WPAD_BUTTON_2)
+            c.accel = 1.f;
+        if (b & WPAD_BUTTON_1)
+            c.brake = 1.f;
+        c.shiftUp |= (b & WPAD_BUTTON_RIGHT) != 0;
+        c.shiftDown |= (b & WPAD_BUTTON_LEFT) != 0;
+        c.view |= (b & WPAD_BUTTON_A) != 0;
+    }
+}
+
 void readGameControls(GameControls& c)
 {
     WPAD_ScanPads();
     PAD_ScanPads();
     c = GameControls();
     for (int i = 0; i < 4; i++)
-    {
-        // GameCube pad: stick steers, R/L analog triggers are the pedals.
-        const u16 p = PAD_ButtonsHeld(i);
-        if (padAxis(PAD_StickX(i)) != 0.f)
-            c.steer = padAxis(PAD_StickX(i));
-        c.accel = std::max(c.accel, padTrigger(PAD_TriggerR(i)));
-        c.brake = std::max(c.brake, padTrigger(PAD_TriggerL(i)));
-        c.shiftUp |= (p & (PAD_BUTTON_A | PAD_BUTTON_UP)) != 0;
-        c.shiftDown |= (p & (PAD_BUTTON_B | PAD_BUTTON_DOWN)) != 0;
-        c.view |= (p & PAD_BUTTON_X) != 0;
-        c.start |= (p & PAD_BUTTON_START) != 0;
-        c.coin |= (p & PAD_TRIGGER_Z) != 0;
-        c.test |= (p & PAD_BUTTON_LEFT) != 0;
-        c.service |= (p & PAD_BUTTON_RIGHT) != 0;
-        c.quit |= (p & PAD_TRIGGER_Z) && (p & PAD_BUTTON_START) && (p & PAD_BUTTON_Y);
-
-        // Wiimote (+ Nunchuk or Classic Controller).
-        WPADData* w = WPAD_Data(i);
-        if (!w || w->err != WPAD_ERR_NONE)
-            continue;
-        const u32 b = WPAD_ButtonsHeld(i);
-        c.start |= (b & (WPAD_BUTTON_PLUS | WPAD_CLASSIC_BUTTON_PLUS)) != 0;
-        c.coin |= (b & (WPAD_BUTTON_MINUS | WPAD_CLASSIC_BUTTON_MINUS)) != 0;
-        c.quit |= (b & (WPAD_BUTTON_HOME | WPAD_CLASSIC_BUTTON_HOME)) != 0;
-        if (w->exp.type == WPAD_EXP_NUNCHUK || w->exp.type == WPAD_EXP_CLASSIC)
-        {
-            // Test / service on the D-pad (a bare Wiimote shifts with it).
-            c.test |= (b & (WPAD_BUTTON_LEFT | WPAD_CLASSIC_BUTTON_LEFT)) != 0;
-            c.service |= (b & (WPAD_BUTTON_RIGHT | WPAD_CLASSIC_BUTTON_RIGHT)) != 0;
-        }
-        if (w->exp.type == WPAD_EXP_NUNCHUK)
-        {
-            // Nunchuk stick steers; A accelerates, B (trigger) brakes;
-            // Z / C shift up / down; 1 changes the view.
-            if (stickX(w->exp.nunchuk.js) != 0.f)
-                c.steer = stickX(w->exp.nunchuk.js);
-            if (b & WPAD_BUTTON_A)
-                c.accel = 1.f;
-            if (b & WPAD_BUTTON_B)
-                c.brake = 1.f;
-            c.shiftUp |= (b & WPAD_NUNCHUK_BUTTON_Z) != 0;
-            c.shiftDown |= (b & WPAD_NUNCHUK_BUTTON_C) != 0;
-            c.view |= (b & WPAD_BUTTON_1) != 0;
-        }
-        else if (w->exp.type == WPAD_EXP_CLASSIC)
-        {
-            // Classic: left stick steers, R / L (analog or ZR / ZL) are the
-            // pedals, a / b shift up / down, x changes the view.
-            const classic_ctrl_t& cc = w->exp.classic;
-            if (stickX(cc.ljs) != 0.f)
-                c.steer = stickX(cc.ljs);
-            c.accel = std::max(c.accel, (b & WPAD_CLASSIC_BUTTON_ZR) ? 1.f : cc.r_shoulder);
-            c.brake = std::max(c.brake, (b & WPAD_CLASSIC_BUTTON_ZL) ? 1.f : cc.l_shoulder);
-            c.shiftUp |= (b & WPAD_CLASSIC_BUTTON_A) != 0;
-            c.shiftDown |= (b & WPAD_CLASSIC_BUTTON_B) != 0;
-            c.view |= (b & WPAD_CLASSIC_BUTTON_X) != 0;
-        }
-        else
-        {
-            // Wiimote alone, held sideways: 2 accelerates, 1 brakes,
-            // the D-pad (rotated) steers and shifts.
-            if (b & WPAD_BUTTON_UP)
-                c.steer = -1.f;
-            if (b & WPAD_BUTTON_DOWN)
-                c.steer = 1.f;
-            if (b & WPAD_BUTTON_2)
-                c.accel = 1.f;
-            if (b & WPAD_BUTTON_1)
-                c.brake = 1.f;
-            c.shiftUp |= (b & WPAD_BUTTON_RIGHT) != 0;
-            c.shiftDown |= (b & WPAD_BUTTON_LEFT) != 0;
-            c.view |= (b & WPAD_BUTTON_A) != 0;
-        }
-    }
+        addPad(i, c);
     c.quit |= s_powerPressed || s_resetPressed;
+}
+
+void readGameControlsTwo(GameControls& p1, GameControls& p2)
+{
+    WPAD_ScanPads();
+    PAD_ScanPads();
+    p1 = GameControls();
+    p2 = GameControls();
+    for (int i = 0; i < 4; i++)
+        addPad(i, i == 1 ? p2 : p1);
+    p1.quit |= s_powerPressed || s_resetPressed || p2.quit;
 }
 
 std::vector<std::string> gameControlsHelp()

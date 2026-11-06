@@ -222,10 +222,19 @@ u8* fastcall _vmem_GetBlockPtr(u32 Address, u32 size)
 // ---------------------------------------------------------------------------
 // Public read/write accessors
 // ---------------------------------------------------------------------------
-u8  fastcall _vmem_ReadMem8  (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u8> (addr); }
-u16 fastcall _vmem_ReadMem16 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u16>(addr); }
-u32 fastcall _vmem_ReadMem32 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u32>(addr); }
-u64 fastcall _vmem_ReadMem64 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u64>(addr); }
+// Windows runner (IDAS3_ACCESS): every guest read and write, for finding which
+// code touches a game variable. Not on the Wii.
+#if HOST_OS != OS_WII
+void (*g_mem_access_hook)(u32 addr, u32 size, u32 write, u64 data) = nullptr;
+#define ACCESS_NOTE(a, s, w, d) do { if (g_mem_access_hook) g_mem_access_hook(a, s, w, d); } while (0)
+#else
+#define ACCESS_NOTE(a, s, w, d) do { } while (0)
+#endif
+
+u8  fastcall _vmem_ReadMem8  (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); ACCESS_NOTE(addr, 1, 0, 0); return _vmem_readt<u8> (addr); }
+u16 fastcall _vmem_ReadMem16 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); ACCESS_NOTE(addr, 2, 0, 0); return _vmem_readt<u16>(addr); }
+u32 fastcall _vmem_ReadMem32 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); ACCESS_NOTE(addr, 4, 0, 0); return _vmem_readt<u32>(addr); }
+u64 fastcall _vmem_ReadMem64 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); ACCESS_NOTE(addr, 8, 0, 0); return _vmem_readt<u64>(addr); }
 
 // Windows runner (--area1-census): who writes VRAM through its 32-bit
 // interface (area 1), and how wide - the Wii JIT inlines some of those
@@ -238,10 +247,10 @@ void (*g_area1_write_hook)(u32 addr, u32 size) = nullptr;
 #define AREA1_NOTE(a, s) do { } while (0)
 #endif
 
-void fastcall _vmem_WriteMem8  (u32 addr, u8  data) { CCALL_MEM(CC_WRITEMEM, 1, addr); CCALL_A1(1, addr); AREA1_NOTE(addr, 1); _vmem_writet<u8> (addr, data); }
-void fastcall _vmem_WriteMem16 (u32 addr, u16 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); CCALL_A1(2, addr); AREA1_NOTE(addr, 2); _vmem_writet<u16>(addr, data); }
-void fastcall _vmem_WriteMem32 (u32 addr, u32 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); CCALL_A1(4, addr); AREA1_NOTE(addr, 4); _vmem_writet<u32>(addr, data); }
-void fastcall _vmem_WriteMem64 (u32 addr, u64 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); CCALL_A1(8, addr); AREA1_NOTE(addr, 8); _vmem_writet<u64>(addr, data); }
+void fastcall _vmem_WriteMem8  (u32 addr, u8  data) { CCALL_MEM(CC_WRITEMEM, 1, addr); CCALL_A1(1, addr); AREA1_NOTE(addr, 1); ACCESS_NOTE(addr, 1, 1, data); _vmem_writet<u8> (addr, data); }
+void fastcall _vmem_WriteMem16 (u32 addr, u16 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); CCALL_A1(2, addr); AREA1_NOTE(addr, 2); ACCESS_NOTE(addr, 2, 1, data); _vmem_writet<u16>(addr, data); }
+void fastcall _vmem_WriteMem32 (u32 addr, u32 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); CCALL_A1(4, addr); AREA1_NOTE(addr, 4); ACCESS_NOTE(addr, 4, 1, data); _vmem_writet<u32>(addr, data); }
+void fastcall _vmem_WriteMem64 (u32 addr, u64 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); CCALL_A1(8, addr); AREA1_NOTE(addr, 8); ACCESS_NOTE(addr, 8, 1, data); _vmem_writet<u64>(addr, data); }
 
 // ---------------------------------------------------------------------------
 // Default "not mapped" handlers

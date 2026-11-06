@@ -68,6 +68,21 @@ void naomi_SetFrameHook(NaomiFrameHook fn, u32 period);
 // block, or every build is made), and whether the build at that row is skipped.
 extern "C" u32 naomi_ReflectionExit(u32 pc);
 extern "C" u32 naomi_ReflectionSkip(u32 row);
+// 2 PLAYERS (naomi_2p.cpp): split-screen races, the second pad driving the
+// CPU car. The host passes the second pad each poll; the core calls the two
+// hooks from naomi_VBlank() and naomi_OnStartRender().
+struct Naomi2pPad
+{
+    float steer;      // -1 full left .. +1 full right
+    float accel;      // 0 .. 1
+    float brake;      // 0 .. 1
+    bool shiftUp, shiftDown;
+};
+extern "C" int g_two_player_preset;
+void naomi_2pSetPad(const Naomi2pPad& pad);
+const Naomi2pPad& naomi_2pPad();
+void naomi_2pVBlank();
+void naomi_2pStartRender();
 // SOFT FLOAT (naomi_softfloat.cpp): the native version of the game's software
 // double divide or multiply starting at pc (null: not one, or the option is
 // off). Called with r4-r7, it returns 0 to leave the call to the game's code,

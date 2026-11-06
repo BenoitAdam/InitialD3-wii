@@ -1300,6 +1300,57 @@ static void traceRender()
            g_host_render.vertices - g_host_render.verticesAtLastRender);
 }
 
+// 2 PLAYERS (naomi_2p.cpp): each render is one car's view, squeezed into its
+// half of the picture as on the Wii (gxRend split2p_*). A snapshot due during
+// split screen rasterises the render it falls on and the next one, the other
+// car's, and writes the two side by side.
+extern "C" int naomi_2pHalf();
+extern "C" void naomi_2pDrawn(int half);
+static std::vector<u32> s_split;   // the side-by-side picture
+static u32 s_splitHalves;          // halves put in since the snapshot was due (bit per half)
+static u32 s_splitFrame;           // vblank of the snapshot
+
+static void splitPut(int half)
+{
+    if (s_split.empty())
+        s_split.assign(kWidth * kHeight, 0xFF202020);
+    const int w = kWidth / 2;
+    for (int y = 0; y < kHeight; y++)
+        for (int x = 0; x < w; x++)
+        {
+            // Two source pixels per destination pixel, averaged.
+            const u32 a = s_color[y * kWidth + 2 * x], b = s_color[y * kWidth + 2 * x + 1];
+            const u32 c = ((a >> 1) & 0x7F7F7F7F) + ((b >> 1) & 0x7F7F7F7F);
+            s_split[y * kWidth + half * w + x] = c | 0xFF000000;
+        }
+    s_splitHalves |= 1u << half;
+}
+
+static void splitSnapshotRender(bool due)
+{
+    const int half = naomi_2pHalf();
+    if (half < 0)
+    {
+        s_splitHalves = 0;
+        return;
+    }
+    naomi_2pDrawn(half);
+    if (!due && !s_splitHalves)
+        return;
+    if (!s_splitHalves)
+        s_splitFrame = g_host_render.vblanks;
+    rasterise();
+    splitPut(half);
+    if (s_splitHalves != 3)
+        return;
+    s_splitHalves = 0;
+    memcpy(s_color, s_split.data(), sizeof(u32) * kWidth * kHeight);
+    char path[512];
+    snprintf(path, sizeof(path), "%s/split_%05u.png", s_snapDir.c_str(), s_splitFrame);
+    if (writePng(path))
+        printf("[snap] %s (2 PLAYERS, views of frames %u and %u)\n", path, s_splitFrame, g_host_render.vblanks);
+}
+
 void StartRender()
 {
     event('R');
@@ -1327,6 +1378,17 @@ void StartRender()
     // env IDAS3_SNAP_FROM=F: periodic snapshots only from frame F on.
     static const u32 snapFrom = getenv("IDAS3_SNAP_FROM") ? (u32)strtoul(getenv("IDAS3_SNAP_FROM"), nullptr, 0) : 0;
     const bool periodic = s_snapEvery && g_host_render.vblanks >= snapFrom && g_host_render.vblanks - s_lastSnap >= s_snapEvery;
+    if (naomi_2pHalf() >= 0)
+    {
+        if (periodic)
+            s_lastSnap = g_host_render.vblanks;
+        if (!s_snapDir.empty())
+            splitSnapshotRender(periodic || s_snapRequested);
+        else
+            naomi_2pDrawn(naomi_2pHalf());
+        s_snapRequested = false;
+        return;
+    }
     if (!s_snapDir.empty() && (periodic || s_snapRequested))
     {
         s_lastSnap = g_host_render.vblanks;

@@ -21,6 +21,20 @@ it exists.
 
 ### Status (2026-11-05)
 
+- **2 PLAYERS (branch `two-player-splitscreen`, 2026-11-06, not yet on a Wii)**: launcher
+  GENERAL page, last row, OFF / SIDE BY SIDE. Split screen in races: the game still draws one
+  view a frame; the cars take turns being the one its in-car camera follows (the rig's target
+  car, `naomi_2p.cpp`), and the renderer squeezes each view into its car's half and keeps the
+  other half (gxRend `split2p_*`: the half's viewport and scissor, two half EFB copies that
+  clear only the half drawn next). 30 views a second each, no more drawing than one player.
+  Each view gets half the picture's aspect (the camera's per-frame projection), the mirror is
+  off. The second pad (GameCube port 2 / Wiimote 2) drives the CPU car: it is a kinematic AI
+  body (heading + speed), so player 2 sets its speed (the AI's braking caps it in bends) and
+  nudges its heading (the AI's pull back to its line balances it: lane control, it cannot
+  leave the road). Windows runner: works (`--two-player 1`, `split_F.png` snapshots). Known
+  limits: the HUD shows player 1's speed in both halves; player 2's car is "on rails" (no
+  slides, no crashes); player 2's view shows its own bonnet (the CPU car is drawn whole).
+  Game addresses and how they were found: top of `port/emu/naomi/naomi_2p.cpp`.
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
 - Menus/attract/car select: 100% speed. Race, every frame drawn (FRAMESKIPPING 0, MIRROR OFF,
   SMALL 3D 4 px): the day course of logs 21/23 at **100% in the in-car view** (log 25: 59.4-60.1
@@ -160,6 +174,7 @@ current work:
 | `port/emu/naomi/naomi_frontend.cpp` | Core init/run/settings, idle-loop skip (`naomi_IdleCycleScale`), assert/BIOS-entry traps |
 | `port/emu/naomi/naomi_board.cpp` | DIMM board, cart DMA, register counters |
 | `port/emu/naomi/naomi_softfloat.cpp` | SOFT FLOAT: the game's software double divide/multiply (GCC soft-float, SH-4 integer code) run natively, fingerprinted; called by the JIT at the routines' entry |
+| `port/emu/naomi/naomi_2p.cpp` | 2 PLAYERS: whose turn the camera is (rig target), each view's aspect, the CPU car driven by the second pad; `naomi_2pHalf()` tells the renderers which half a render goes to |
 | `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin + GPU light sets (point lights as GX local lights), `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs (+ each list's bounding box, `cachedBox`) and their GX display-list entries (DISPLAY LISTS: `dlEntry`, its own ring, GPU waits before writing over a queued entry) |
 | `port/emu/plugs/drkPvr/gxRend.cpp` | PowerVR -> GX renderer (TA lists, ELAN items, VRAM present, tile clip, buffer caps) |
 | `port/emu/plugs/drkPvr/frame_prof.cpp` | FPROF per-frame profiler |
@@ -215,7 +230,8 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | --- | --- |
 | `--cpi 2` | SH-4 cycles-per-instruction override used for all reference timelines |
 | `--snap-dir D --snap-every N` | software-rendered PNG every N frames |
-| `--press F:name,F:name,...` | press a button at frame F, e.g. `5000:coin,5300:start` (coin, start, view, up, down, left, right, gas, brake, test, service) |
+| `--press F:name,F:name,...` | press a button at frame F, e.g. `5000:coin,5300:start` (coin, start, view, up, down, left, right, gas, brake, test, service; the second pad: gas2, brake2, left2, right2, up2, down2) |
+| `--two-player 1` | 2 PLAYERS: split screen in races, snapshots `split_F.png` (the views of frames F and F+1 side by side). Driving from the start: start every 300 frames up to 9300, then `gas` (and `gas2`) every 10 frames from 9400 (the race starts ~9500, "GO!") |
 | `--gpu-tnl` | take the lists the Wii GPU path would take; runs the **GPU fetch check** (`[run] GPU fetch check`: program triangles vs the CPU draw; must stay at 0 mismatches). Known exception, unexplained, in every driving-route run since at least 2026-11-05: 15 lists at two menu renders (frames ~5640, ELAN +17F1xxx-17F5xxx quads, and ~6720, +1750xxx-175Bxxx), cached programs whose records changed with no page write seen |
 | `--frameskip N`, `--model-skip 0/1`, `--fixes on/off` | same as the launcher options, for A/B runs |
 | `--point-lights 0/1` | NIGHT LIGHTS: 1 = point lights as GX local lights; without `--gpu-tnl` the CPU draws those lists lit the way GX would (snapshot preview). With `--gpu-tnl`: `point-lit light sets per frame` line, every reused set rebuilt and compared (`STALE` must stay 0). The night attract demo (no presses, 9000 frames) is not deterministic on Windows past render ~5300: compare `record digest` lines only up to where two runs of the same code agree |
@@ -243,6 +259,9 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | env `IDAS3_AICA_KEYS=FROM:TO` | a `[keyon]` line per sound channel key-on in those frames: format, loop, address, loop points, pitch, levels and the sample fingerprint SOUND LEVELS matches. The exit line `SOUND LEVELS` counts the key-ons recognised |
 | env `IDAS3_SNAP_FROM=F` | periodic snapshots only from frame F (with `--snap-every`) |
 | `--area1-census` | who writes the 32-bit VRAM interface |
+| env `IDAS3_ACCESS=LO:HI[:FROM[:TO]][;...]` | every SH-4 read and write into those guest ranges in those frames, by instruction address and caller (pr), with first/last values, printed at exit: which code uses a game variable (how 2 PLAYERS' addresses were found; the run is ~2x slower) |
+| env `IDAS3_POKE=FROM-TO:ADDR=VALUE[;...]` | a guest word written at every vblank in those frames: try a game variable's effect in the snapshots |
+| env `IDAS3_DUMP_AT=F1,F2,...` (+ `IDAS3_DUMP_DIR`) | guest RAM dumps `ram_F.bin` at those frames (32 MB each; never commit them) |
 | `--dump-ram/-vram/-aica/-elan FILE` | memory dumps at the end (never commit them) |
 | env `IDAS3_RENDER_TRACE=FROM:TO` | print each render's FB registers |
 | env `IDAS3_FETCH_SCATTER=%` | % of pages put in random frames for the fetch check (default 33) |

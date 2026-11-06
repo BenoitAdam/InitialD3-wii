@@ -91,6 +91,7 @@ void naomi_SetFrameHook(NaomiFrameHook fn, u32 period)
 void naomi_OnStartRender()
 {
     s_frameInfo.renders++;
+    naomi_2pStartRender();
     tnl_OnStartRender();
 #if !defined(GEKKO)
     tnl_DataCensusRender();
@@ -104,6 +105,7 @@ void naomi_VBlank()
     WiiGuestMem_Tick();   // compress a few cold guest pages when memory runs low
 #endif
     naomi_CartSlice();    // the read-ahead thread's time, when it has work
+    naomi_2pVBlank();     // 2 PLAYERS: whose turn the next frame is
     if (s_frameHook && s_frameInfo.vblanks % s_framePeriod == 0)
     {
         s_frameInfo.pc = next_pc;
