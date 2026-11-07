@@ -21,20 +21,30 @@ it exists.
 
 ### Status (2026-11-05)
 
-- **2 PLAYERS (branch `two-player-splitscreen`, 2026-11-06, not yet on a Wii)**: launcher
-  GENERAL page, last row, OFF / SIDE BY SIDE. Split screen in races: the game still draws one
-  view a frame; the cars take turns being the one its in-car camera follows (the rig's target
-  car, `naomi_2p.cpp`), and the renderer squeezes each view into its car's half and keeps the
-  other half (gxRend `split2p_*`: the half's viewport and scissor, two half EFB copies that
-  clear only the half drawn next). 30 views a second each, no more drawing than one player.
-  Each view gets half the picture's aspect (the camera's per-frame projection), the mirror is
-  off. The second pad (GameCube port 2 / Wiimote 2) drives the CPU car: it is a kinematic AI
-  body (heading + speed), so player 2 sets its speed (the AI's braking caps it in bends) and
-  nudges its heading (the AI's pull back to its line balances it: lane control, it cannot
-  leave the road). Windows runner: works (`--two-player 1`, `split_F.png` snapshots). Known
-  limits: the HUD shows player 1's speed in both halves; player 2's car is "on rails" (no
-  slides, no crashes); player 2's view shows its own bonnet (the CPU car is drawn whole).
-  Game addresses and how they were found: top of `port/emu/naomi/naomi_2p.cpp`.
+- **2 PLAYERS (branch `two-player-splitscreen`)**: launcher GENERAL page, last row, OFF /
+  SIDE BY SIDE. Split screen in races: the game still draws one view a frame; the cars take
+  turns being the one its in-car camera follows (the rig's target car, `naomi_2p.cpp`), and
+  the renderer squeezes each view into its car's half and keeps the other half (gxRend
+  `split2p_*`: the half's viewport and scissor, each view clears its own half when it starts,
+  two half EFB copies that clear nothing). 30 views a second each, no more drawing than one
+  player. Each view gets half the picture's aspect (the camera's per-frame projection), the
+  mirror is off. The second pad (GameCube port 2 / Wiimote 2) drives the CPU car: it is a
+  kinematic AI body (heading + speed), so player 2 sets its speed (the AI's braking caps it in
+  bends) and nudges its heading (the AI's pull back to its line balances it: lane control, it
+  cannot leave the road). First Wii test (owner, 2026-11-07): works, but (1) flickering
+  sometimes, (2) player 2's speedometer showed player 1's speed, (3) a GameCube pad on port 2
+  did not answer, a Wiimote 2 did. Fixed after it, **awaiting the owner's second test**: (1) a
+  render shows the scene built in the game's previous frame from the camera of the frame
+  before (runner timeline), so the car changes at every STARTRENDER and a render is labelled
+  with the car of two STARTRENDERs before; the old code held the car back for a dropped frame,
+  which put the next two views in the wrong halves; frameskip now decides for a pair of views
+  (`naomi_2pSkip`); a half no longer goes blank when a view comes twice. (2) The HUD of the CPU
+  car's view gets its speed (JIT block hook at 0C0C9BC8, `naomi_2pHud`). (3) Not found in the
+  code (PAD_ScanPads' mask checked in libogc): the log now has a `[game] controllers` line
+  (GameCube ports, Wiimotes and their expansions) whenever they change. Known limits: the
+  rev counter, gear and ADVANTAGE in player 2's HUD are player 1's; player 2's car is "on
+  rails" (no slides, no crashes); player 2's view shows its own bonnet (the CPU car is drawn
+  whole). Game addresses and how they were found: top of `port/emu/naomi/naomi_2p.cpp`.
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
 - Menus/attract/car select: 100% speed. Race, every frame drawn (FRAMESKIPPING 0, MIRROR OFF,
   SMALL 3D 4 px): the day course of logs 21/23 at **100% in the in-car view** (log 25: 59.4-60.1
@@ -174,7 +184,7 @@ current work:
 | `port/emu/naomi/naomi_frontend.cpp` | Core init/run/settings, idle-loop skip (`naomi_IdleCycleScale`), assert/BIOS-entry traps |
 | `port/emu/naomi/naomi_board.cpp` | DIMM board, cart DMA, register counters |
 | `port/emu/naomi/naomi_softfloat.cpp` | SOFT FLOAT: the game's software double divide/multiply (GCC soft-float, SH-4 integer code) run natively, fingerprinted; called by the JIT at the routines' entry |
-| `port/emu/naomi/naomi_2p.cpp` | 2 PLAYERS: whose turn the camera is (rig target), each view's aspect, the CPU car driven by the second pad; `naomi_2pHalf()` tells the renderers which half a render goes to |
+| `port/emu/naomi/naomi_2p.cpp` | 2 PLAYERS: whose turn the camera is (rig target, changed at every STARTRENDER), each view's aspect, the CPU car driven by the second pad, the HUD speed of its view; `naomi_2pHalf()` tells the renderers which half a render goes to, `naomi_2pSkip()` pairs their frameskip |
 | `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin + GPU light sets (point lights as GX local lights), `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs (+ each list's bounding box, `cachedBox`) and their GX display-list entries (DISPLAY LISTS: `dlEntry`, its own ring, GPU waits before writing over a queued entry) |
 | `port/emu/plugs/drkPvr/gxRend.cpp` | PowerVR -> GX renderer (TA lists, ELAN items, VRAM present, tile clip, buffer caps) |
 | `port/emu/plugs/drkPvr/frame_prof.cpp` | FPROF per-frame profiler |
@@ -260,6 +270,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | env `IDAS3_SNAP_FROM=F` | periodic snapshots only from frame F (with `--snap-every`) |
 | `--area1-census` | who writes the 32-bit VRAM interface |
 | env `IDAS3_ACCESS=LO:HI[:FROM[:TO]][;...]` | every SH-4 read and write into those guest ranges in those frames, by instruction address and caller (pr), with first/last values, printed at exit: which code uses a game variable (how 2 PLAYERS' addresses were found; the run is ~2x slower) |
+| env `IDAS3_TIMELINE=FROM:TO:ADDR[-END][,...]` | every SH-4 access to those guest words or ranges (up to 8) in those frames printed as it happens (value, pc, pr, ELAN executions so far), with the vblanks and the renders (half of a 2 PLAYERS render) between them: the order of events in the game's frame (how the 2 PLAYERS render latency was found) |
 | env `IDAS3_POKE=FROM-TO:ADDR=VALUE[;...]` | a guest word written at every vblank in those frames: try a game variable's effect in the snapshots |
 | env `IDAS3_DUMP_AT=F1,F2,...` (+ `IDAS3_DUMP_DIR`) | guest RAM dumps `ram_F.bin` at those frames (32 MB each; never commit them) |
 | `--dump-ram/-vram/-aica/-elan FILE` | memory dumps at the end (never commit them) |

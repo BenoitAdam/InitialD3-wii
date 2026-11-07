@@ -78,6 +78,10 @@ void readGameControls(GameControls& out);
 // 2 PLAYERS: the second controller slot (GameCube port 2, Wiimote 2) in p2,
 // every other one merged in p1.
 void readGameControlsTwo(GameControls& p1, GameControls& p2);
+// The controllers seen at the last read, for the log: bits 0-3 GameCube ports
+// 1-4, bits 4-7 Wiimotes 1-4, bits 8-15 each Wiimote's expansion (2 bits:
+// 0 none, 1 Nunchuk, 2 Classic, 3 other).
+uint32_t controllersSeen();
 // How the controls are mapped, one line per controller type.
 std::vector<std::string> gameControlsHelp();
 

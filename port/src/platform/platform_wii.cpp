@@ -468,10 +468,35 @@ static void addPad(int i, GameControls& c)
     }
 }
 
-void readGameControls(GameControls& c)
+static uint32_t s_controllers = 0;
+
+// PAD_ScanPads' connected mask and the Wiimotes answering, for controllersSeen().
+static void scanControllers()
 {
     WPAD_ScanPads();
-    PAD_ScanPads();
+    uint32_t seen = PAD_ScanPads() & 0xF;
+    for (int i = 0; i < 4; i++)
+    {
+        WPADData* w = WPAD_Data(i);
+        if (!w || w->err != WPAD_ERR_NONE)
+            continue;
+        seen |= 1u << (4 + i);
+        const uint32_t exp = w->exp.type == WPAD_EXP_NONE ? 0 : w->exp.type == WPAD_EXP_NUNCHUK ? 1
+                             : w->exp.type == WPAD_EXP_CLASSIC                                ? 2
+                                                                                              : 3;
+        seen |= exp << (8 + 2 * i);
+    }
+    s_controllers = seen;
+}
+
+uint32_t controllersSeen()
+{
+    return s_controllers;
+}
+
+void readGameControls(GameControls& c)
+{
+    scanControllers();
     c = GameControls();
     for (int i = 0; i < 4; i++)
         addPad(i, c);
@@ -480,8 +505,7 @@ void readGameControls(GameControls& c)
 
 void readGameControlsTwo(GameControls& p1, GameControls& p2)
 {
-    WPAD_ScanPads();
-    PAD_ScanPads();
+    scanControllers();
     p1 = GameControls();
     p2 = GameControls();
     for (int i = 0; i < 4; i++)

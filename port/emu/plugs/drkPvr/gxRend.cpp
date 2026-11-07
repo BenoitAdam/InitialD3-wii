@@ -6599,6 +6599,13 @@ extern "C" {
 u32 g_rend_dropped_renders = 0;              // renders the frameskip dropped (profiler)
 }
 
+// 2 PLAYERS (emu/naomi/naomi_2p.cpp): the half of the render starting / of the
+// frame being built (-1: whole picture), and the frameskip taken for a pair
+// of views.
+extern "C" int naomi_2pHalf();
+extern "C" int naomi_2pNextHalf();
+extern "C" bool naomi_2pSkip(int half, bool (*decide)());
+
 static bool TakeSkipVerdict()
 {
     bool skip;
@@ -6608,7 +6615,7 @@ static bool TakeSkipVerdict()
         skip = s_skip_verdict;
     }
     else
-        skip = ShouldSkipFrame();
+        skip = naomi_2pSkip(naomi_2pHalf(), ShouldSkipFrame);
     g_rend_dropped_renders += skip;
     return skip;
 }
@@ -6617,7 +6624,7 @@ extern "C" bool rend_NextFrameSkipped()
 {
     if (!s_skip_verdict_valid)
     {
-        s_skip_verdict = ShouldSkipFrame();
+        s_skip_verdict = naomi_2pSkip(naomi_2pNextHalf(), ShouldSkipFrame);
         s_skip_verdict_valid = true;
     }
     return s_skip_verdict;
@@ -6803,26 +6810,38 @@ static s32  s_cmp_sx0 = 0, s_cmp_sy0 = 0, s_cmp_sx1 = 0, s_cmp_sy1 = 0;
 
 // 2 PLAYERS (emu/naomi/naomi_2p.cpp): each render is one car's view, drawn
 // into its half of the picture; the other half keeps the other car's last view
-// in the EFB, which split2p_copy_disp() never clears.
-extern "C" int naomi_2pHalf();             // -1 whole picture, 0 left, 1 right
-extern "C" int naomi_2pNextHalf();         // half the next drawn view goes to
+// in the EFB.
 extern "C" void naomi_2pDrawn(int half);   // a view reached the screen
 extern "C" float g_split2p_picture_aspect; // the whole picture's (4:3 or full-width 16:9)
 static int s_2p_half_now = -1;   // half of the render in flight
 static int s_2p_last_half = -1;  // half of the last render drawn
 static u32 s_2p_mid = 320;       // EFB x where the right half starts
 
-// Both halves to the XFB, each its own copy: the copy clears only its source
-// rectangle, so only the half the next view goes to is cleared. The XFB's
-// stride stays the full width (GX_SetDispCopyDst at init).
+// Both halves to the XFB, each its own copy, neither cleared. The XFB's stride
+// stays the full width (GX_SetDispCopyDst at init).
 static void split2p_copy_disp(void* xfb)
 {
-  const int next = naomi_2pNextHalf();
   GX_SetDispCopySrc(0, 0, s_2p_mid, rmode->efbHeight);
-  GX_CopyDisp(xfb, next != 1 ? GX_TRUE : GX_FALSE);
+  GX_CopyDisp(xfb, GX_FALSE);
   GX_SetDispCopySrc(s_2p_mid, 0, rmode->fbWidth - s_2p_mid, rmode->efbHeight);
-  GX_CopyDisp((u8*)xfb + s_2p_mid * VI_DISPLAY_PIX_SZ, next != 0 ? GX_TRUE : GX_FALSE);
+  GX_CopyDisp((u8*)xfb + s_2p_mid * VI_DISPLAY_PIX_SZ, GX_FALSE);
   GX_SetDispCopySrc(0, 0, rmode->fbWidth, rmode->efbHeight);
+}
+
+// A view starts on its own half cleared (colour and depth, GX_SetCopyClear's
+// values): a copy clears only its source rectangle, and this texture copy's
+// data is thrown away (fb2d_tex is free during a 3D render, the RTT path uses
+// it the same way). Clearing here rather than at the display copy means a view
+// that comes twice in a row (a dropped frame, a late render) leaves the other
+// half as it was: clearing the half the next view was expected in showed that
+// half blank for a frame (owner, first Wii test: "flickering sometimes").
+static void split2p_clear_half(int half)
+{
+  const u32 x = half ? s_2p_mid : 0;
+  const u32 w = half ? rmode->fbWidth - s_2p_mid : s_2p_mid;
+  GX_SetTexCopySrc((u16)x, 0, (u16)w, rmode->efbHeight);
+  GX_SetTexCopyDst((u16)w, rmode->efbHeight, GX_TF_RGB565, GX_FALSE);
+  GX_CopyTex(fb2d_tex, GX_TRUE);
 }
 
 // Open the GX scissor to whatever the pass in flight is allowed to touch: the
@@ -8576,6 +8595,8 @@ void DoRender()
     (u8)((bgV[0].col >> 24) & 0xFFu)  // A
   };
   GX_SetCopyClear(bgColor, 0x00000000);
+  if (s_2p_half_now >= 0)
+    split2p_clear_half(s_2p_half_now);
 
 #if LOGO_DEBUG_LOG
   {

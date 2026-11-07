@@ -83,6 +83,11 @@ void naomi_2pSetPad(const Naomi2pPad& pad);
 const Naomi2pPad& naomi_2pPad();
 void naomi_2pVBlank();
 void naomi_2pStartRender();
+// The HUD speed of the second player's view: nonzero if the block at pc is
+// where the HUD reads the meter's speed (the CPU back ends then call
+// naomi_2pHud with the guest's r14 at that block's entry).
+extern "C" u32 naomi_2pHudEntry(u32 pc);
+extern "C" void naomi_2pHud(u32 r14);
 // SOFT FLOAT (naomi_softfloat.cpp): the native version of the game's software
 // double divide or multiply starting at pc (null: not one, or the option is
 // off). Called with r4-r7, it returns 0 to leave the call to the game's code,

@@ -22,6 +22,18 @@
 // - The camera builds its projection every frame from its aspect at
 //   [camera+B8] (4:3); half the picture's aspect gives each half undistorted
 //   views (narrower to the sides, the game's frustum culling stays wide).
+// - A game frame starts with STARTRENDER, right after the vblank, of the scene
+//   built in the previous frame; then it updates the HUD meter and builds the
+//   next scene, and only then updates the rig (0C09D7C0) and the camera matrix.
+//   So a render shows the car the rig followed two STARTRENDERs before it
+//   (runner timeline, IDAS3_TIMELINE). The cars change at every STARTRENDER,
+//   never held back: holding one for a dropped frame (the first version) made
+//   the next two views land in the wrong halves on a Wii (owner: flicker).
+// - The HUD meter (class 0C3873C4, speed in km/h at +54, RPM at +58) is
+//   updated from the player's car at 0C06589C, then read where the HUD is
+//   drawn, at 0C0C9BD0 (block 0C0C9BC8, meter = [r14+4]): the HUD of the CPU
+//   car's view is given that car's speed there (naomi_2pHud). That HUD is
+//   shown two renders later, the 3D scene built in the same frame one.
 // - The CPU car is not the player's physics: its motion body (0C901F38, code
 //   0C15B000-0C15CFFF) moves along its heading (+AC, radians) at its speed
 //   (+44, km/h) every frame. Its AI aims at a point of its racing line ahead
@@ -62,6 +74,9 @@ const u32 kBodySpeed = 0x44;          // km/h
 const u32 kBodyHeading = 0xAC;        // radians
 const u32 kBodyPos = 0xC8;            // x y z, as the state record's
 const u32 kRaceInfo = 0x0C900954;     // -> the race's flags (+50, bit 15: running)
+const u32 kHudSpeedBlock = 0x0C0C9BC8; // HUD draw: r10 = [r14+4] + 54, then reads the speed
+const u32 kMeterClass = 0x0C3873C4;
+const u32 kMeterSpeed = 0x54;         // km/h, what the HUD shows (truncated)
 
 // Player 2's car, tuned on the runner: gas and brake in km/h a frame, the
 // heading nudge in radians a frame at full lock (the AI's pull balances it a
@@ -74,9 +89,10 @@ const float kSteerRate = 0.04f;
 
 Naomi2pPad s_pad;          // the second pad, from the host
 bool s_active = false;     // a race is on and drawn split
-int s_camera = 0;          // car the camera follows in the frame being built: 0 player, 1 CPU
+// The car (0 player, 1 CPU) the rig was given at the last STARTRENDER [0] and
+// the one before [1]: the scene being built is [1]'s, the next render too.
+int s_target[2];
 int s_renderHalf = -1;     // half of the render in flight, -1 whole picture
-int s_lastDrawn = -1;      // half of the last view that reached the screen
 int s_mirrorSaved = 1;     // the MIRROR option, while split screen turns it off
 float s_speed2 = 0.f;      // player 2's speed (km/h), kept here: the AI's own step never adds up
 bool s_driving2 = false;   // the race runs and player 2 has the CPU car
@@ -209,9 +225,17 @@ void setAspect(const Race& race, bool split)
 
 } // namespace
 
+// The most of each control player 2 used since the last [2P] line (a pad that
+// does not answer shows as zeros).
+static float s_padMax[3];
+
 void naomi_2pSetPad(const Naomi2pPad& pad)
 {
     s_pad = pad;
+    const float steer = pad.steer < 0.f ? -pad.steer : pad.steer;
+    s_padMax[0] = pad.accel > s_padMax[0] ? pad.accel : s_padMax[0];
+    s_padMax[1] = pad.brake > s_padMax[1] ? pad.brake : s_padMax[1];
+    s_padMax[2] = steer > s_padMax[2] ? steer : s_padMax[2];
 }
 
 const Naomi2pPad& naomi_2pPad()
@@ -240,7 +264,6 @@ void naomi_2pVBlank()
         }
         s_active = false;
         s_driving2 = false;
-        s_lastDrawn = -1;
         return;
     }
     if (!s_active)
@@ -252,25 +275,40 @@ void naomi_2pVBlank()
         s_mirrorSaved = g_mirror_preset;
         g_mirror_preset = 0;
         s_active = true;
+        // The views in flight are the player's; the cars start changing at
+        // the next STARTRENDER.
+        s_target[0] = s_target[1] = 0;
+        followCar(race, 0);
     }
     s_race = race;
-    // The car whose half was not drawn last goes next, so a frame the
-    // frameskip drops is shown by the following one.
-    s_camera = s_lastDrawn == 0 ? 1 : 0;
-    followCar(race, s_camera);
     setAspect(race, true);
     driveCpuCar(s_pad);
     if (++s_frames % 600 == 0)
     {
-        naomi_Log("[2P] 10 s: views drawn %u left, %u right; player 2 %s, %.0f km/h\n", s_drawn[0], s_drawn[1],
-                  s_driving2 ? "driving" : "waiting for the start", s_speed2);
+        naomi_Log("[2P] 10 s: views drawn %u left, %u right; player 2 %s, %.0f km/h; pad 2 used up to gas %.2f, "
+                  "brake %.2f, steer %.2f\n",
+                  s_drawn[0], s_drawn[1], s_driving2 ? "driving" : "waiting for the start", s_speed2, s_padMax[0],
+                  s_padMax[1], s_padMax[2]);
         s_drawn[0] = s_drawn[1] = 0;
+        s_padMax[0] = s_padMax[1] = s_padMax[2] = 0.f;
     }
 }
 
+// STARTRENDER, before the renderer: this render is the scene the game built in
+// its last frame, from the camera of the frame before (the top of the file).
+// Then the rig goes to the other car for the frame starting now.
 void naomi_2pStartRender()
 {
-    s_renderHalf = s_active ? s_camera : -1;
+    if (!s_active)
+    {
+        s_renderHalf = -1;
+        return;
+    }
+    s_renderHalf = s_target[1];
+    s_target[1] = s_target[0];
+    s_target[0] = 1 - s_target[0];
+    if (ReadMem32(s_race.rig) == kRigClass)
+        followCar(s_race, s_target[0]);
 }
 
 extern "C" int naomi_2pHalf()
@@ -278,13 +316,48 @@ extern "C" int naomi_2pHalf()
     return s_renderHalf;
 }
 
+// The half of the scene being built, drawn by the next render.
 extern "C" int naomi_2pNextHalf()
 {
-    return s_active ? 1 - s_renderHalf : -1;
+    return s_active ? s_target[1] : -1;
 }
 
 extern "C" void naomi_2pDrawn(int half)
 {
-    s_lastDrawn = half;
     s_drawn[half & 1]++;
+}
+
+// Frameskip with split screen: the views alternate, so the renderers decide
+// for a pair, the right view taking the left one's verdict; a regular skip
+// rate on single views could drop the same car's view every time.
+extern "C" bool naomi_2pSkip(int half, bool (*decide)())
+{
+    static bool pairSkip = false;
+    if (half == 1)
+        return pairSkip;
+    const bool skip = decide();
+    if (half == 0)
+        pairSkip = skip;
+    return skip;
+}
+
+// The HUD speed: the JIT (and the runner's interpreter) call naomi_2pHud(r14)
+// at the entry of the block that reads the meter's speed for the HUD.
+extern "C" u32 naomi_2pHudEntry(u32 pc)
+{
+    return g_two_player_preset && (pc & 0x1FFFFFFF) == kHudSpeedBlock && ReadMem16(pc) == 0x5AE1 &&
+           ReadMem16(pc + 4) == 0x7A54 && ReadMem16(pc + 8) == 0xF1A8;
+}
+
+// The HUD drawn in a frame reaches the screen a render later than the scene
+// built in that frame (runner snapshots: with [1] the two speeds came out
+// swapped), so it belongs with the car the rig was just given, [0].
+extern "C" void naomi_2pHud(u32 r14)
+{
+    if (!s_active || s_target[0] != 1 || !inRam(r14))
+        return;
+    const u32 meter = ReadMem32(r14 + 4);
+    if (!inRam(meter) || ReadMem32(meter) != kMeterClass)
+        return;
+    writeFloat(meter + kMeterSpeed, readFloat(kCpuBody + kBodySpeed));
 }

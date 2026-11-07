@@ -1246,11 +1246,17 @@ static bool decideSkip()
     return s_skipCounter != 0;
 }
 
+// 2 PLAYERS (naomi_2p.cpp): a pair of views takes one frameskip verdict, as
+// on the Wii (gxRend.cpp).
+extern "C" int naomi_2pHalf();
+extern "C" int naomi_2pNextHalf();
+extern "C" bool naomi_2pSkip(int half, bool (*decide)());
+
 extern "C" bool rend_NextFrameSkipped()
 {
     if (!s_skipValid)
     {
-        s_skip = decideSkip();
+        s_skip = naomi_2pSkip(naomi_2pNextHalf(), decideSkip);
         s_skipValid = true;
     }
     return s_skip;
@@ -1274,7 +1280,7 @@ static bool takeSkipVerdict()
         skip = s_skip;
     }
     else
-        skip = decideSkip();
+        skip = naomi_2pSkip(naomi_2pHalf(), decideSkip);
     g_rend_dropped_renders += skip;
     return skip;
 }
@@ -1304,7 +1310,6 @@ static void traceRender()
 // half of the picture as on the Wii (gxRend split2p_*). A snapshot due during
 // split screen rasterises the render it falls on and the next one, the other
 // car's, and writes the two side by side.
-extern "C" int naomi_2pHalf();
 extern "C" void naomi_2pDrawn(int half);
 static std::vector<u32> s_split;   // the side-by-side picture
 static u32 s_splitHalves;          // halves put in since the snapshot was due (bit per half)
@@ -1356,6 +1361,21 @@ void StartRender()
     event('R');
     traceRender();
     g_host_render.renders++;
+    {
+        // env IDAS3_TIMELINE (run_main.cpp): the renders among the accesses.
+        static u32 tlFrom = 1, tlTo = 0;
+        static bool tlRead = false;
+        if (!tlRead)
+        {
+            tlRead = true;
+            if (const char* tl = getenv("IDAS3_TIMELINE"))
+                sscanf(tl, "%u:%u", &tlFrom, &tlTo);
+        }
+        extern u32 g_elan_exec_seq;
+        if (g_host_render.vblanks >= tlFrom && g_host_render.vblanks <= tlTo)
+            printf("[tl] f%u RENDER %u, half %d, elan %u\n", g_host_render.vblanks, g_host_render.renders, naomi_2pHalf(),
+                   g_elan_exec_seq);
+    }
     noteGpuDepthRange();
     if (takeSkipVerdict())
     {

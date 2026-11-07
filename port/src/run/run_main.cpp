@@ -174,10 +174,37 @@ struct AccessRange
 static std::map<u64, AccessStat> s_access;
 static std::vector<AccessRange> s_accRanges;
 
+// env IDAS3_TIMELINE=FROM:TO:ADDR[-END][,ADDR[-END]...]: every SH-4 access to
+// those guest words (or ranges, END included) in frames FROM-TO printed as it
+// happens, with the vblanks and the renders between them (soft_renderer.cpp):
+// the order of events in a frame.
+static u32 s_tlFrom, s_tlTo, s_tlCount, s_tlAddr[8], s_tlEnd[8];
+
+static void timelineNote(u32 a, u32 size, u32 write, u64 data)
+{
+    const u32 f = g_host_render.vblanks;
+    if (f < s_tlFrom || f > s_tlTo)
+        return;
+    bool hit = a == 0x005F8014 && write;
+    for (u32 i = 0; i < s_tlCount && !hit; i++)
+        hit = a + size > s_tlAddr[i] && a <= s_tlEnd[i];
+    if (!hit)
+        return;
+    if (!write && (a & 0x1E000000) == 0x0C000000)
+    {
+        data = 0;
+        memcpy(&data, &mem_b.data[a & (RAM_SIZE - 1)], size);
+    }
+    printf("[tl] f%u %s %08X %c%u %08llX  pc %08X pr %08X  elan %u\n", f, a == 0x005F8014 ? "STARTRENDER" : "", a,
+           write ? 'W' : 'R', size * 8, (unsigned long long)data, curr_pc, pr, g_elan_exec_seq);
+}
+
 static void accessHook(u32 addr, u32 size, u32 write, u64 data)
 {
     const u32 a = addr & 0x1FFFFFFF;
     const u32 f = g_host_render.vblanks;
+    if (s_tlCount || s_tlTo)
+        timelineNote(a, size, write, data);
     bool hit = false;
     for (const AccessRange& rg : s_accRanges)
         hit |= a + size > rg.lo && a <= rg.hi && f >= rg.from && f <= rg.to;
@@ -571,8 +598,14 @@ static int softFloatTest(u32 pairs)
 
 static bool s_reflectionHook;
 
+// --two-player: the HUD speed of the second player's view, where the JIT
+// calls it on the Wii (block entry).
+static bool s_twoPlayerHook;
+
 static void pcHook()
 {
+    if (s_twoPlayerHook && (next_pc & 0x1FFFFFFF) == 0x0C0C9BC8 && naomi_2pHudEntry(next_pc))
+        naomi_2pHud(r[14]);
     if (s_reflectionHook)
         reflectionHook();
     if (s_probeHi)
@@ -839,6 +872,8 @@ void host_on_vblank()
     const u32 frame = g_host_render.vblanks;
     dumpRamAt(frame);
     pokeAt(frame);
+    if ((s_tlCount || s_tlTo) && frame >= s_tlFrom && frame <= s_tlTo)
+        printf("[tl] ---- vblank %u (renders %u, elan %u)\n", frame, g_host_render.renders, g_elan_exec_seq);
     if (frame % 60 == 0 || frame == s_frameLimit)
     {
         const NaomiStats& st = naomi_Stats();
@@ -1285,6 +1320,26 @@ int main(int argc, char** argv)
         }
         g_mem_access_hook = accessHook;
     }
+    if (const char* tl = getenv("IDAS3_TIMELINE"))
+    {
+        int used = 0;
+        if (sscanf(tl, "%u:%u%n", &s_tlFrom, &s_tlTo, &used) >= 2)
+        {
+            for (const char* c = tl + used; *c == ':' || *c == ',';)
+            {
+                if (s_tlCount == 8)
+                    break;
+                char* end;
+                s_tlAddr[s_tlCount] = (u32)strtoul(c + 1, &end, 16) & 0x1FFFFFFF;
+                s_tlEnd[s_tlCount] = s_tlAddr[s_tlCount] + 3;
+                if (*end == '-')
+                    s_tlEnd[s_tlCount] = (u32)strtoul(end + 1, &end, 16) & 0x1FFFFFFF;
+                s_tlCount++;
+                c = end;
+            }
+            g_mem_access_hook = accessHook;
+        }
+    }
     if (const char* w = argValue(argc, argv, "--watch"))
     {
         s_watchAddr = (u32)strtoul(w, nullptr, 16);
@@ -1376,6 +1431,11 @@ int main(int argc, char** argv)
         // 2 PLAYERS: split screen, the second pad (presses gas2, left2...)
         // drives the CPU car. Snapshots show both halves (split_F.png).
         g_two_player_preset = atoi(tp);
+        if (g_two_player_preset)
+        {
+            s_twoPlayerHook = true;
+            g_sh4_pc_hook = pcHook;
+        }
     }
     if (const char* mi = argValue(argc, argv, "--mirror"))
     {

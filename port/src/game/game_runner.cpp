@@ -128,6 +128,35 @@ void logPress(const char* name, bool now, bool& was)
     was = now;
 }
 
+// The controllers connected, logged when they change and the change has held
+// for half a second (a pad's read can fail now and then). 2 PLAYERS: which pad
+// is player 2's is the first question when one does not answer.
+void logControllers()
+{
+    static uint32_t s_logged = ~0u, s_candidate = ~0u, s_held = 0;
+    const uint32_t seen = platform::controllersSeen();
+    if (seen != s_candidate)
+    {
+        s_candidate = seen;
+        s_held = 0;
+    }
+    if (seen == s_logged || ++s_held < 30)
+        return;
+    s_logged = seen;
+    static const char* const kExp[] = {"", " + Nunchuk", " + Classic", " + other"};
+    char line[200];
+    int n = snprintf(line, sizeof(line), "[game] controllers at frame %u: GameCube ports", s_lastFrame.vblanks);
+    for (int i = 0; i < 4; i++)
+        if (seen >> i & 1)
+            n += snprintf(line + n, sizeof(line) - n, " %d", i + 1);
+    n += snprintf(line + n, sizeof(line) - n, "%s; Wiimotes", (seen & 0xF) ? "" : " none");
+    for (int i = 0; i < 4; i++)
+        if (seen >> (4 + i) & 1)
+            n += snprintf(line + n, sizeof(line) - n, " %d%s", i + 1, kExp[seen >> (8 + 2 * i) & 3]);
+    snprintf(line + n, sizeof(line) - n, "%s\n", (seen & 0xF0) ? "" : " none");
+    log::write("%s", line);
+}
+
 // 0..1 to the JVS 16-bit range, 0.5 -> 0x8000 (the wheel's centre).
 u16 analog(float v)
 {
@@ -154,6 +183,7 @@ void pollControls(NaomiInputs& in)
     }
     else
         platform::readGameControls(c);
+    logControllers();
     naomi_DefaultInputs(in);
     in.analog[0] = analog((c.steer + 1.f) * 0.5f);
     in.analog[1] = analog(c.accel);

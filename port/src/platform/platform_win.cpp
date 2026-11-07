@@ -386,6 +386,11 @@ void readGameControlsTwo(GameControls& p1, GameControls& p2)
     p2 = GameControls();
 }
 
+uint32_t controllersSeen()
+{
+    return 0;
+}
+
 std::vector<std::string> gameControlsHelp()
 {
     return {"Windows: the game runs in the headless runner (idas3wii_run)."};

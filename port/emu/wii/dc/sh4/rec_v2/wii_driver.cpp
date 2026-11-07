@@ -309,6 +309,10 @@ typedef u32 (*NaomiSoftFloatFn)(u32 r4, u32 r5, u32 r6, u32 r7);
 extern "C" NaomiSoftFloatFn naomi_SoftFloatEntry(u32 pc);
 extern "C" u32 g_soft_float_result[2];
 
+// 2 PLAYERS (naomi_2p.cpp): the HUD speed of the second player's view.
+extern "C" u32 naomi_2pHudEntry(u32 pc);
+extern "C" void naomi_2pHud(u32 r14);
+
 // Forward decls: GPR/FPR allocation maps + flush/reload (defined later in this file).
 ppc_ireg GetIntReg(u32 reg);
 ppc_freg GetFloatReg(u32 reg);
@@ -3159,6 +3163,14 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		ppc_sh_load(ppc_next_pc,reg_pr);
 		ppc_jump(loop_no_update);
 		own->MarkLabel();
+	}
+
+	// 2 PLAYERS (naomi_2p.cpp): this block reads the HUD meter's speed; the
+	// second player's view is given the CPU car's first.
+	if (naomi_2pHudEntry(block->start))
+	{
+		ppc_ori(ppc_rarg0,GetIntReg(reg_r14),0);	// mr rarg0,R14 (the HUD's frame)
+		ppc_call((void*)&naomi_2pHud);
 	}
 
 	// JIT_HOTBLOCKS: bump this block's execution counter. Emitted AFTER
