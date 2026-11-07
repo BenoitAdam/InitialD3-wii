@@ -391,7 +391,11 @@ uint32_t controllersSeen()
     return 0;
 }
 
-std::vector<std::string> gameControlsHelp()
+void setPadLayout(int)
+{
+}
+
+std::vector<std::string> gameControlsHelp(int)
 {
     return {"Windows: the game runs in the headless runner (idas3wii_run)."};
 }

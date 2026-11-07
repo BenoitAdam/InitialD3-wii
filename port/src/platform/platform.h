@@ -82,8 +82,16 @@ void readGameControlsTwo(GameControls& p1, GameControls& p2);
 // 1-4, bits 4-7 Wiimotes 1-4, bits 8-15 each Wiimote's expansion (2 bits:
 // 0 none, 1 Nunchuk, 2 Classic, 3 other).
 uint32_t controllersSeen();
+// GameCube pads (launcher GC PAD LAYOUT): A/B the pedals and R/L the shifter,
+// or the triggers the pedals and A/B the shifter (the first layout).
+enum
+{
+    PAD_LAYOUT_AB_PEDALS = 0,
+    PAD_LAYOUT_TRIGGER_PEDALS = 1,
+};
+void setPadLayout(int layout);
 // How the controls are mapped, one line per controller type.
-std::vector<std::string> gameControlsHelp();
+std::vector<std::string> gameControlsHelp(int padLayout);
 
 // ---- Storage -------------------------------------------------------------
 struct DirEntry

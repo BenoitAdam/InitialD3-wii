@@ -15,11 +15,12 @@ enum CoreOptionPage
     PAGE_RECOMPILER_2,   // the first one is full: new recompiler rows go here
     PAGE_AUDIO,
     PAGE_FIXES,
+    PAGE_PLAYERS,        // controllers and 2 PLAYERS (one press back from GENERAL)
     kCoreOptionPages
 };
 
 inline constexpr const char* kCoreOptionPageNames[kCoreOptionPages] = {
-    "GENERAL", "RENDERING", "RENDERING 2", "RECOMPILER", "RECOMPILER 2", "AUDIO", "FIXES"};
+    "GENERAL", "RENDERING", "RENDERING 2", "RECOMPILER", "RECOMPILER 2", "AUDIO", "FIXES", "PLAYERS"};
 
 enum CoreOptionId
 {
@@ -111,6 +112,7 @@ enum CoreOptionId
     OPT_COLOUR_FETCH,
     OPT_ELAN_PREFETCH,
     OPT_TWO_PLAYER,
+    OPT_GC_LAYOUT,
     kCoreOptionCount
 };
 
@@ -318,7 +320,11 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // view a frame, the cars taking turns, each into its half of the picture;
     // the second pad drives the opponent's car.
     {"2 PLAYERS     ", "split screen races: controller 2 (GC port 2 / Wiimote 2) drives the CPU car",
-     PAGE_GENERAL, 0, 2, {"OFF", "SIDE BY SIDE"}, {0, 1}},
+     PAGE_PLAYERS, 0, 2, {"OFF", "SIDE BY SIDE"}, {0, 1}},
+    // GameCube pads (platform_wii.cpp, addPad): the owner's layout, A/B the
+    // pedals, and the first one, the analog triggers the pedals.
+    {"GC PAD LAYOUT ", "GameCube pads: A/B gas/brake and R/L shift, or R/L gas/brake and A/B shift",
+     PAGE_PLAYERS, 0, 2, {"A/B PEDALS", "R/L PEDALS (OLD)"}, {0, 1}},
 };
 
 } // namespace idas3

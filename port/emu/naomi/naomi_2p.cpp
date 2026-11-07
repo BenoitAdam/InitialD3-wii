@@ -43,6 +43,27 @@
 //   vblank. The AI's pull toward its line balances the nudge: holding the
 //   stick moves the car across the road, letting go brings it back. The car
 //   stays on the course (a free heading drives through the guardrails).
+//
+// Not done yet (owner, 2026-11-07), what is known so far:
+// - Player 2 in full control. The player's physics is one routine run by the
+//   drivers update 0C159920 (fr4 = dt -> 0C901650): 0C157880 (both cars'
+//   collision probes 0C401B04 / 0C401D74, 0x270 each, built from the render
+//   states 0C8FF388 / 0C8FF430; car-car collision 0C0C06C0), then 0C157AE0
+//   (record = [0C900954] = 0C9008A4; simulation 0C15CEC0 on the core state
+//   0C900F00; copies it back into the record; 0C157A80 copies the record's
+//   first 80 bytes to the render state 0C8FF388, and the CPU copy 0C9017D4 to
+//   0C8FF430), then the CPU car's AI 0C15B0A0(1, 1). The physics code also
+//   names ~50 record fields by address (0C9008A4-0C901720), so switching the
+//   pointer is not enough: the plan is a second run a frame with that block
+//   swapped (and the render states / probes swapped so the opponent is player
+//   1), player 2's controls put where the physics reads them (not found yet),
+//   and its result written to 0C9017D4 after the AI. Statics outside the block
+//   it touches (wheel counters at 0CAA94B4, tire marks, sound) are unchecked.
+// - Scenery for player 2 far from player 1: from ~800 m apart (runner: fine at
+//   113 m, gone at 922 m) player 2's view keeps only the far backdrop. The
+//   choice of course blocks follows player 1, not the camera; the per-car
+//   course tracker around 0C069480 (virtual calls on a course object with each
+//   car's position) is the next place to look.
 #include "types.h"
 #include "dc/mem/sh4_mem.h"
 #include "naomi.h"

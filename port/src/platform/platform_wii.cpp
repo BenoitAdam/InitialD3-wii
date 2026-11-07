@@ -390,18 +390,40 @@ static float padTrigger(u8 v)
     return x < 0.f ? 0.f : x > 1.f ? 1.f : x;
 }
 
+static int s_padLayout = PAD_LAYOUT_AB_PEDALS;
+
+void setPadLayout(int layout)
+{
+    s_padLayout = layout;
+}
+
 // One controller slot: GameCube port i and Wiimote i (with its expansion),
 // added to c.
 static void addPad(int i, GameControls& c)
 {
-    // GameCube pad: stick steers, R/L analog triggers are the pedals.
+    // GameCube pad: the stick steers.
     const u16 p = PAD_ButtonsHeld(i);
     if (padAxis(PAD_StickX(i)) != 0.f)
         c.steer = padAxis(PAD_StickX(i));
-    c.accel = std::max(c.accel, padTrigger(PAD_TriggerR(i)));
-    c.brake = std::max(c.brake, padTrigger(PAD_TriggerL(i)));
-    c.shiftUp |= (p & (PAD_BUTTON_A | PAD_BUTTON_UP)) != 0;
-    c.shiftDown |= (p & (PAD_BUTTON_B | PAD_BUTTON_DOWN)) != 0;
+    if (s_padLayout == PAD_LAYOUT_TRIGGER_PEDALS)
+    {
+        // R/L analog triggers are the pedals, A/B shift.
+        c.accel = std::max(c.accel, padTrigger(PAD_TriggerR(i)));
+        c.brake = std::max(c.brake, padTrigger(PAD_TriggerL(i)));
+        c.shiftUp |= (p & (PAD_BUTTON_A | PAD_BUTTON_UP)) != 0;
+        c.shiftDown |= (p & (PAD_BUTTON_B | PAD_BUTTON_DOWN)) != 0;
+    }
+    else
+    {
+        // A/B are the pedals (all or nothing), R/L shift up/down once pressed
+        // past half way.
+        if (p & PAD_BUTTON_A)
+            c.accel = 1.f;
+        if (p & PAD_BUTTON_B)
+            c.brake = 1.f;
+        c.shiftUp |= (p & (PAD_TRIGGER_R | PAD_BUTTON_UP)) != 0 || padTrigger(PAD_TriggerR(i)) > 0.5f;
+        c.shiftDown |= (p & (PAD_TRIGGER_L | PAD_BUTTON_DOWN)) != 0 || padTrigger(PAD_TriggerL(i)) > 0.5f;
+    }
     c.view |= (p & PAD_BUTTON_X) != 0;
     c.start |= (p & PAD_BUTTON_START) != 0;
     c.coin |= (p & PAD_TRIGGER_Z) != 0;
@@ -513,10 +535,11 @@ void readGameControlsTwo(GameControls& p1, GameControls& p2)
     p1.quit |= s_powerPressed || s_resetPressed || p2.quit;
 }
 
-std::vector<std::string> gameControlsHelp()
+std::vector<std::string> gameControlsHelp(int padLayout)
 {
     return {
-        "GameCube: stick steer, R/L gas/brake, A/B shift up/down, X view,",
+        padLayout == PAD_LAYOUT_TRIGGER_PEDALS ? "GameCube: stick steer, R/L gas/brake, A/B shift up/down, X view,"
+                                               : "GameCube: stick steer, A/B gas/brake, R/L shift up/down, X view,",
         "          Start start, Z coin, D-pad left/right test/service,",
         "          Start+Z+Y quit",
         "Nunchuk : stick steer, A/B gas/brake, Z/C shift, 1 view, + start,",

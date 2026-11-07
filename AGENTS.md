@@ -41,10 +41,19 @@ it exists.
   (`naomi_2pSkip`); a half no longer goes blank when a view comes twice. (2) The HUD of the CPU
   car's view gets its speed (JIT block hook at 0C0C9BC8, `naomi_2pHud`). (3) Not found in the
   code (PAD_ScanPads' mask checked in libogc): the log now has a `[game] controllers` line
-  (GameCube ports, Wiimotes and their expansions) whenever they change. Known limits: the
-  rev counter, gear and ADVANTAGE in player 2's HUD are player 1's; player 2's car is "on
-  rails" (no slides, no crashes); player 2's view shows its own bonnet (the CPU car is drawn
-  whole). Game addresses and how they were found: top of `port/emu/naomi/naomi_2p.cpp`.
+  (GameCube ports, Wiimotes and their expansions) whenever they change. Owner's second round
+  (2026-11-07): (a) player 2 is "on rails", wants full control, the rails kept as a preset;
+  (b) from ~800 m apart player 2's view loses its scenery (runner: reproduced, fine at 113 m,
+  only the far backdrop at 922 m), wants it fixed, the current behaviour kept as a preset (speed);
+  (c) GameCube pads: A gas, B brake, R/L shift, the old layout as a preset. Done: (c), new
+  page PLAYERS (last, one press back from GENERAL) with 2 PLAYERS (moved there from GENERAL)
+  and GC PAD LAYOUT (A/B PEDALS default, R/L PEDALS (OLD)); the controls help follows it.
+  Not done, findings and plans at the top of `naomi_2p.cpp`: (a) a second run of the
+  player's physics a frame on a swapped copy of its state block; (b) the course block
+  choice follows player 1. Their presets come with them. Known limits: the rev counter,
+  gear and ADVANTAGE in player 2's HUD are player 1's; player 2's view shows its own bonnet
+  (the CPU car is drawn whole). Game addresses and how they were found: top of
+  `port/emu/naomi/naomi_2p.cpp`.
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
 - Menus/attract/car select: 100% speed. Race, every frame drawn (FRAMESKIPPING 0, MIRROR OFF,
   SMALL 3D 4 px): the day course of logs 21/23 at **100% in the in-car view** (log 25: 59.4-60.1
@@ -175,7 +184,7 @@ current work:
 
 | File | Role |
 | --- | --- |
-| `port/src/game/core_options.h` | Launcher option table (7 pages: GENERAL, RENDERING, RENDERING 2, RECOMPILER, RECOMPILER 2, AUDIO, FIXES; a page that fills up gets a second one, ~20 rows fit) |
+| `port/src/game/core_options.h` | Launcher option table (8 pages: GENERAL, RENDERING, RENDERING 2, RECOMPILER, RECOMPILER 2, AUDIO, FIXES, PLAYERS (controllers and 2 PLAYERS); a page that fills up gets a second one, ~20 rows fit) |
 | `port/src/game/game_runner.cpp` | Runs the core on the Wii: options -> `g_*_preset` globals (array in `CoreOptionId` order, static_assert), pads -> JVS, `[prof]` blocks, async log |
 | `port/src/ui/launcher.cpp` | Menus; `options.txt` saved as `LABEL=VALUE`, matched by label |
 | `port/src/core/log.cpp` | Log file, async ring mode (`log::setAsync`) |

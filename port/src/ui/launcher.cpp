@@ -440,9 +440,11 @@ State Launcher::options()
                 s.line(UI_GREEN "[ OK ]" UI_RESET " BIOS service library: %s", bios_.source.c_str());
             else
                 s.line(UI_RED "[FAIL]" UI_RESET " %s (MAME's naomi.zip works)", biosError_.c_str());
-            for (const std::string& line : gameControlsHelp())
-                s.line("%s", line.c_str());
         }
+        if (optionPage_ == PAGE_GENERAL || optionPage_ == PAGE_PLAYERS)
+            for (const std::string& line :
+                 gameControlsHelp(kCoreOptions[OPT_GC_LAYOUT].values[run_.presets[OPT_GC_LAYOUT]]))
+                s.line("%s", line.c_str());
         s.footer("%s: Option | %s: Change | %s/%s: Page", buttonLabel(BTN_UP | BTN_DOWN),
                  buttonLabel(BTN_LEFT | BTN_RIGHT), buttonLabel(BTN_1), buttonLabel(BTN_2));
         if (haveBios_)

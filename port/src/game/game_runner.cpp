@@ -115,6 +115,7 @@ bool cartBusy(void* user)
 }
 
 int g_dimm_ahead_preset = 1;
+int g_gc_layout_preset = 0;             // platform::setPadLayout
 const DimmImage* s_dimm = nullptr;      // for the profiler's lines
 
 NaomiFrameInfo s_lastFrame;
@@ -418,7 +419,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_mem_sweep_preset,     &g_fifo_size_preset,    &g_soft_float_preset,
         &g_page_guard_preset,    &g_mirror_preset,       &g_sfx_menu_level_preset, &g_sfx_tire_level_preset,
         &g_small_cull_preset,    &g_incar_reflect_preset, &g_elan_dl_preset,     &g_elan_colour_fetch_preset,
-        &g_elan_prefetch_preset, &g_two_player_preset};
+        &g_elan_prefetch_preset, &g_two_player_preset, &g_gc_layout_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {
@@ -427,6 +428,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         *presets[i] = o.values[k];
         log::write("[game]   %s: %s\n", o.label, o.names[k]);
     }
+    platform::setPadLayout(g_gc_layout_preset);
     if (g_elan_gx_preset)
     {
         // GPU-drawn vertices can lie behind the camera, so the hardware must
