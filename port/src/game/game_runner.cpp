@@ -131,19 +131,22 @@ void logPress(const char* name, bool now, bool& was)
     was = now;
 }
 
-// The controllers connected, logged when they change and the change has held
-// for half a second (a pad's read can fail now and then). 2 PLAYERS: which pad
-// is player 2's is the first question when one does not answer.
+// The controllers connected, logged when they change. 2 PLAYERS: which pad is
+// player 2's is the first question when one does not answer. A device counts
+// if it answered in any of the last 60 reads: the game reads its controls once
+// or twice a frame, and a GameCube pad read twice in one SI poll answers with a
+// transfer error (PAD_ScanPads keeps its buttons but leaves it out of the
+// connected mask), so a mask that had to hold steady never did (2P log 1).
 void logControllers()
 {
-    static uint32_t s_logged = ~0u, s_candidate = ~0u, s_held = 0;
-    const uint32_t seen = platform::controllersSeen();
-    if (seen != s_candidate)
-    {
-        s_candidate = seen;
-        s_held = 0;
-    }
-    if (seen == s_logged || ++s_held < 30)
+    static uint32_t s_logged = ~0u, s_window = 0, s_reads = 0;
+    s_window |= platform::controllersSeen();
+    if (++s_reads < 60)
+        return;
+    const uint32_t seen = s_window;
+    s_window = 0;
+    s_reads = 0;
+    if (seen == s_logged)
         return;
     s_logged = seen;
     static const char* const kExp[] = {"", " + Nunchuk", " + Classic", " + other"};

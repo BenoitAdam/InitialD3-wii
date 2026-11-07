@@ -19,51 +19,54 @@ it exists.
   (MSVC: launcher, headless runner and tests, used for bring-up, censuses and A/B checks).
 - GitHub: `BenoitAdam/Initial-D-3-wii`, branch `main`. The owner commits often themselves.
 
-### Status (2026-11-05)
+### Status (2026-11-07)
 
-- **2 PLAYERS (branch `two-player-splitscreen`)**: launcher GENERAL page, last row, OFF /
-  SIDE BY SIDE. Split screen in races: the game still draws one view a frame; the cars take
-  turns being the one its in-car camera follows (the rig's target car, `naomi_2p.cpp`), and
-  the renderer squeezes each view into its car's half and keeps the other half (gxRend
-  `split2p_*`: the half's viewport and scissor, each view clears its own half when it starts,
-  two half EFB copies that clear nothing). 30 views a second each, no more drawing than one
-  player. Each view gets half the picture's aspect (the camera's per-frame projection), the
-  mirror is off. The second pad (GameCube port 2 / Wiimote 2) drives the CPU car: it is a
-  kinematic AI body (heading + speed), so player 2 sets its speed (the AI's braking caps it in
-  bends) and nudges its heading (the AI's pull back to its line balances it: lane control, it
-  cannot leave the road). First Wii test (owner, 2026-11-07): works, but (1) flickering
-  sometimes, (2) player 2's speedometer showed player 1's speed, (3) a GameCube pad on port 2
-  did not answer, a Wiimote 2 did. Fixed after it, **awaiting the owner's second test**: (1) a
-  render shows the scene built in the game's previous frame from the camera of the frame
-  before (runner timeline), so the car changes at every STARTRENDER and a render is labelled
-  with the car of two STARTRENDERs before; the old code held the car back for a dropped frame,
-  which put the next two views in the wrong halves; frameskip now decides for a pair of views
-  (`naomi_2pSkip`); a half no longer goes blank when a view comes twice. (2) The HUD of the CPU
-  car's view gets its speed (JIT block hook at 0C0C9BC8, `naomi_2pHud`). (3) Not found in the
-  code (PAD_ScanPads' mask checked in libogc): the log now has a `[game] controllers` line
-  (GameCube ports, Wiimotes and their expansions) whenever they change. Owner's second round
-  (2026-11-07): (a) player 2 is "on rails", wants full control, the rails kept as a preset;
-  (b) from ~800 m apart player 2's view loses its scenery (runner: reproduced, fine at 113 m,
-  only the far backdrop at 922 m), wants it fixed, the current behaviour kept as a preset (speed);
-  (c) GameCube pads: A gas, B brake, R/L shift, the old layout as a preset. Done: (c), new
-  page PLAYERS (last, one press back from GENERAL) with 2 PLAYERS (moved there from GENERAL)
-  and GC PAD LAYOUT (A/B PEDALS default, R/L PEDALS (OLD)); the controls help follows it.
-  Round 3 (same day, owner: flicker gone; go for both, each behind a legacy/fixed preset):
-  (a) done on the runner, **awaiting the owner's Wii test**: P2 CAR (PLAYERS page) = ON
-  RAILS (OLD) / FULL PHYSICS (default): the game's player physics runs a second time a
-  frame for player 2 on a swapped copy of its state (block 0C9008A4-0C9017D3 plus what the
-  physics writes elsewhere), with player 2's pad as the JVS analog words; the CPU car is put
-  where it ends up (runner: steers, spins, crashes into barriers, drives on; player 1 drives
-  as with ON RAILS; GPU fetch/display list/box checks clean). Player 2's HUD shows its own
-  speed and revs. Not done: player 2 shifting by hand. (b) done on the runner, **awaiting
-  the Wii test**: P2 SCENERY (PLAYERS page) = AROUND P1 (OLD) / AROUND EACH CAR (default):
-  the course draws 3 of its 9 areas around the road segment of the view's own car; for
-  player 2's scenes the view's own and opponent segments are swapped around the course's
-  setSegment call (runner: player 2's view complete 1361 m ahead, player 1's untouched,
-  ADVANTAGE right). Known limits: gear and ADVANTAGE in player 2's HUD are player 1's;
-  player 2's view shows its own bonnet (the CPU car is drawn whole). Game addresses and how they were found: top of
-  `port/emu/naomi/naomi_2p.cpp`. New runner tools: `IDAS3_PHYSW`, `IDAS3_POSREAD`,
-  `IDAS3_MODELS`, `IDAS3_WRITEVAL`, `IDAS3_2P_HOLD`, flags `--p2-car`, `--p2-scenery`.
+- **2 PLAYERS (branch `two-player-splitscreen`), works on a real Wii** (owner, 2P log 1,
+  2026-11-07: "amazing it works"). Launcher page PLAYERS (last page, one press back from
+  GENERAL): 2 PLAYERS (OFF / SIDE BY SIDE), GC PAD LAYOUT (A/B PEDALS default, R/L PEDALS
+  (OLD)), P2 CAR (ON RAILS (OLD) / FULL PHYSICS default), P2 SCENERY (AROUND P1 (OLD) / AROUND
+  EACH CAR default). The game still draws one view a frame; the cars take turns being the one
+  its in-car camera follows (the rig's target car, `naomi_2p.cpp`), and the renderer squeezes
+  each view into its car's half and keeps the other half (gxRend `split2p_*`: the half's
+  viewport and scissor, each view clears its own half when it starts, two half EFB copies that
+  clear nothing). 30 views a second each, no more drawing than one player; each view gets half
+  the picture's aspect, the mirror is off. Timing: a render shows the scene built in the game's
+  previous frame from the camera of the frame before, so the car changes at every STARTRENDER
+  and a render belongs to the car of two STARTRENDERs before; the HUD and the view's course
+  setup built in a frame belong to the car just given to the rig. Frameskip decides for a pair
+  of views (`naomi_2pSkip`). The second pad (GameCube port 2 / Wiimote 2) drives the CPU car.
+  FULL PHYSICS: the game's player physics runs a second time a frame for player 2 on a swapped
+  copy of its state (block 0C9008A4-0C9017D3 plus what the physics writes elsewhere), player 2's
+  pad as the JVS analog words; the CPU car's render state and AI body are put where it ends up.
+  ON RAILS: the CPU car stays a kinematic AI body, player 2 sets its speed and nudges its
+  heading. AROUND EACH CAR: the course draws 3 of its 9 areas around the view's own car's road
+  segment; for player 2's scenes the view's own and opponent segment slots are swapped around
+  the course's setSegment call (AROUND P1: player 2's view loses its scenery from ~800 m
+  apart). HUD of player 2's view: its own speed and revs (JIT hook 0C0C9A98, `naomi_2pHud`).
+  2P log 1 (a day course, in-car, two runs; P2 drove up to 181 km/h and steered, sat at 1-11
+  km/h for ~50 s with the gas held, then drove on; cars up to ~670 road segments (~2 km, ~3.1 m
+  a segment) apart): every frame drawn, 56-60 emulated fps the first ~80 s (p50 16.3-17.3 ms: `sh4` 8.55-8.8, `elan` 3.4-3.9,
+  `rend` ~1.0, sound ~2.5), 54-58 later (p50 17.5-18, 360-410 lists a render), 50-54 in a
+  stretch ~2 km apart under another camera (the renderer building 430-1150 GPU programs in 2 s,
+  GPU waits, `rend` tail 6-7 ms: two cars bring in new scenery twice as often). FRAMESKIP AUTO:
+  100% the whole race (59.5-60.1), 44-60 renders shown a second (mostly 52-59, 26-29 a player).
+  Left and right views equal every 10 s; 600 physics runs per 10 s (every frame); the course
+  placed around player 2 for all its views. Against log 25's single-player day race (p50
+  15.5-16.3, `sh4` 7.7-8.3) 2 PLAYERS costs ~1 ms a frame, mostly `sh4`, if the course is
+  comparable (not known). Built after it, **awaiting 2P log 2**: a `[2P]   player 2's physics:`
+  line every 10 s (ms a run on average and the shortest, + the state swaps; the average can
+  take in sound/timer work serviced in between), and the `[game] controllers` line fixed (it
+  never printed, most likely because a GameCube pad read twice in one SI poll answers a
+  transfer error, which PAD_ScanPads leaves out of its connected mask while keeping the
+  buttons, so the mask never held steady; now a device counts if it answered in any of the
+  last 60 reads). Still open:
+  a GameCube pad on port 2 (did not answer in the first test, never retested with the log
+  line); which controller drove player 2 in 2P log 1 is not known. Known limits: no manual
+  shifting for player 2 (a manual gearbox stays in its gear), gear and ADVANTAGE in player 2's
+  HUD are player 1's, player 2's view shows its own bonnet (the CPU car is drawn whole). Game
+  addresses and how they were found: top of `port/emu/naomi/naomi_2p.cpp`. Runner tools for it:
+  `IDAS3_PHYSW`, `IDAS3_POSREAD`, `IDAS3_MODELS`, `IDAS3_WRITEVAL`, `IDAS3_2P_HOLD`,
+  `IDAS3_TIMELINE`, flags `--two-player`, `--p2-car`, `--p2-scenery`.
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
 - Menus/attract/car select: 100% speed. Race, every frame drawn (FRAMESKIPPING 0, MIRROR OFF,
   SMALL 3D 4 px): the day course of logs 21/23 at **100% in the in-car view** (log 25: 59.4-60.1
@@ -87,7 +90,11 @@ it exists.
   outside models (a dropped race frame's walk reads ~1700 command headers on the runner, so ~0.7
   us each on a Wii: about one miss apiece; a drawn one ~3400); new
   `[prof]   ELAN walk:` line splits the walk between dropped and other frames (ms, commands read,
-  ns a command).
+  ns a command). First numbers (2P log 1, both runs 2 PLAYERS on a day course, PREFETCH ON): a
+  dropped frame's walk 0.77-0.98 ms, 1580-2100 headers, 460-510 ns each; a drawn one 2.3-2.7 ms,
+  2960-3500 headers, 760-810 ns. Against the ~700 ns estimated before, dropped frames (models
+  stepped over, so nearly all of the walk in lists outside models, where it prefetches) look ~30%
+  faster per header and drawn ones not; no OFF run yet, so **still to A/B** (ELAN PREFETCH OFF).
 - Log 24 (2026-11-05, night Akina uphill, two runs). Every frame
   drawn: as log 23 (48-54 fps, p50 17.7-20.1; COLOUR LISTS took Akina's ~24 CPU-fed colour vertices
   to 0, nothing wrong seen). FRAMESKIP AUTO: only 80-88% speed and ~12 renders shown a second,
@@ -390,6 +397,10 @@ GUARD's read-only pages); `[CC]` JIT call-outs into C
   over 50 ms not caught up), so nothing may block on the audio ring in that mode: a block there
   turns into more samples (log 24: 25% of the time in `snd`, AUTO at 80% speed). `snd` in FPROF is
   that wait (`SndWaitTicks`); AUDIO STATS ON logs the ring's underruns, drops and waits.
+- libogc's `PAD_ScanPads` (disassembled from libogc.a): a GameCube pad that answers PAD_ERR_TRANSFER
+  (read twice in one SI poll; the game reads its controls once or twice a frame) keeps its last
+  buttons but is left out of the returned connected mask, so that mask flickers. Never treat one
+  read's mask as "connected"; only PAD_ERR_NO_CONTROLLER means the pad is gone.
 - Writing the log with fflush+fsync per line cost ~10 ms spikes: keep log writes going through
   the async ring during the game.
 - Text on screen is 8x16 sprites whose 13th vertex word repeats the character code (handy to

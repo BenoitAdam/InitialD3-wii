@@ -372,6 +372,11 @@ bool s_p2Ready = false;    // s_p2 holds player 2's car
 bool s_raceRunning = false;
 bool s_inP2Run = false;    // the physics running now is player 2's
 u32 s_p2Runs = 0;          // for the [2P] line
+// What FULL PHYSICS costs, on the host clock (elan_NowNs units): the game's
+// physics run again for player 2, and the state swaps around it. A run can
+// take in the sound and timers serviced in between (or a vblank's work, on a
+// late frame), so the line gives the shortest run with the average.
+u64 s_p2T0 = 0, s_p2Code = 0, s_p2Swaps = 0, s_p2Best = ~0ull;
 
 void readWords(u32 a, u32* w, u32 n)
 {
@@ -621,10 +626,18 @@ void naomi_2pVBlank()
     if (++s_frames % 600 == 0)
     {
         if (g_p2_car_preset)
+        {
+            const double runs = s_p2Runs ? s_p2Runs : 1;
             naomi_Log("[2P] 10 s: views drawn %u left, %u right; player 2 full physics, %u runs, %.0f km/h; pad 2 "
                       "used up to gas %.2f, brake %.2f, steer %.2f\n",
                       s_drawn[0], s_drawn[1], s_p2Runs, readFloat(kCpuBody + kBodySpeed), s_padMax[0], s_padMax[1],
                       s_padMax[2]);
+            if (s_p2Runs)
+                naomi_Log("[2P]   player 2's physics: %.3f ms a run (shortest %.3f) + %.3f ms of state swaps\n",
+                          elan_TimeMs(s_p2Code) / runs, elan_TimeMs(s_p2Best), elan_TimeMs(s_p2Swaps) / runs);
+            s_p2Code = s_p2Swaps = 0;
+            s_p2Best = ~0ull;
+        }
         else
             naomi_Log("[2P] 10 s: views drawn %u left, %u right; player 2 %s, %.0f km/h; pad 2 used up to gas %.2f, "
                       "brake %.2f, steer %.2f\n",
@@ -777,6 +790,7 @@ extern "C" u32 naomi_2pPhys(u32 which)
             // Player 1's physics is done: player 2's turn. The opponent it
             // sees in the collision probes (built from the render states by
             // 0C157880) is player 1.
+            const u64 t0 = elan_NowNs();
             readWords(kBlockLo, s_p1, kBlockWords);
             readOutside(s_p1Out);
             readWords(kProbes, s_probes, kProbeWords);
@@ -787,9 +801,16 @@ extern "C" u32 naomi_2pPhys(u32 which)
             writeWords(kRenderP1, s_p2, kRenderWords);
             writeWords(kRenderCpu, s_p1, kRenderCarWords);
             s_inP2Run = true;
+            s_p2T0 = elan_NowNs();
+            s_p2Swaps += s_p2T0 - t0;
             return kRerun;
         }
         // Player 2's physics is done: back to player 1's state.
+        const u64 t1 = elan_NowNs();
+        const u64 code = t1 - s_p2T0;
+        s_p2Code += code;
+        if (code < s_p2Best)
+            s_p2Best = code;
         readWords(kBlockLo, s_p2, kBlockWords);
         readOutside(s_p2Out);
         p2AfterRun();
@@ -800,6 +821,7 @@ extern "C" u32 naomi_2pPhys(u32 which)
         writeWords(kProbes, s_probes, kProbeWords);
         s_inP2Run = false;
         s_p2Runs++;
+        s_p2Swaps += elan_NowNs() - t1;
         return 0;
     }
     // After the AI: the CPU car is player 2's (0C157A80 copies this to its

@@ -393,7 +393,7 @@ render. Menus, attract mode and car select run at 100%.
 | 11-05 | Point-lit light sets reused while a list picks the same lights | log 23 (night Akina, every frame drawn): 80-97% of sets reused, recording 3.65-4.5 -> 2.85-3.6 us a list with a box, `elan` -0.5 ms at equal load; day course in-car ~100% every frame drawn |
 | 11-05 | COLOUR LISTS (colour lists through the GPU fetch as RGB8) | log 25 (day course, in-car, every frame drawn): colour vertices 1.1-1.6K -> 0, render CPU -0.35 to -0.42 ms, **100% the whole race** (59.4-60.1 fps, p50 15.5-16.3) |
 | 11-05 | Audio push never waits with SOUND CLOCK REAL TIME | log 25 (night, AUTO): `snd` 25% -> 0, 0 drops; 100% speed with ~36 renders shown a second (29-46) |
-| 11-05 | ELAN PREFETCH (run-ahead dcbt in the lists outside models), walk split by dropped/drawn frames | awaiting log 26 |
+| 11-05 | ELAN PREFETCH (run-ahead dcbt in the lists outside models), walk split by dropped/drawn frames | 2P log 1 (2 PLAYERS, day, ON only): dropped-frame walk 460-510 ns a header (~700 estimated before), drawn 760-810; an OFF run still to come |
 | 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
@@ -503,6 +503,12 @@ From the `[CC]` and `[HOT]` censuses of a race:
   run-ahead jumps over its vertices. Nothing else changes (the runner's digests cannot move:
   MSVC has no `__builtin_prefetch`). Expected: the dropped-frame walk well under 1.2 ms, the drawn
   one under 2.4, if the 750CL keeps several prefetches in flight; to read in log 26's new line.
+  First reading, 2P log 1 (two runs in 2 PLAYERS on a day course, so not log 25's night race;
+  PREFETCH ON only): under FRAMESKIP AUTO a dropped frame's walk is 0.77-0.98 ms for 1580-2100
+  headers (460-510 ns each), a drawn one 2.3-2.7 ms for 2960-3500 (760-810 ns); every frame drawn,
+  2.4-2.7 ms for 3000-3500 (~770 ns). The dropped walk, almost all in lists outside models, is
+  ~30% under the ~700 ns a header estimated before; the drawn one, half of it inside models where
+  nothing is prefetched, is not. Needs the same course with ELAN PREFETCH OFF to count as measured.
 - **`[prof]   ELAN walk:` line** (PROFILER): the walk's time (T&L left out) and the command
   headers it read, on frames already known to be dropped (`rend_FrameKnownSkipped`, which never
   takes the verdict, so AUTO decides exactly as before) and on the others, per frame and per
