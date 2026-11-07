@@ -312,6 +312,12 @@ extern "C" u32 g_soft_float_result[2];
 // 2 PLAYERS (naomi_2p.cpp): the HUD speed of the second player's view.
 extern "C" u32 naomi_2pHudEntry(u32 pc);
 extern "C" void naomi_2pHud(u32 r14);
+extern "C" u32 naomi_2pPhysEntry(u32 pc);
+extern "C" u32 naomi_2pPhys(u32 which);
+extern "C" u32 naomi_2pCourseEntry(u32 pc);
+extern "C" void naomi_2pCourse(u32 r4);
+extern "C" u32 naomi_2pViewEntry(u32 pc);
+extern "C" void naomi_2pView(u32 which, u32 r12);
 
 // Forward decls: GPR/FPR allocation maps + flush/reload (defined later in this file).
 ppc_ireg GetIntReg(u32 reg);
@@ -3171,6 +3177,35 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	{
 		ppc_ori(ppc_rarg0,GetIntReg(reg_r14),0);	// mr rarg0,R14 (the HUD's frame)
 		ppc_call((void*)&naomi_2pHud);
+	}
+
+	// 2 PLAYERS, P2 SCENERY: this block is the course's update (r4 = the course).
+	if (naomi_2pCourseEntry(block->start))
+	{
+		ppc_ori(ppc_rarg0,GetIntReg(reg_r4),0);		// mr rarg0,R4
+		ppc_call((void*)&naomi_2pCourse);
+	}
+	// ... and the view update's setSegment call and return (r12 = the view).
+	if (const u32 view_point = naomi_2pViewEntry(block->start))
+	{
+		ppc_li(ppc_rarg0,view_point);
+		ppc_ori(ppc_rarg1,GetIntReg(reg_r12),0);	// mr rarg1,R12
+		ppc_call((void*)&naomi_2pView);
+	}
+
+	// 2 PLAYERS, FULL PHYSICS: this block is a return in the drivers update;
+	// the C side may send the CPU back to run the player's physics again (for
+	// player 2), as the REFLECTIONS exit above does.
+	if (const u32 phys_point = naomi_2pPhysEntry(block->start))
+	{
+		ppc_li(ppc_rarg0,phys_point);
+		ppc_call((void*)&naomi_2pPhys);
+		ppc_cmpi(ppc_cr0,ppc_rrv0,0,0);
+		ppc_label* stay=ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq stay
+		ppc_ori(ppc_next_pc,ppc_rrv0,0);		// mr next_pc,r3
+		ppc_jump(loop_no_update);
+		stay->MarkLabel();
 	}
 
 	// JIT_HOTBLOCKS: bump this block's execution counter. Emitted AFTER

@@ -199,10 +199,148 @@ static void timelineNote(u32 a, u32 size, u32 write, u64 data)
            write ? 'W' : 'R', size * 8, (unsigned long long)data, curr_pc, pr, g_elan_exec_seq);
 }
 
+// env IDAS3_PHYSW=FROM:TO: every word of the player's physics block
+// (0C9008A4-0C9017D3) written in those frames, inside the player's physics
+// (from 0C157880's entry to the return at 0C159944) or outside it, with the
+// last writer: which fields are the car's own and which the race's (2 PLAYERS,
+// a second physics run for player 2).
+static const u32 kPhysLo = 0x0C9008A4, kPhysHi = 0x0C9017D4;
+static u32 s_physFrom, s_physTo;
+static bool s_inPhys;
+struct PhysWord
+{
+    u32 inside, outside, pcIn, pcOut;
+    u64 lastIn, lastOut;
+};
+static PhysWord s_physW[(kPhysHi - kPhysLo) / 4];
+
+// Words the physics writes outside the block (stack excepted): the car's state
+// kept elsewhere.
+static std::map<u32, std::pair<u32, u32>> s_physOut;   // word -> (writes, last pc)
+
+static void physNote(u32 a, u32 size, u64 data)
+{
+    const u32 sp = r[15] & 0x1FFFFFFF;
+    if (s_inPhys && (a < kPhysLo || a >= kPhysHi) && (a & 0x1E000000) == 0x0C000000 &&
+        !(a >= sp - 0x4000 && a < sp + 0x4000))
+        for (u32 w = a & ~3u; w < a + size; w += 4)
+        {
+            auto& e = s_physOut[w];
+            e.first++;
+            e.second = curr_pc;
+        }
+    for (u32 w = a & ~3u; w < a + size; w += 4)
+        if (w >= kPhysLo && w < kPhysHi)
+        {
+            PhysWord& p = s_physW[(w - kPhysLo) / 4];
+            if (s_inPhys)
+            {
+                p.inside++;
+                p.pcIn = curr_pc;
+                p.lastIn = data;
+            }
+            else
+            {
+                p.outside++;
+                p.pcOut = curr_pc;
+                p.lastOut = data;
+            }
+        }
+}
+
+static void physPrint()
+{
+    u32 in = 0, out = 0, both = 0;
+    for (u32 i = 0; i < (kPhysHi - kPhysLo) / 4; i++)
+    {
+        const PhysWord& p = s_physW[i];
+        if (!p.inside && !p.outside)
+            continue;
+        in += p.inside && !p.outside;
+        out += p.outside && !p.inside;
+        both += p.inside && p.outside;
+        if (p.outside)
+            printf("[physw] %08X  inside x%-5u (pc %08X)  outside x%-5u (pc %08X pr?) last %llX\n", kPhysLo + 4 * i,
+                   p.inside, p.pcIn, p.outside, p.pcOut, (unsigned long long)p.lastOut);
+    }
+    printf("[physw] words written: %u only inside the physics, %u only outside, %u both\n", in, out, both);
+    // Outside the block, by the physics: as ranges of contiguous words.
+    u32 lo = 0, hi = 0, n = 0, pc = 0;
+    auto flush = [&]() {
+        if (n)
+            printf("[physo] %08X-%08X  %u words, %u writes, last pc %08X\n", lo, hi + 3, (hi - lo) / 4 + 1, n, pc);
+    };
+    for (const auto& e : s_physOut)
+    {
+        if (n && e.first == hi + 4)
+        {
+            hi = e.first;
+            n += e.second.first;
+            pc = e.second.second;
+            continue;
+        }
+        flush();
+        lo = hi = e.first;
+        n = e.second.first;
+        pc = e.second.second;
+    }
+    flush();
+}
+
+// env IDAS3_POSREAD=FROM:TO: in those frames, from the vblank to the drivers
+// update (0C159920, where the physics starts), every 32-bit read whose value is
+// player 1's x position (render state 0C8FF388, within 0.05): where the scene
+// build takes player 1's position from. Printed at exit.
+static u32 s_posFrom, s_posTo;
+static bool s_posWindow;
+static float s_posX;
+static std::map<u64, std::pair<u32, u32>> s_posReads;   // pc << 32 | address -> (count, pr)
+
+static void posNote(u32 a, u32 size, u32 write)
+{
+    if (write || size != 4 || !s_posWindow || (a & 0x1E000000) != 0x0C000000)
+        return;
+    float v;
+    memcpy(&v, &mem_b.data[a & (RAM_SIZE - 1)], 4);
+    if (v - s_posX < 0.05f && s_posX - v < 0.05f)
+    {
+        auto& e = s_posReads[(u64)(curr_pc & 0x1FFFFFFF) << 32 | a];
+        e.first++;
+        e.second = pr;
+    }
+}
+
+// env IDAS3_WRITEVAL=FROM:TO:VALUE: every 32-bit write of VALUE (hex) in those
+// frames, with its address, pc and pr, as it happens: who writes a known word
+// (an ELAN model call into a frame's display list).
+static u32 s_wvFrom, s_wvTo, s_wvValue;
+
 static void accessHook(u32 addr, u32 size, u32 write, u64 data)
 {
     const u32 a = addr & 0x1FFFFFFF;
     const u32 f = g_host_render.vblanks;
+    if (s_wvTo && write && size >= 4 && f >= s_wvFrom && f <= s_wvTo && (u32)data == s_wvValue)
+    {
+        printf("[writeval] f%u %08X <- %08X  pc %08X pr %08X  stack:", f, a, (u32)data, curr_pc, pr);
+        // A rough backtrace: the code addresses (saved PRs) on the stack.
+        const u32 sp = r[15] & 0x1FFFFFFF;
+        u32 shown = 0;
+        for (u32 i = 0; i < 256 && shown < 16; i++)
+        {
+            u32 w;
+            memcpy(&w, &mem_b.data[(sp + 4 * i) & (RAM_SIZE - 1)], 4);
+            if ((w & 0x1FFFFFFF) >= 0x0C010000 && (w & 0x1FFFFFFF) < 0x0C240000 && !(w & 1))
+            {
+                printf(" %08X", w);
+                shown++;
+            }
+        }
+        printf("\n");
+    }
+    if (s_posTo)
+        posNote(a, size, write);
+    if (write && s_physTo && f >= s_physFrom && f <= s_physTo)
+        physNote(a, size, data);
     if (s_tlCount || s_tlTo)
         timelineNote(a, size, write, data);
     bool hit = false;
@@ -604,8 +742,35 @@ static bool s_twoPlayerHook;
 
 static void pcHook()
 {
-    if (s_twoPlayerHook && (next_pc & 0x1FFFFFFF) == 0x0C0C9BC8 && naomi_2pHudEntry(next_pc))
-        naomi_2pHud(r[14]);
+    if (s_posWindow && (next_pc & 0x1FFFFFFF) == 0x0C159920)
+        s_posWindow = false;
+    if (s_physTo)
+    {
+        const u32 p = next_pc & 0x1FFFFFFF;
+        if (p == 0x0C157880)
+            s_inPhys = true;
+        else if (p == 0x0C159944)
+            s_inPhys = false;
+    }
+    if (s_twoPlayerHook)
+    {
+        const u32 p = next_pc & 0x1FFFFFFF;
+        if (p == 0x0C0C9A98 && naomi_2pHudEntry(next_pc))
+            naomi_2pHud(r[14]);
+        else if (p == 0x0C19B060 && naomi_2pCourseEntry(next_pc))
+            naomi_2pCourse(r[4]);
+        else if (p == 0x0C05FE48 || p == 0x0C05FE6A)
+        {
+            if (const u32 which = naomi_2pViewEntry(next_pc))
+                naomi_2pView(which, r[12]);
+        }
+        else if (p == 0x0C159944 || p == 0x0C15994C)
+        {
+            if (const u32 which = naomi_2pPhysEntry(next_pc))
+                if (const u32 to = naomi_2pPhys(which))
+                    next_pc = to;
+        }
+    }
     if (s_reflectionHook)
         reflectionHook();
     if (s_probeHi)
@@ -867,9 +1032,68 @@ static void pokeAt(u32 frame)
     }
 }
 
+// env IDAS3_MODELS=FROM:TO[,FROM:TO...]: the ELAN models (offsets in ELAN RAM)
+// each of those frames calls, sorted, with the half of the 2 PLAYERS view the
+// frame builds (-1 whole picture): what a view draws, model by model.
+extern bool g_elan_model_census_on;
+extern u32 g_elan_model_census[4096];
+extern u32 g_elan_model_census_count;
+extern u32 g_elan_link_census[4096];
+extern u32 g_elan_link_census_count;
+extern "C" int naomi_2pNextHalf();
+static std::vector<std::pair<u32, u32>> s_modelRanges;
+
+static void modelCensus(u32 frame)
+{
+    if (g_elan_model_census_on)
+    {
+        std::vector<u32> m(g_elan_model_census, g_elan_model_census + g_elan_model_census_count);
+        std::sort(m.begin(), m.end());
+        m.erase(std::unique(m.begin(), m.end()), m.end());
+        printf("[models] f%u half %d: %u calls, %u models:", frame - 1, naomi_2pNextHalf(), g_elan_model_census_count,
+               (u32)m.size());
+        for (u32 off : m)
+            printf(" %X", off);
+        printf("\n");
+        // The lists followed, in order (depth:offset), as the game links them.
+        printf("[links] f%u half %d: %u:", frame - 1, naomi_2pNextHalf(), g_elan_link_census_count);
+        for (u32 i = 0; i < g_elan_link_census_count; i++)
+            printf(" %u:%X", g_elan_link_census[i] >> 28, g_elan_link_census[i] & 0x0FFFFFFF);
+        printf("\n");
+    }
+    g_elan_link_census_count = 0;
+    g_elan_model_census_count = 0;
+    g_elan_model_census_on = false;
+    for (const auto& rg : s_modelRanges)
+        g_elan_model_census_on |= frame >= rg.first && frame <= rg.second;
+}
+
+// env IDAS3_2P_HOLD=FROM-TO:CAR: 2 PLAYERS keeps the camera on one car (0
+// player, 1 CPU) in those frames instead of taking turns.
+extern "C" int g_2p_hold;
+
 void host_on_vblank()
 {
     const u32 frame = g_host_render.vblanks;
+    if (!s_modelRanges.empty())
+        modelCensus(frame);
+    static u32 holdFrom = 1, holdTo = 0;
+    static int holdCar = -1;
+    if (holdCar == -1)
+    {
+        holdCar = -2;
+        if (const char* h = getenv("IDAS3_2P_HOLD"))
+            if (sscanf(h, "%u-%u:%d", &holdFrom, &holdTo, &holdCar) != 3)
+                holdCar = -2;
+    }
+    if (holdCar >= 0)
+        g_2p_hold = frame >= holdFrom && frame <= holdTo ? holdCar : -1;
+    if (s_posTo)
+    {
+        s_posWindow = frame >= s_posFrom && frame <= s_posTo;
+        u32 bits = ReadMem32(0x0C8FF388);
+        memcpy(&s_posX, &bits, 4);
+    }
     dumpRamAt(frame);
     pokeAt(frame);
     if ((s_tlCount || s_tlTo) && frame >= s_tlFrom && frame <= s_tlTo)
@@ -1320,6 +1544,31 @@ int main(int argc, char** argv)
         }
         g_mem_access_hook = accessHook;
     }
+    if (const char* wv = getenv("IDAS3_WRITEVAL"))
+        if (sscanf(wv, "%u:%u:%x", &s_wvFrom, &s_wvTo, &s_wvValue) == 3)
+            g_mem_access_hook = accessHook;
+    if (const char* pp = getenv("IDAS3_POSREAD"))
+        if (sscanf(pp, "%u:%u", &s_posFrom, &s_posTo) == 2)
+        {
+            g_mem_access_hook = accessHook;
+            g_sh4_pc_hook = pcHook;
+        }
+    if (const char* pw = getenv("IDAS3_PHYSW"))
+        if (sscanf(pw, "%u:%u", &s_physFrom, &s_physTo) == 2)
+        {
+            g_mem_access_hook = accessHook;
+            g_sh4_pc_hook = pcHook;
+        }
+    if (const char* mc = getenv("IDAS3_MODELS"))
+        for (const char* c = mc; c && *c;)
+        {
+            u32 from = 0, to = 0;
+            if (sscanf(c, "%u:%u", &from, &to) < 2)
+                break;
+            s_modelRanges.push_back({from, to});
+            c = strchr(c, ',');
+            c = c ? c + 1 : nullptr;
+        }
     if (const char* tl = getenv("IDAS3_TIMELINE"))
     {
         int used = 0;
@@ -1437,6 +1686,12 @@ int main(int argc, char** argv)
             g_sh4_pc_hook = pcHook;
         }
     }
+    // --p2-car 0/1, --p2-scenery 0/1: P2 CAR (ON RAILS / FULL PHYSICS) and
+    // P2 SCENERY (AROUND P1 / AROUND EACH CAR), the launcher's defaults are 1.
+    if (const char* pc2 = argValue(argc, argv, "--p2-car"))
+        g_p2_car_preset = atoi(pc2);
+    if (const char* ps2 = argValue(argc, argv, "--p2-scenery"))
+        g_p2_scenery_preset = atoi(ps2);
     if (const char* mi = argValue(argc, argv, "--mirror"))
     {
         // MIRROR: 0 = the in-car view's rear-view mirror (models clipped inside
@@ -1528,7 +1783,13 @@ int main(int argc, char** argv)
     if (g_mem_access_hook)
     {
         g_mem_access_hook = nullptr;
-        printAccess();
+        if (!s_accRanges.empty())
+            printAccess();
+        if (s_physTo)
+            physPrint();
+        for (const auto& e : s_posReads)
+            printf("[posread] pc %08X pr %08X reads %08X x%u\n", (u32)(e.first >> 32), e.second.second, (u32)e.first,
+                   e.second.first);
     }
     if (s_probeHi)
         printProbe(g_host_render.vblanks - s_probeFrom);

@@ -48,12 +48,22 @@ it exists.
   (c) GameCube pads: A gas, B brake, R/L shift, the old layout as a preset. Done: (c), new
   page PLAYERS (last, one press back from GENERAL) with 2 PLAYERS (moved there from GENERAL)
   and GC PAD LAYOUT (A/B PEDALS default, R/L PEDALS (OLD)); the controls help follows it.
-  Not done, findings and plans at the top of `naomi_2p.cpp`: (a) a second run of the
-  player's physics a frame on a swapped copy of its state block; (b) the course block
-  choice follows player 1. Their presets come with them. Known limits: the rev counter,
-  gear and ADVANTAGE in player 2's HUD are player 1's; player 2's view shows its own bonnet
-  (the CPU car is drawn whole). Game addresses and how they were found: top of
-  `port/emu/naomi/naomi_2p.cpp`.
+  Round 3 (same day, owner: flicker gone; go for both, each behind a legacy/fixed preset):
+  (a) done on the runner, **awaiting the owner's Wii test**: P2 CAR (PLAYERS page) = ON
+  RAILS (OLD) / FULL PHYSICS (default): the game's player physics runs a second time a
+  frame for player 2 on a swapped copy of its state (block 0C9008A4-0C9017D3 plus what the
+  physics writes elsewhere), with player 2's pad as the JVS analog words; the CPU car is put
+  where it ends up (runner: steers, spins, crashes into barriers, drives on; player 1 drives
+  as with ON RAILS; GPU fetch/display list/box checks clean). Player 2's HUD shows its own
+  speed and revs. Not done: player 2 shifting by hand. (b) done on the runner, **awaiting
+  the Wii test**: P2 SCENERY (PLAYERS page) = AROUND P1 (OLD) / AROUND EACH CAR (default):
+  the course draws 3 of its 9 areas around the road segment of the view's own car; for
+  player 2's scenes the view's own and opponent segments are swapped around the course's
+  setSegment call (runner: player 2's view complete 1361 m ahead, player 1's untouched,
+  ADVANTAGE right). Known limits: gear and ADVANTAGE in player 2's HUD are player 1's;
+  player 2's view shows its own bonnet (the CPU car is drawn whole). Game addresses and how they were found: top of
+  `port/emu/naomi/naomi_2p.cpp`. New runner tools: `IDAS3_PHYSW`, `IDAS3_POSREAD`,
+  `IDAS3_MODELS`, `IDAS3_WRITEVAL`, `IDAS3_2P_HOLD`, flags `--p2-car`, `--p2-scenery`.
 - Boots BIOS-free, menus, attract, car select and races all work on a real Wii.
 - Menus/attract/car select: 100% speed. Race, every frame drawn (FRAMESKIPPING 0, MIRROR OFF,
   SMALL 3D 4 px): the day course of logs 21/23 at **100% in the in-car view** (log 25: 59.4-60.1
@@ -280,6 +290,12 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--area1-census` | who writes the 32-bit VRAM interface |
 | env `IDAS3_ACCESS=LO:HI[:FROM[:TO]][;...]` | every SH-4 read and write into those guest ranges in those frames, by instruction address and caller (pr), with first/last values, printed at exit: which code uses a game variable (how 2 PLAYERS' addresses were found; the run is ~2x slower) |
 | env `IDAS3_TIMELINE=FROM:TO:ADDR[-END][,...]` | every SH-4 access to those guest words or ranges (up to 8) in those frames printed as it happens (value, pc, pr, ELAN executions so far), with the vblanks and the renders (half of a 2 PLAYERS render) between them: the order of events in the game's frame (how the 2 PLAYERS render latency was found) |
+| `--p2-car 0/1`, `--p2-scenery 0/1` | P2 CAR (0 ON RAILS, 1 FULL PHYSICS) and P2 SCENERY with `--two-player 1` (the launcher's defaults: 1) |
+| env `IDAS3_PHYSW=FROM:TO` | every word of the player's physics block (0C9008A4-0C9017D3) written in those frames inside the physics (0C157880 to the return at 0C159944) or outside it (`[physw]`), and every word the physics writes outside the block (`[physo]`, stack excepted): what player 2's FULL PHYSICS run must have its own copy of |
+| env `IDAS3_POSREAD=FROM:TO` | from the vblank to the drivers update (0C159920), every 32-bit read whose value is player 1's x position: where the frame takes player 1's position from (`[posread]`) |
+| env `IDAS3_MODELS=FROM:TO[,...]` | the ELAN models (offsets) each of those frames calls and the lists it links, with the 2 PLAYERS half of the scene it builds (`[models]`, `[links]`) |
+| env `IDAS3_WRITEVAL=FROM:TO:VALUE` | every 32-bit write of VALUE in those frames, address, pc and pr (`[writeval]`) |
+| env `IDAS3_2P_HOLD=FROM-TO:CAR` | 2 PLAYERS keeps the camera on one car (0 player, 1 CPU) in those frames |
 | env `IDAS3_POKE=FROM-TO:ADDR=VALUE[;...]` | a guest word written at every vblank in those frames: try a game variable's effect in the snapshots |
 | env `IDAS3_DUMP_AT=F1,F2,...` (+ `IDAS3_DUMP_DIR`) | guest RAM dumps `ram_F.bin` at those frames (32 MB each; never commit them) |
 | `--dump-ram/-vram/-aica/-elan FILE` | memory dumps at the end (never commit them) |

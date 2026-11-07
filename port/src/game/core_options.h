@@ -113,6 +113,8 @@ enum CoreOptionId
     OPT_ELAN_PREFETCH,
     OPT_TWO_PLAYER,
     OPT_GC_LAYOUT,
+    OPT_P2_CAR,
+    OPT_P2_SCENERY,
     kCoreOptionCount
 };
 
@@ -325,6 +327,14 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // pedals, and the first one, the analog triggers the pedals.
     {"GC PAD LAYOUT ", "GameCube pads: A/B gas/brake and R/L shift, or R/L gas/brake and A/B shift",
      PAGE_PLAYERS, 0, 2, {"A/B PEDALS", "R/L PEDALS (OLD)"}, {0, 1}},
+    // 2 PLAYERS (naomi_2p.cpp): the CPU car's own AI body steered by player
+    // 2, or the player's physics run a second time a frame for player 2.
+    {"P2 CAR        ", "2 PLAYERS: player 2 nudges the CPU car along its line, or drives it with the real physics",
+     PAGE_PLAYERS, 1, 2, {"ON RAILS (OLD)", "FULL PHYSICS"}, {0, 1}},
+    // 2 PLAYERS (naomi_2p.cpp): the course drawn around player 1 only (player
+    // 2's view goes empty ~800 m away), or around the car each view follows.
+    {"P2 SCENERY    ", "2 PLAYERS: course drawn around player 1 only (lighter), or around each player's car",
+     PAGE_PLAYERS, 1, 2, {"AROUND P1 (OLD)", "AROUND EACH CAR"}, {0, 1}},
 };
 
 } // namespace idas3

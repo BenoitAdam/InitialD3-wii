@@ -79,6 +79,8 @@ struct Naomi2pPad
     bool shiftUp, shiftDown;
 };
 extern "C" int g_two_player_preset;
+extern "C" int g_p2_car_preset;       // 0 ON RAILS, 1 FULL PHYSICS
+extern "C" int g_p2_scenery_preset;   // 0 AROUND P1, 1 AROUND EACH CAR
 void naomi_2pSetPad(const Naomi2pPad& pad);
 const Naomi2pPad& naomi_2pPad();
 void naomi_2pVBlank();
@@ -88,6 +90,20 @@ void naomi_2pStartRender();
 // naomi_2pHud with the guest's r14 at that block's entry).
 extern "C" u32 naomi_2pHudEntry(u32 pc);
 extern "C" void naomi_2pHud(u32 r14);
+// P2 CAR = FULL PHYSICS: nonzero (1, 2) if the block at pc is one of the two
+// returns in the drivers update where the player's physics is run again for
+// player 2; the CPU back ends then call naomi_2pPhys(that) at the block's
+// entry and continue at the address it returns, if not 0.
+extern "C" u32 naomi_2pPhysEntry(u32 pc);
+extern "C" u32 naomi_2pPhys(u32 which);
+// P2 SCENERY: nonzero if the block at pc is the course's update (the CPU back
+// ends then call naomi_2pCourse with the guest's r4 at its entry).
+extern "C" u32 naomi_2pCourseEntry(u32 pc);
+extern "C" void naomi_2pCourse(u32 r4);
+// ... and 1 or 2 if it is the view update's setSegment call or its return
+// (naomi_2pView(that, the guest's r12) at the block's entry).
+extern "C" u32 naomi_2pViewEntry(u32 pc);
+extern "C" void naomi_2pView(u32 which, u32 r12);
 // SOFT FLOAT (naomi_softfloat.cpp): the native version of the game's software
 // double divide or multiply starting at pc (null: not one, or the option is
 // off). Called with r4-r7, it returns 0 to leave the call to the game's code,

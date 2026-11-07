@@ -38,6 +38,31 @@ int g_mirror_preset = 1;
 int g_elan_prefetch_preset = 1;
 }
 
+#if HOST_OS != OS_WII
+// Runner (env IDAS3_MODELS, run_main.cpp): the ELAN offset of every model the
+// game calls, while on.
+bool g_elan_model_census_on = false;
+u32 g_elan_model_census[4096];
+u32 g_elan_model_census_count = 0;
+u32 g_elan_link_census[4096];        // lists followed (N2 link targets), depth << 28 | offset
+u32 g_elan_link_census_count = 0;
+#define MODEL_CENSUS(off)                                                                                      \
+    do                                                                                                         \
+    {                                                                                                          \
+        if (g_elan_model_census_on && g_elan_model_census_count < 4096)                                        \
+            g_elan_model_census[g_elan_model_census_count++] = (off);                                          \
+    } while (0)
+#define LINK_CENSUS(off, depth)                                                                                \
+    do                                                                                                         \
+    {                                                                                                          \
+        if (g_elan_model_census_on && g_elan_link_census_count < 4096)                                         \
+            g_elan_link_census[g_elan_link_census_count++] = (u32)(depth) << 28 | (off);                       \
+    } while (0)
+#else
+#define MODEL_CENSUS(off) do { } while (0)
+#define LINK_CENSUS(off, depth) do { } while (0)
+#endif
+
 namespace {
 
 // TA parameter types (first word, bits 31-29)
@@ -762,6 +787,7 @@ void execute(const u8* data, u32 size, u32 depth)
         case N2_MODEL:
         {
             const u32 modelOffset = word(data, 4) & 0x1FFFFFF8, modelSize = word(data, 6);
+            MODEL_CENSUS(modelOffset);
             if (s_walk)
                 s_walk->skel = skelMix(skelMix(s_walk->skel, modelOffset), modelSize);
             // The model's user clip (the in-car view's rear-view mirror is a
@@ -820,6 +846,7 @@ void execute(const u8* data, u32 size, u32 depth)
             else if (listSize)
             {
                 const u8* list = elanRamPtr(offset, listSize);
+                LINK_CENSUS(offset & 0x0FFFFFFF, depth > 15 ? 15 : depth);
                 if (list)
                 {
                     st.lists++;
