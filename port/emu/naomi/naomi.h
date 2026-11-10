@@ -122,6 +122,7 @@ extern "C" int g_motion_fx_preset;      // 0 OFF, 1 SPEED BLUR, 2 FRAME BLEND, 3
 constexpr u32 kMotionMaskBytes = 640u * 576u;
 inline bool naomi_MotionInBetween() { return g_motion_fx_preset == 3 || g_motion_fx_preset == 4; }
 extern "C" int g_motion_level_preset;   // 1 LOW, 2 MEDIUM, 3 HIGH
+extern "C" int g_between_warp_preset;   // IN-BETWEEN picture: 0 SMOOTH (one pass), 1 BANDS (three depth bands), 2 ROTATION ONLY, 3 NO MOVE
 extern "C" bool g_motion_trace_now;     // runner: IDAS3_MOTION's frames
 extern "C" bool naomi_Motion(int half, NaomiMotion* m);
 extern "C" void naomi_MotionProjection(float fx, float tx, float fy, float ty);

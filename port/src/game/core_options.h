@@ -118,6 +118,7 @@ enum CoreOptionId
     OPT_MOTION_FX,
     OPT_MOTION_LEVEL,
     OPT_TEST_MODE,
+    OPT_BETWEEN_WARP,
     kCoreOptionCount
 };
 
@@ -349,6 +350,11 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // the BIOS SYSTEM MENU (game_runner.cpp, pollControls), so it is off unless asked.
     {"TEST MODE     ", "TEST button (D-pad LEFT, every pad): OFF ignored, ON enters the game's test menu",
      PAGE_PLAYERS, 0, 2, {"OFF", "ON"}, {0, 1}},
+    // IN-BETWEEN's picture. Real-Wii logs 2026-11-10: BANDS tears the opponent
+    // car, SMOOTH (one pass) tears the scenery too. ROTATION ONLY and NO MOVE
+    // are tests to tell the warp's depth guess from the path itself.
+    {"BETWEEN WARP  ", "IN-BETWEEN picture: BANDS, SMOOTH, ROTATION ONLY (turn, no depth), NO MOVE (test: same picture)",
+     PAGE_DEPTH_2, 0, 4, {"BANDS (OLD)", "SMOOTH", "ROTATION ONLY", "NO MOVE (TEST)"}, {1, 0, 2, 3}},
 };
 
 } // namespace idas3

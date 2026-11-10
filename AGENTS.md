@@ -49,6 +49,32 @@ it exists.
   frame drawn, `0.0 MOTION FX in-between frames` all through. Race (from frame ~7560) 56-61 emulated
   fps, p50 16.2-17.7 ms, `rend` 0.95-1.6, walk ~800 ns a command; no hang, no memory trouble. Still
   to test: FRAMESKIPPING AUTO with IN-BETWEEN and BLUR + IN-BETWEEN, in-car.
+  MOTION FX log 2 (2026-11-10, 1 player, FRAMESKIPPING AUTO, in-car; `..._1P_FRAMEBLEND`, `..._1P_IN_BETWEEN`):
+  both ~100% speed in the race, p50 ~16.5-16.9 ms; IN-BETWEEN shows 15-24 in-between frames a second, no
+  measurable cost. Owner: FRAME BLEND is ok; IN-BETWEEN and BLUR + IN-BETWEEN **tear the opponent car**
+  ("horrible"). Cause not proven (GX output cannot be seen on Windows); most likely the three depth bands:
+  each repaints the pixels deeper than 20 / 120 m with a shift from the corridor *guess* of depth, which a
+  car (not on the corridor's model: roof = "sky", wheels = "road") breaks, so a car near a band edge is cut
+  along the contour into pieces shifted by different amounts. Built after it, **awaiting log 3**: BETWEEN WARP
+  (RENDERING 2, last row, last in `CoreOptionId`, default SMOOTH): SMOOTH = one pass over the scenery with
+  the same guess (no contour, so no seam; a car is bent smoothly with the field, and it is warped as if
+  static: its own speed against ours is ignored); BANDS (OLD) = the three passes. Not done, if SMOOTH is not
+  enough: the opponent's own relative motion/position (render state 0C8FF430, the `naomi_motion.cpp` `Car`
+  has it; the up/lateral axes are not identified yet), or depth from `GX_PeekZ` at the grid vertices (the EFB
+  depth is intact in a kept frame; W = p6 / (z - 1 + p5)). To test: IN-BETWEEN, then BLUR + IN-BETWEEN,
+  BETWEEN WARP SMOOTH vs BANDS (OLD), in-car, FRAMESKIPPING AUTO, watching the opponent car and the road.
+  MOTION FX log 3 (2026-11-10, `idas3wii_log_blur` = BANDS, `..._blur_prev` = SMOOTH, MOTION FX IN-BETWEEN,
+  AUTO, in-car): owner: both tear heavily, SMOOTH worse, the scenery too. Speed fine in both (100%, 17-21
+  in-between frames a second of ~29 dropped; so ~10 dropped frames a second keep the old picture). SMOOTH
+  hypothesis wrong: it dropped the bands that kept the corridor guess (walls 3.5 m out) off far scenery, so
+  buildings 20-60 m away were over-shifted. Best remaining guess for the car: the warp moves it as a static
+  object while it keeps pace with us (a 5-10% size pulse at 30 Hz), plus the guess breaking on a body that
+  is not road. Not proven. Built after it: BETWEEN WARP values ROTATION ONLY (the turn, no step: exact at
+  any depth) and NO MOVE (TEST: the same picture through the same path), default back to BANDS (OLD). Reading
+  the owner's answer: NO MOVE tears => the path (copy/grid/present), not the warp; NO MOVE clean but ROTATION
+  ONLY tears => the yaw read (sign/size); both clean => the translation/depth guess is the cause, and the way
+  on is the opponent's own state (0C8FF430; axes unidentified, print its position/velocity with
+  IDAS3_MOTION on the runner) or the depth at the grid vertices (GX_PeekZ).
 - **2 PLAYERS (branch `two-player-splitscreen`), works on a real Wii** (owner, 2P log 1,
   2026-11-07: "amazing it works"). Launcher page PLAYERS (last page, one press back from
   GENERAL): 2 PLAYERS (OFF / SIDE BY SIDE), GC PAD LAYOUT (A/B PEDALS default, R/L PEDALS

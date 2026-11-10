@@ -7335,8 +7335,13 @@ static void mfx_inbetween()
   if (!naomi_Motion(-1, &m) || !m.inCar || m.focal < 50.f)
     return;
   static const float kAmount[4] = {0.f, 0.5f, 0.8f, 1.f};
-  const float step = m.step * kAmount[mfx_level()], yaw = m.yawStep * kAmount[mfx_level()];
-  if (step < 0.01f && fabsf(yaw) < 0.0005f)
+  // BETWEEN WARP 2 ROTATION ONLY: the turn, no step (a rotation is exact at any
+  // depth, so nothing can tear); 3 NO MOVE: the picture again through this same
+  // path (a test of the path itself).
+  const int warpMode = g_between_warp_preset;
+  const float step = warpMode >= 2 ? 0.f : m.step * kAmount[mfx_level()];
+  const float yaw = warpMode >= 3 ? 0.f : m.yawStep * kAmount[mfx_level()];
+  if (warpMode < 2 && step < 0.01f && fabsf(yaw) < 0.0005f)
     return;   // standing still: the picture again is right
   const int thr8 = mfx_thr8(f);
   if (thr8 < 3)
@@ -7367,7 +7372,12 @@ static void mfx_inbetween()
   const float cs = cosf(yaw), sn = sinf(yaw);
   const float hudW = mfx_hud_w(f);
   static const float kPass[3] = {0.f, 20.f, 120.f};   // metres
-  for (int pass = 0; pass < 3; pass++)
+  // BETWEEN WARP SMOOTH: one pass over the whole scenery. The bands repaint
+  // pixels by their real depth but with a guessed shift, so a car (not on the
+  // corridor's model) was cut along the 20 m and 120 m contours into pieces
+  // moved by different amounts: the tearing. One pass has no contour.
+  const int passes = warpMode == 1 ? 3 : 1;
+  for (int pass = 0; pass < passes; pass++)
   {
     const float wmin = pass ? kPass[pass] : hudW;
     for (int k = 0; k < s_mfx_nx * s_mfx_ny; k++)
