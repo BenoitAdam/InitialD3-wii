@@ -106,6 +106,7 @@ void naomi_VBlank()
 #endif
     naomi_CartSlice();    // the read-ahead thread's time, when it has work
     naomi_2pVBlank();     // 2 PLAYERS: whose turn the next frame is
+    naomi_MotionVBlank(); // MOTION FX: the race camera's motion
     if (s_frameHook && s_frameInfo.vblanks % s_framePeriod == 0)
     {
         s_frameInfo.pc = next_pc;

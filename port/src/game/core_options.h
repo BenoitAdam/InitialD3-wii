@@ -115,6 +115,8 @@ enum CoreOptionId
     OPT_GC_LAYOUT,
     OPT_P2_CAR,
     OPT_P2_SCENERY,
+    OPT_MOTION_FX,
+    OPT_MOTION_LEVEL,
     kCoreOptionCount
 };
 
@@ -335,6 +337,13 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // 2's view goes empty ~800 m away), or around the car each view follows.
     {"P2 SCENERY    ", "2 PLAYERS: course drawn around player 1 only (lighter), or around each player's car",
      PAGE_PLAYERS, 1, 2, {"AROUND P1 (OLD)", "AROUND EACH CAR"}, {0, 1}},
+    // Smoother races at 30 fps (gxRend.cpp mfx_*, emu/naomi/naomi_motion.cpp):
+    // the scenery only, the HUD is left sharp. IN-BETWEEN fills the frames the
+    // frameskip drops, in the in-car view; it needs FRAMESKIPPING.
+    {"MOTION FX     ", "race smoothing, HUD kept sharp; IN-BETWEEN fills dropped frames (in-car, needs frameskip)",
+     PAGE_DEPTH_2, 0, 5, {"OFF", "SPEED BLUR", "FRAME BLEND", "IN-BETWEEN", "BLUR + IN-BETWEEN"}, {0, 1, 2, 3, 4}},
+    {"MOTION LEVEL  ", "MOTION FX strength: blur length, blend opacity, how far an in-between frame moves",
+     PAGE_DEPTH_2, 1, 3, {"LOW", "MEDIUM", "HIGH"}, {1, 2, 3}},
 };
 
 } // namespace idas3

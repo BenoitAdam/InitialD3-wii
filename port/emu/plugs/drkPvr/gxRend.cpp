@@ -6779,6 +6779,15 @@ static int trans_strip_cmp(const void *a, const void *b)
 #define FB2D_H 480
 static u16 fb2d_tex[FB2D_W * FB2D_H] ATTRIBUTE_ALIGN(32);
 
+#if defined(BUILD_NAOMI2)
+// MOTION FX (the functions are after split2p_clear_half): FRAME BLEND keeps
+// the last drawn frame in fb2d_tex, so every other user of it says so here.
+static bool s_mfx_prev_ok = false;
+static inline void mfx_scratch_used() { s_mfx_prev_ok = false; }
+#else
+static inline void mfx_scratch_used() {}
+#endif
+
 // ── RENDER_TO_TEXTURE() state ────────────────────────────────────────────────
 // Set by StartRender() around the DoRender() call for an RTT frame; DoRender()
 // swaps its canvas/viewport to the RTT target size and hands its tail to
@@ -6842,7 +6851,563 @@ static void split2p_clear_half(int half)
   GX_SetTexCopySrc((u16)x, 0, (u16)w, rmode->efbHeight);
   GX_SetTexCopyDst((u16)w, rmode->efbHeight, GX_TF_RGB565, GX_FALSE);
   GX_CopyTex(fb2d_tex, GX_TRUE);
+  mfx_scratch_used();
 }
+
+#if defined(BUILD_NAOMI2)
+// ── MOTION FX (naomi/naomi_motion.cpp; launcher RENDERING 2) ─────────────────
+// Smoothing a race shown at 30 frames a second, three ways (owner, 2026-11-10):
+//   SPEED BLUR   each drawn frame blurred along the way the scene moves:
+//                outward from the vanishing point with the speed (more at the
+//                sides and bottom), sideways when the car turns.
+//   FRAME BLEND  each drawn frame mixed with the last drawn one.
+//   IN-BETWEEN   a frame the frameskip drops shows the last drawn picture
+//                moved on by one frame of the car's travel and turning (the
+//                in-car view only: the chase view has the car on screen, which
+//                does not move with the scenery), instead of nothing new.
+//
+// The HUD is not drawn last (runner, IDAS3_STRIP_ORDER: the time, map, rev
+// counter and panels are an ELAN group at the start of the translucent list,
+// before the translucent scenery and the punch-through trees), but all of it
+// is nearer than W 0.15 and the scenery all farther than W 0.25 (bar a few
+// dozen pixels clipped at the near plane). So every effect is drawn after the
+// whole frame, as quads at W = MFX_HUD_W with a GREATER depth test: only the
+// scene's pixels change. Where a blur or a moved picture would fetch a HUD
+// pixel, a copy of the depth's high byte (GX_TF_Z8, as AUTOSORT copies it)
+// makes that fetch transparent (TEV alpha compare), so the HUD leaves no smear.
+//
+// Scratch: fb2d_tex (600 KB), idle during a 3D render (the 2D present and the
+// RTT write-back use it outside one, 2 PLAYERS' half clear before the draw).
+// IN-BETWEEN keeps the drawn frame in the EFB (its display copy does not
+// clear: the next render's start clears it if no in-between came, mfx_settle)
+// and has its own Z8 buffer (_vmem.cpp leaves the heap that much more).
+#include "naomi/naomi.h"
+#include <math.h>
+
+#define MFX_HUD_W 0.2f      // between the HUD (W <= 0.15) and the scenery (W >= 0.25)
+#define MFX_GX    16        // grid cells across the view
+#define MFX_GY    12        // and down
+#define MFX_NX    (MFX_GX + 3)   // grid lines, the mirror's two edges included
+#define MFX_NY    (MFX_GY + 3)
+
+static inline bool mfx_blur_mode()    { return g_motion_fx_preset == 1 || g_motion_fx_preset == 4; }
+static inline bool mfx_blend_mode()   { return g_motion_fx_preset == 2; }
+static inline bool mfx_between_mode() { return g_motion_fx_preset == 3 || g_motion_fx_preset == 4; }
+static inline int mfx_level()
+{
+  return g_motion_level_preset < 1 ? 1 : g_motion_level_preset > 3 ? 3 : g_motion_level_preset;
+}
+
+struct MfxFrame
+{
+  float dcw, dch;      // canvas, DC pixels
+  float vpx, vpw;      // viewport, EFB pixels
+  float p5, p6, minZ;  // screen depth = 1 - p5 + p6 / W (DoRender's projection)
+  Mtx44 proj;
+  u32 mirror;          // the in-car mirror's user clip (bit 31 + tile rect), 0 none
+  int half;            // 2 PLAYERS half, -1 whole picture
+};
+static MfxFrame s_mfx;               // the render in flight
+static MfxFrame s_mfx_kept;          // the drawn frame left in the EFB for an in-between
+static bool s_mfx_efb_kept = false;
+static u32 s_mfx_mirror_next = 0;    // mirror seen since the last STARTRENDER (the scene being built)
+static u32 s_mfx_mirror_cur = 0;     // ... in the scene this render draws
+static u8 *s_mfx_mask = NULL;        // IN-BETWEEN: the depth mask (Z8), kMotionMaskBytes
+static int s_mfx_slot = 0;           // FRAME BLEND: the slot this frame's copy goes to
+static u32 s_mfx_prev_key = 0, s_mfx_prev_vbl = 0;
+static u32 s_mfx_vblanks = 0;
+static u32 s_mfx_shown_between = 0;  // [prof] frames shown per second
+
+struct MfxVtx
+{
+  float x, y;   // EFB pixels
+  float u, v;
+  u8 a;
+};
+static MfxVtx s_mfx_v[MFX_NX * MFX_NY];
+static float s_mfx_lx[MFX_NX], s_mfx_ly[MFX_NY];
+static int s_mfx_nx, s_mfx_ny;
+static float s_mfx_mx0, s_mfx_my0, s_mfx_mx1, s_mfx_my1;   // mirror, EFB pixels (none: mx1 < mx0)
+
+static inline float mfx_ramp(float v, float lo, float hi)
+{
+  return v <= lo ? 0.f : v >= hi ? 1.f : (v - lo) / (hi - lo);
+}
+
+static inline float mfx_smooth(float lo, float hi, float v)
+{
+  const float t = mfx_ramp(v, lo, hi);
+  return t * t * (3.f - 2.f * t);
+}
+
+// The quads' W: past the HUD, and never in front of the frame's near plane.
+static float mfx_hud_w(const MfxFrame &f)
+{
+  const float w = f.minZ * 1.001f;
+  return MFX_HUD_W > w ? MFX_HUD_W : w;
+}
+
+// The same split in the Z8 copy (depth bits 23:16): below it is the scene.
+// Under 3 there is no telling the two apart: no masked effect that frame.
+static int mfx_thr8(const MfxFrame &f)
+{
+  const float d = 1.f - f.p5 + f.p6 / mfx_hud_w(f);
+  const int t = (int)(d * 256.f);
+  return t < 0 ? 0 : t > 255 ? 255 : t;
+}
+
+// The view in the EFB as a copy rectangle: whole 16-pixel columns.
+static void mfx_copy_rect(const MfxFrame &f, u32 &x, u32 &w)
+{
+  const u32 x0 = (u32)(f.vpx + 0.5f) & ~15u;
+  u32 x1 = ((u32)(f.vpx + f.vpw + 0.5f) + 15u) & ~15u;
+  if (x1 > rmode->fbWidth)
+    x1 = rmode->fbWidth;
+  x = x0;
+  w = x1 - x0;
+}
+
+// EFB copies are taken without the display copy's vertical filter (it would
+// blend depth rows, and soften a picture that gets it again on display).
+static void mfx_copy_begin()
+{
+  GX_SetCopyFilter(GX_FALSE, NULL, GX_FALSE, NULL);
+  GX_PixModeSync();
+}
+
+static void mfx_copy_end()
+{
+  GX_PixModeSync();
+  GX_SetCopyFilter(rmode->aa, rmode->sample_pattern, GX_TRUE, rmode->vfilter);
+  GX_InvalidateTexAll();   // the copies must not meet stale TMEM lines
+}
+
+static void mfx_load_tex(void *buf, u32 w, u32 h, u8 fmt, u8 filter, u8 map)
+{
+  GXTexObj t;
+  GX_InitTexObj(&t, buf, (u16)w, (u16)h, fmt, GX_CLAMP, GX_CLAMP, GX_FALSE);
+  GX_InitTexObjLOD(&t, filter, filter, 0, 0, 0, GX_FALSE, GX_FALSE, GX_ANISO_1);
+  GX_LoadTexObj(&t, map);
+}
+
+// The pipeline for the effect quads. masked: TEXMAP1 is the Z8 copy and a
+// fetch of a HUD pixel (Z8 >= thr8) comes out transparent; TEXMAP0 the picture.
+static void mfx_pipe(const MfxFrame &f, bool masked, int thr8)
+{
+  GX_SetVtxAttrFmt(GX_VTXFMT3, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+  GX_SetVtxAttrFmt(GX_VTXFMT3, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+  GX_SetVtxAttrFmt(GX_VTXFMT3, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+  GX_ClearVtxDesc();
+  GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+  GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+  GX_SetNumChans(1);
+  GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, 0, GX_DF_NONE, GX_AF_NONE);
+  GX_SetNumTexGens(1);
+  GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
+  GX_LoadProjectionMtx((f32(*)[4])f.proj, GX_PERSPECTIVE);
+  Mtx mv;
+  guMtxIdentity(mv);
+  GX_LoadPosMtxImm(mv, GX_PNMTX0);
+  GX_SetCurrentMtx(GX_PNMTX0);
+  GX_SetViewport(f.vpx, 0, f.vpw, rmode->efbHeight, 0, 1);
+  if (f.half >= 0)
+  {
+    const u32 x0 = f.half ? s_2p_mid : 0, x1 = f.half ? rmode->fbWidth : s_2p_mid;
+    GX_SetScissor(x0, 0, x1 - x0, rmode->efbHeight);
+  }
+  else
+    GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
+  s_tileclip_applied = 0;
+  GX_SetCullMode(GX_CULL_NONE);
+  GX_SetZCompLoc(GX_TRUE);
+  GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+  GX_SetZMode(GX_TRUE, GX_GREATER, GX_FALSE);
+  GX_SetColorUpdate(GX_TRUE);
+  GX_SetAlphaUpdate(GX_FALSE);
+  GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
+  GX_SetTevDirect(GX_TEVSTAGE0);
+  GX_SetTevDirect(GX_TEVSTAGE1);
+  if (masked)
+  {
+    // Stage 0: alpha = (thr8 > Z8 of the fetched pixel) ? vertex alpha : 0.
+    const GXColor k = {0, 0, 0, (u8)thr8};
+    GX_SetTevKColor(GX_KCOLOR3, k);
+    GX_SetNumTevStages(2);
+    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP1, GX_COLOR0A0);
+    GX_SetTevKAlphaSel(GX_TEVSTAGE0, GX_TEV_KASEL_K3_A);
+    GX_SetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO);
+    GX_SetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+    GX_SetTevAlphaIn(GX_TEVSTAGE0, GX_CA_KONST, GX_CA_TEXA, GX_CA_RASA, GX_CA_ZERO);
+    GX_SetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_COMP_A8_GT, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+    // Stage 1: the picture's colour with that alpha.
+    GX_SetTevOrder(GX_TEVSTAGE1, GX_TEXCOORD0, GX_TEXMAP0, GX_COLORNULL);
+    GX_SetTevColorIn(GX_TEVSTAGE1, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_TEXC);
+    GX_SetTevColorOp(GX_TEVSTAGE1, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+    GX_SetTevAlphaIn(GX_TEVSTAGE1, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
+    GX_SetTevAlphaOp(GX_TEVSTAGE1, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+  }
+  else
+  {
+    GX_SetNumTevStages(1);
+    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
+    GX_SetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_TEXC);
+    GX_SetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+    GX_SetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_RASA);
+    GX_SetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+  }
+}
+
+// Back to the state a frame starts from (DoRender sets the rest per frame).
+static void mfx_done()
+{
+  GX_SetTevKAlphaSel(GX_TEVSTAGE0, GX_TEV_KASEL_1);
+  GX_SetNumTevStages(1);
+  GX_SetZMode(GX_TRUE, GX_GEQUAL, GX_TRUE);
+  GX_SetBlendMode(GX_BM_NONE, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
+  GX_SetAlphaUpdate(GX_TRUE);
+}
+
+// Grid lines over [a, b]: `cells` even steps plus the mirror's edges.
+static int mfx_lines(float *out, float a, float b, int cells, float m0, float m1)
+{
+  int n = 0;
+  for (int i = 0; i <= cells; i++)
+    out[n++] = a + (b - a) * (float)i / (float)cells;
+  const float m[2] = {m0, m1};
+  for (int k = 0; k < 2; k++)
+  {
+    if (!(m[k] > a + 1.f && m[k] < b - 1.f))
+      continue;
+    int i = n++;
+    while (i > 0 && out[i - 1] > m[k])
+    {
+      out[i] = out[i - 1];
+      i--;
+    }
+    out[i] = m[k];
+  }
+  return n;
+}
+
+// The grid over the view (EFB pixels), around the mirror if there is one.
+static void mfx_grid(const MfxFrame &f)
+{
+  const float H = (float)rmode->efbHeight;
+  s_mfx_mx0 = 1.f;
+  s_mfx_mx1 = 0.f;
+  float mx0 = -1.f, mx1 = -1.f, my0 = -1.f, my1 = -1.f;
+  if (f.mirror)
+  {
+    // Tile units, 32 DC pixels, max inclusive (apply_tile_clip).
+    const float sx = f.vpw / f.dcw, sy = H / f.dch;
+    s_mfx_mx0 = mx0 = f.vpx + (float)((f.mirror >> 24) & 63) * 32.f * sx;
+    s_mfx_my0 = my0 = (float)((f.mirror >> 16) & 31) * 32.f * sy;
+    s_mfx_mx1 = mx1 = f.vpx + (float)(((f.mirror >> 8) & 63) + 1) * 32.f * sx;
+    s_mfx_my1 = my1 = (float)((f.mirror & 31) + 1) * 32.f * sy;
+  }
+  s_mfx_nx = mfx_lines(s_mfx_lx, f.vpx, f.vpx + f.vpw, MFX_GX, mx0, mx1);
+  s_mfx_ny = mfx_lines(s_mfx_ly, 0.f, H, MFX_GY, my0, my1);
+  for (int j = 0; j < s_mfx_ny; j++)
+    for (int i = 0; i < s_mfx_nx; i++)
+    {
+      MfxVtx &v = s_mfx_v[j * s_mfx_nx + i];
+      v.x = s_mfx_lx[i];
+      v.y = s_mfx_ly[j];
+    }
+}
+
+// The cells the effect draws: not in the mirror, not all transparent.
+static bool mfx_cell(int i, int j)
+{
+  const MfxVtx *v = &s_mfx_v[j * s_mfx_nx + i];
+  const float cx = (v[0].x + v[1].x) * 0.5f, cy = (v[0].y + v[s_mfx_nx].y) * 0.5f;
+  if (cx > s_mfx_mx0 && cx < s_mfx_mx1 && cy > s_mfx_my0 && cy < s_mfx_my1)
+    return false;
+  return v[0].a || v[1].a || v[s_mfx_nx].a || v[s_mfx_nx + 1].a;
+}
+
+// The grid's cells as quads at depth W, in the frame's DC screen space.
+static void mfx_emit(const MfxFrame &f, float W)
+{
+  int n = 0;
+  for (int j = 0; j + 1 < s_mfx_ny; j++)
+    for (int i = 0; i + 1 < s_mfx_nx; i++)
+      n += mfx_cell(i, j);
+  if (!n)
+    return;
+  const float sx = f.dcw / f.vpw, sy = f.dch / (float)rmode->efbHeight;
+  GX_Begin(GX_QUADS, GX_VTXFMT3, (u16)(n * 4));
+  for (int j = 0; j + 1 < s_mfx_ny; j++)
+    for (int i = 0; i + 1 < s_mfx_nx; i++)
+    {
+      if (!mfx_cell(i, j))
+        continue;
+      const int c[4] = {j * s_mfx_nx + i, j * s_mfx_nx + i + 1, (j + 1) * s_mfx_nx + i + 1, (j + 1) * s_mfx_nx + i};
+      for (int k = 0; k < 4; k++)
+      {
+        const MfxVtx &v = s_mfx_v[c[k]];
+        const float xd = (v.x - f.vpx) * sx, yd = v.y * sy;
+        GX_Position3f32(xd * W, yd * W, -W);
+        GX_Color4u8(255, 255, 255, v.a);
+        GX_TexCoord2f32(v.u, v.v);
+      }
+    }
+  GX_End();
+}
+
+// SPEED BLUR: two fetches back along the motion (half and all of it) over
+// the frame, 1/2 then 1/3 opaque, which averages the three where the motion
+// is full. The motion at a pixel: outward from the view's centre, growing
+// toward the edges (little at the top: sky, tree tops, the mirror) and with
+// the speed, plus a sideways part when the car turns.
+static void mfx_blur(const MfxFrame &f, const NaomiMotion &m)
+{
+  static const float kZoom[4] = {0.f, 0.03f, 0.06f, 0.10f};   // blur length / distance from the centre
+  static const float kTurn[4] = {0.f, 1.f, 2.f, 3.f};         // frames of turning
+  const float zoom = kZoom[mfx_level()] * mfx_ramp(m.kmh, 30.f, 140.f);
+  const float H = (float)rmode->efbHeight;
+  const float turn = m.yawStep * kTurn[mfx_level()] * m.focal * (f.vpw / f.dcw);   // EFB pixels
+  if (zoom <= 0.f && fabsf(turn) < 1.f)
+    return;
+  const int thr8 = mfx_thr8(f);
+  if (thr8 < 3)
+    return;
+  u32 cx, cw;
+  mfx_copy_rect(f, cx, cw);
+  const u32 h = rmode->efbHeight;
+  u8 *const col = (u8 *)fb2d_tex;                 // half size, RGB565
+  u8 *const msk = col + (cw / 2) * (h / 2) * 2;   // full size, Z8
+  mfx_copy_begin();
+  GX_SetTexCopySrc((u16)cx, 0, (u16)cw, (u16)h);
+  GX_SetTexCopyDst((u16)(cw / 2), (u16)(h / 2), GX_TF_RGB565, GX_TRUE);
+  GX_CopyTex(col, GX_FALSE);
+  GX_SetTexCopyDst((u16)cw, (u16)h, GX_TF_Z8, GX_FALSE);
+  GX_CopyTex(msk, GX_FALSE);
+  mfx_copy_end();
+  mfx_scratch_used();
+  mfx_load_tex(col, cw / 2, h / 2, GX_TF_RGB565, GX_LINEAR, GX_TEXMAP0);
+  mfx_load_tex(msk, cw, h, GX_TF_I8, GX_NEAR, GX_TEXMAP1);
+  mfx_pipe(f, true, thr8);
+  mfx_grid(f);
+  const float ecx = f.vpx + f.vpw * 0.5f, ecy = H * 0.5f;
+  const float W = mfx_hud_w(f);
+  static const float kLayer[2] = {0.5f, 1.f / 3.f};
+  for (int layer = 0; layer < 2; layer++)
+  {
+    const float t = layer ? 1.f : 0.5f;
+    for (int k = 0; k < s_mfx_nx * s_mfx_ny; k++)
+    {
+      MfxVtx &v = s_mfx_v[k];
+      const float dx = v.x - ecx, dy = v.y - ecy;
+      const float nx = dx / (f.vpw * 0.5f), ny = dy / (H * 0.5f);
+      float w = mfx_smooth(0.3f, 1.f, sqrtf(nx * nx + ny * ny)) * (dy < 0.f ? 0.6f : 1.f);
+      float mx = dx * zoom * w + turn, my = dy * zoom * w;
+      // The chase view: the car below the centre (runner snapshot: a third
+      // of the width) does not move on screen.
+      if (!m.inCar && dy > 0.f)
+      {
+        const float keep = mfx_smooth(0.17f, 0.3f, fabsf(dx) / f.vpw);
+        mx *= keep;
+        my *= keep;
+      }
+      const float len = sqrtf(mx * mx + my * my);
+      const float qx = v.x - mx * t, qy = v.y - my * t;
+      v.u = (qx - (float)cx) / (float)cw;
+      v.v = qy / H;
+      v.a = (u8)(255.f * kLayer[layer] * mfx_ramp(len, 0.f, 8.f));
+    }
+    mfx_emit(f, W);
+  }
+  mfx_done();
+}
+
+// FRAME BLEND: this frame's copy (half size) goes to one slot of fb2d_tex,
+// the last frame's is drawn over this one from the other.
+static void mfx_blend(const MfxFrame &f, const NaomiMotion &m)
+{
+  static const float kMix[4] = {0.f, 0.25f, 0.4f, 0.55f};
+  u32 cx, cw;
+  mfx_copy_rect(f, cx, cw);
+  const u32 h = rmode->efbHeight;
+  const u32 slotBytes = (cw / 2) * (h / 2) * 2;
+  const u32 key = cx | cw << 11 | h << 22;
+  const bool prev = s_mfx_prev_ok && s_mfx_prev_key == key && s_mfx_vblanks - s_mfx_prev_vbl <= 4;
+  u8 *const cur = (u8 *)fb2d_tex + s_mfx_slot * slotBytes;
+  u8 *const last = (u8 *)fb2d_tex + (s_mfx_slot ^ 1) * slotBytes;
+  mfx_copy_begin();
+  GX_SetTexCopySrc((u16)cx, 0, (u16)cw, (u16)h);
+  GX_SetTexCopyDst((u16)(cw / 2), (u16)(h / 2), GX_TF_RGB565, GX_TRUE);
+  GX_CopyTex(cur, GX_FALSE);
+  mfx_copy_end();
+  // Nothing to smooth standing still: the mix comes in with the speed or a turn.
+  const float speed = mfx_ramp(m.kmh, 20.f, 80.f), turning = mfx_ramp(fabsf(m.yawStep), 0.003f, 0.01f);
+  const u8 a = (u8)(255.f * kMix[mfx_level()] * (speed > turning ? speed : turning));
+  if (prev && a)
+  {
+    mfx_load_tex(last, cw / 2, h / 2, GX_TF_RGB565, GX_LINEAR, GX_TEXMAP0);
+    mfx_pipe(f, false, 0);
+    mfx_grid(f);
+    for (int k = 0; k < s_mfx_nx * s_mfx_ny; k++)
+    {
+      MfxVtx &v = s_mfx_v[k];
+      v.u = (v.x - (float)cx) / (float)cw;
+      v.v = v.y / (float)h;
+      v.a = a;
+    }
+    mfx_emit(f, mfx_hud_w(f));
+    mfx_done();
+  }
+  s_mfx_prev_ok = true;
+  s_mfx_prev_key = key;
+  s_mfx_prev_vbl = s_mfx_vblanks;
+  s_mfx_slot ^= 1;
+}
+
+// End of a display render, before its display copy: blur or blend it, and
+// say whether to keep it in the EFB (the copy then does not clear) for an
+// in-between frame at the next STARTRENDER, if the frameskip drops that one.
+static bool mfx_after_render()
+{
+  if (!g_motion_fx_preset || rmode->aa || SPLIT_COMPOSE())
+    return false;
+  NaomiMotion m;
+  if (!naomi_Motion(s_mfx.half, &m))
+  {
+    s_mfx_prev_ok = false;
+    return false;
+  }
+  if (mfx_blur_mode())
+    mfx_blur(s_mfx, m);
+  if (mfx_blend_mode())
+  {
+    if (s_mfx.half < 0)
+      mfx_blend(s_mfx, m);
+    else
+      s_mfx_prev_ok = false;
+  }
+  if (mfx_between_mode() && s_mfx.half < 0 && !NO_FRAMESKIP() && s_mfx_mask && m.inCar && mfx_thr8(s_mfx) >= 3)
+  {
+    s_mfx_kept = s_mfx;
+    s_mfx_efb_kept = true;
+    return true;
+  }
+  return false;
+}
+
+// The drawn frame kept for an in-between that did not come: clear the EFB
+// as its display copy would have (into the mask buffer, which no in-between
+// is using now). Before anything else draws into the EFB.
+static void mfx_settle()
+{
+  if (!s_mfx_efb_kept)
+    return;
+  s_mfx_efb_kept = false;
+  GX_SetTexCopySrc(0, 0, rmode->fbWidth, rmode->efbHeight);
+  GX_SetTexCopyDst(rmode->fbWidth / 2, rmode->efbHeight / 2, GX_TF_RGB565, GX_TRUE);
+  GX_CopyTex(s_mfx_mask, GX_TRUE);
+}
+
+// IN-BETWEEN, at a STARTRENDER the frameskip drops: the drawn frame still in
+// the EFB, moved on by one frame of the car's motion, goes to the screen. Each
+// destination pixel fetches where its point was a frame before: the turn
+// undone (a rotation about the vertical axis, exact for a camera that only
+// turns), then the step forward (a point at depth W was at W + step). The
+// depth is guessed from a corridor (the road 1.1 m below the camera, walls
+// 3.5 m to the sides) and drawn three times, each over the pixels farther
+// than a depth with the guess no nearer than it (the sky and far hills get
+// the turn only), so each pixel keeps the one for its own depth band.
+static void mfx_inbetween()
+{
+  if (!s_mfx_efb_kept || !mfx_between_mode())
+    return;
+  const MfxFrame &f = s_mfx_kept;
+  NaomiMotion m;
+  // Left in the EFB otherwise: the next render's start clears it.
+  if (!naomi_Motion(-1, &m) || !m.inCar || m.focal < 50.f)
+    return;
+  static const float kAmount[4] = {0.f, 0.5f, 0.8f, 1.f};
+  const float step = m.step * kAmount[mfx_level()], yaw = m.yawStep * kAmount[mfx_level()];
+  if (step < 0.01f && fabsf(yaw) < 0.0005f)
+    return;   // standing still: the picture again is right
+  const int thr8 = mfx_thr8(f);
+  if (thr8 < 3)
+    return;
+  gx_sync_pending();   // the drawn frame's flip first: this one queues its own
+  u32 cx, cw;
+  mfx_copy_rect(f, cx, cw);
+  const u32 h = rmode->efbHeight;
+  const bool full = cw * h * 2 <= sizeof(fb2d_tex);   // else (PAL 50 Hz, full width) half size
+  mfx_copy_begin();
+  GX_SetTexCopySrc((u16)cx, 0, (u16)cw, (u16)h);
+  if (full)
+    GX_SetTexCopyDst((u16)cw, (u16)h, GX_TF_RGB565, GX_FALSE);
+  else
+    GX_SetTexCopyDst((u16)(cw / 2), (u16)(h / 2), GX_TF_RGB565, GX_TRUE);
+  GX_CopyTex(fb2d_tex, GX_FALSE);
+  GX_SetTexCopyDst((u16)cw, (u16)h, GX_TF_Z8, GX_FALSE);
+  GX_CopyTex(s_mfx_mask, GX_FALSE);
+  mfx_copy_end();
+  mfx_scratch_used();
+  mfx_load_tex(fb2d_tex, full ? cw : cw / 2, full ? h : h / 2, GX_TF_RGB565, GX_LINEAR, GX_TEXMAP0);
+  mfx_load_tex(s_mfx_mask, cw, h, GX_TF_I8, GX_NEAR, GX_TEXMAP1);
+  mfx_pipe(f, true, thr8);
+  mfx_grid(f);
+  const float H = (float)h;
+  const float sx = f.vpw / f.dcw, sy = H / f.dch;   // EFB pixels a DC pixel
+  const float F = m.focal, ccx = f.dcw * 0.5f, ccy = f.dch * 0.5f;
+  const float cs = cosf(yaw), sn = sinf(yaw);
+  const float hudW = mfx_hud_w(f);
+  static const float kPass[3] = {0.f, 20.f, 120.f};   // metres
+  for (int pass = 0; pass < 3; pass++)
+  {
+    const float wmin = pass ? kPass[pass] : hudW;
+    for (int k = 0; k < s_mfx_nx * s_mfx_ny; k++)
+    {
+      MfxVtx &v = s_mfx_v[k];
+      const float dx = (v.x - f.vpx) / sx - ccx, dy = v.y / sy - ccy;
+      float W = 1e6f;
+      if (dy > 1.f)
+        W = 1.1f * F / dy;
+      if (fabsf(dx) > 1.f && 3.5f * F / fabsf(dx) < W)
+        W = 3.5f * F / fabsf(dx);
+      if (W < 1.f)
+        W = 1.f;
+      if (W < wmin)
+        W = wmin;
+      float Z = dx * sn + F * cs;
+      if (Z < F * 0.1f)
+        Z = F * 0.1f;
+      const float g = W / (W + step);
+      const float qx = F * (dx * cs - F * sn) / Z * g, qy = F * dy / Z * g;
+      v.u = (f.vpx + (ccx + qx) * sx - (float)cx) / (float)cw;
+      v.v = (ccy + qy) * sy / H;
+      v.a = 255;
+    }
+    mfx_emit(f, pass ? wmin : hudW);
+  }
+  mfx_done();
+  // To the screen, like a render (ASYNC_RENDER: flipped when the GPU is done).
+  GX_CopyDisp(frameBuffer[fb], GX_TRUE);
+  s_mfx_efb_kept = false;
+  s_mfx_shown_between++;
+  if (ASYNC_RENDER())
+  {
+    s_gx_done_irq = false;
+    GX_SetDrawDone();
+    s_gx_pending = true;
+    s_gx_pending_fb = fb;
+    fb ^= 1;
+  }
+  else
+  {
+    fp_GX_DrawDone();
+    DrawXfbFpsText(frameBuffer[fb]);
+    VIDEO_SetNextFramebuffer(frameBuffer[fb]);
+    VIDEO_Flush();
+  }
+}
+#endif // BUILD_NAOMI2
 
 // Open the GX scissor to whatever the pass in flight is allowed to touch: the
 // compose band, or the whole EFB. Also drops apply_tile_clip's cache, which no
@@ -8027,6 +8592,7 @@ static inline void ApplyPolyOffset(Vertex *v, int count, int tier)
 // high16 = right pixel, so pairs are written as (p1 << 16) | p0.
 static void rtt_copy_efb_to_vram()
 {
+  mfx_scratch_used();   // fb2d_tex is this copy's destination
   // Pad the copy rect to the 4x4 tile grid of GX_TF_RGB565 so the tile pitch
   // used below is exact (EFB copies also require even sizes).
   u32 copy_w = (s_rtt_w + 3) & ~3u;
@@ -8180,6 +8746,9 @@ void DoRender()
   // VIDEO flip before anything else — texture decode below re-writes bump
   // slots the GPU may still be sampling. No-op when nothing is pending.
   gx_sync_pending();
+#if defined(BUILD_NAOMI2)
+  mfx_settle();   // MOTION FX: a drawn frame left in the EFB for an in-between that did not come
+#endif
 
   /* commented to help prevent FIFO */
   /*
@@ -8862,6 +9431,18 @@ void DoRender()
   s_elan_frame.p6     = p6;
   memcpy(s_elan_frame.proj, mtx, sizeof(s_elan_frame.proj));
   s_elan_frame.clr1   = emit_clr1;
+  // MOTION FX: what its quads need of this render (drawn after it, or in the
+  // in-between frame after it).
+  s_mfx.dcw = dc_width;
+  s_mfx.dch = dc_height;
+  s_mfx.vpx = vp_x;
+  s_mfx.vpw = vp_w;
+  s_mfx.p5 = p5;
+  s_mfx.p6 = p6;
+  s_mfx.minZ = vtx_min_Z;
+  memcpy(s_mfx.proj, mtx, sizeof(s_mfx.proj));
+  s_mfx.mirror = s_mfx_mirror_cur;
+  s_mfx.half = s_2p_half_now;
 #endif
 
   // clear out other matrixes
@@ -10820,13 +11401,20 @@ void DoRender()
     return;
   }
 
+#if defined(BUILD_NAOMI2)
+  // MOTION FX: blur or blend this frame; an in-between frame may follow, so
+  // the copy then leaves it in the EFB.
+  const bool mfx_keep = mfx_after_render();
+#else
+  const bool mfx_keep = false;
+#endif
   if (s_2p_half_now >= 0)
   {
     split2p_copy_disp(frameBuffer[fb]);
     naomi_2pDrawn(s_2p_half_now);
   }
   else
-    GX_CopyDisp(frameBuffer[fb], GX_TRUE);
+    GX_CopyDisp(frameBuffer[fb], mfx_keep ? GX_FALSE : GX_TRUE);
   s_2p_last_half = s_2p_half_now;
   if (async_render)
   {
@@ -10888,6 +11476,10 @@ void PresentFramebuffer()
   // its deferred flip first, or the stale pending flip would override this
   // present on the next DoRender. This path itself stays fully synchronous.
   gx_sync_pending();
+#if defined(BUILD_NAOMI2)
+  mfx_settle();         // MOTION FX: the 4:3 bars must not show a kept frame
+#endif
+  mfx_scratch_used();   // fb2d_tex gets the 2D picture below
 
   // ── Derive the source framebuffer geometry from FB_R_SIZE / FB_R_CTRL ──────
   // (devcast RenderFramebuffer).  FB_R_SIZE is a raw u32 here:
@@ -11093,11 +11685,15 @@ extern "C" void rend_LogShownFrames(double seconds)
 {
   if (seconds <= 0.0)
     seconds = 1.0;
-  char line[160];
-  snprintf(line, sizeof(line), "[prof] frames shown per second: %.1f 3D renders, %.1f video memory copies, %.1f held back\n",
-           s_n2_shown_3d / seconds, s_n2_shown_vram / seconds, s_n2_held_vram / seconds);
+  char line[200];
+  snprintf(line, sizeof(line), "[prof] frames shown per second: %.1f 3D renders, %.1f video memory copies, %.1f held back%s",
+           s_n2_shown_3d / seconds, s_n2_shown_vram / seconds, s_n2_held_vram / seconds,
+           mfx_between_mode() ? "" : "\n");
   printf("%s", line);
+  if (mfx_between_mode())
+    printf(", %.1f MOTION FX in-between frames\n", s_mfx_shown_between / seconds);
   s_n2_shown_3d = s_n2_shown_vram = s_n2_held_vram = 0;
+  s_mfx_shown_between = 0;
 }
 #endif
 
@@ -11110,6 +11706,7 @@ void VBlank()
 #if defined(BUILD_NAOMI2)
   if (s_n2_vb_since_3d != 0xFFFFFFFFu)
     s_n2_vb_since_3d++;
+  s_mfx_vblanks++;
 #endif
 
   // SPLIT_COMPOSE() backstop: a composed frame whose viewports never covered
@@ -12368,6 +12965,8 @@ extern "C" void rend_SetTileClipMode(u32 mode)
   ta_tileclip = (mode << 30) | ta_tileclip_rect;
   if (mode >= 2)
     g_n2_tileclip = true;
+  if (mode == 2)
+    s_mfx_mirror_next = 0x80000000u | ta_tileclip_rect;   // MOTION FX keeps off the mirror
 }
 
 extern "C" bool rend_AddElanItem(u32 pcw, u32 isp, u32 tsp, u32 tcw, u32 item, float nearW, float farW)
@@ -12437,6 +13036,9 @@ void StartRender()
 #if defined(BUILD_NAOMI2)
   if (VtxCnt != 0 || curLST > lists)
     n2_note_3d_pass();   // the game is rendering: video memory copies are suspect
+  // MOTION FX: the scene this render draws was built since the last one.
+  s_mfx_mirror_cur = s_mfx_mirror_next;
+  s_mfx_mirror_next = 0;
 #endif
 
 #if SCOPE_DEBUG_LOG
@@ -12588,6 +13190,9 @@ void StartRender()
           FB_W_SOF1, FB_R_SOF1, (int)FB_R_CTRL.fb_depth, VtxCnt);
         s_did_3d_render = false;
         gx_sync_pending(); // ASYNC_RENDER(): apply the queued frame's flip first
+#if defined(BUILD_NAOMI2)
+        mfx_settle();      // MOTION FX: copy the EFB as the frame left it, cleared
+#endif
         fp_GX_DrawDone();
         GX_CopyDisp(frameBuffer[fb], GX_TRUE);
         VIDEO_SetNextFramebuffer(frameBuffer[fb]);
@@ -12729,6 +13334,15 @@ void StartRender()
   // ── Frame-skip early-out (3D display frames only, see NOTE above) ─────────
   if (TakeSkipVerdict())
   {
+#if defined(BUILD_NAOMI2)
+    // MOTION FX = IN-BETWEEN: the last drawn frame, moved on, instead.
+    if (s_mfx_efb_kept)
+    {
+      const u64 _rt0 = PERF_TICKS();
+      mfx_inbetween();
+      RenderTicks += PERF_TICKS() - _rt0;
+    }
+#endif
     reset_vtx_state();   // discard this frame's geometry; free the buffers
     s_sr_path[SR_SKIPPED]++;
     return;              // no GX calls — saves ~10-15 ms on a heavy frame
@@ -13521,6 +14135,15 @@ bool InitRenderer()
   // AUTOSORT() depth-peeling buffers (MEM2) — allocated unconditionally so
   // the preset can be toggled from the menu at any time; ~700 KB.
   as_init();
+#if defined(BUILD_NAOMI2)
+  // MOTION FX = IN-BETWEEN: its depth mask, for which _vmem_reserve() left the
+  // heap kMotionMaskBytes more. Without it there are no in-between frames.
+  if (mfx_between_mode())
+  {
+    s_mfx_mask = rmode->aa ? NULL : (u8 *)memalign(32, kMotionMaskBytes);
+    printf("[motion] IN-BETWEEN frames: %s\n", s_mfx_mask ? "on" : "off (no memory, or the AA pixel format)");
+  }
+#endif
 
   // setup the vertex descriptor
   // tells the flipper to expect direct data

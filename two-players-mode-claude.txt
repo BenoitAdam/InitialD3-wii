@@ -73,3 +73,36 @@ FILES
 - port/src/platform/*: GameCube layouts, controllers seen.
 - AGENTS.md: status and key files.
 - port/OPTIMIZATION.md: speed notes, ELAN PREFETCH numbers.
+
+
+
+=== last prompt asked :
+
+Both logs show 2 PLAYERS working on the Wii with FULL PHYSICS and AROUND EACH CAR, and with FRAMESKIP AUTO it holds full speed for the whole race.
+
+Run	Emulated speed	Frames shown	p50 frame time
+Every frame drawn	56–60 fps for the first ~80 s, then 54–58; 50–54 in one stretch	every frame (27–30 per player)	16.3 → 18 ms
+FRAMESKIP AUTO	59.5–60.1 fps, all race	44–60 a second, mostly 52–59 (26–29 per player)	16.4–17 ms
+What the logs confirm:
+
+Views stay paired: the left and right views are equal in every 10-second window, apart from 1–2 at the race start.
+Player 2's physics: it runs every frame (600 runs per 10 s). Player 2 reached 181 km/h and steered.
+Scenery: it was placed around player 2 for all of its views, with the cars up to about 2 km apart.
+Cost: compared with your single-player day race in log 25 (p50 15.5–16.3 ms), 2 PLAYERS costs roughly 1 ms a frame, mostly in sh4. That only holds if it's a comparable course, which I can't tell from the log.
+Cars far apart: the 50–54 fps stretch is when the cars were ~2 km apart under another camera. Each car brings in new scenery on its own, so the renderer builds new GPU programs about twice as often, and those frames take 6–7 ms longer to render. AUTO absorbed it in the other run.
+ELAN PREFETCH: these are the first logs with it on. A dropped frame now costs ~480 ns per command it walks, against ~700 ns estimated before; drawn frames show no change. There's no OFF run to compare yet, so it isn't proven.
+Two fixes after reading the logs (both builds pass, unit tests pass, runner checked with 0 GPU fetch mismatches; nothing committed; new boot.dol in port/wii/dist/apps/initiald3wii/):
+
+The [game] controllers line never printed. libogc briefly marks a GameCube pad as not connected when it's read twice in one poll, and the game reads twice a frame. The buttons still work, but the "connected" signal flickered and my check never saw it hold steady. It now counts a device that answered at least once in the last 60 reads.
+New line: [2P] player 2's physics: X ms a run (shortest Y) + Z ms of state swaps, every 10 s. It gives the cost of FULL PHYSICS directly, so you don't need an ON RAILS run to compare. On the runner it prints correctly, but those times are PC numbers. The shortest run is the clean figure; the average can include sound work that happens at the same moment.
+Questions:
+
+Which course was it?
+What drove player 2: a GameCube pad on port 2, or Wiimote 2?
+In the every-frame run, player 2 sat at 1–11 km/h for about 50 s with the gas held. Was it stuck against a barrier, and did it get free easily?
+Did player 2's car feel and sound right?
+For the next log: any race with PROFILER on, and if you can, player 2 on a GameCube pad in port 2. I'll read the new physics line and the controllers line. If you also want the ELAN PREFETCH answer, a single-player race on the same course with ELAN PREFETCH OFF and then ON (RENDERING 2 page) would settle it.
+
+Still not done: player 2 can't shift by hand, player 2's HUD shows player 1's gear and ADVANTAGE, and player 2's view shows its own bonnet. Tell me which, if any, you want next.
+
+I've updated AGENTS.md (2P status and the libogc pad behaviour) and OPTIMIZATION.md (the first ELAN PREFETCH numbers).

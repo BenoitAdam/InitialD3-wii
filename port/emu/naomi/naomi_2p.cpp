@@ -726,6 +726,13 @@ extern "C" int naomi_2pHalf()
     return s_renderHalf;
 }
 
+// MOTION FX (naomi_motion.cpp): the race camera follows a car.
+extern "C" bool naomi_RaceView()
+{
+    Race race;
+    return findRace(race);
+}
+
 // The half of the scene being built, drawn by the next render.
 extern "C" int naomi_2pNextHalf()
 {

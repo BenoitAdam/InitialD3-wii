@@ -61,6 +61,7 @@ struct State
 {
     u32 pcw, isp, tsp, tcw;
     u32 clip;               // user tile clip: mode << 30 | x0 << 24 | y0 << 16 | x1 << 8 | y1 (tiles)
+    u32 run = 0;            // IDAS3_STRIP_ORDER's run (s_order index)
 };
 
 struct Tri
@@ -133,16 +134,76 @@ inline void intensity(float i, const float* face, float* out)
     out[3] = face[3];
 }
 
+// Env IDAS3_STRIP_ORDER=FROM:TO: each render in those vblanks printed as runs
+// of polygon headers in submission order (list type; E a GPU-drawn ELAN list,
+// P a TA polygon, S a TA sprite), with their vertices, screen box, 1/W range
+// and first texture: where the 3D scene ends and the HUD starts (MOTION FX).
+struct OrderRun
+{
+    char kind;
+    u32 list, headers, vtx;
+    float x0, y0, x1, y1, z0, z1;
+    u32 tcw;
+};
+std::vector<OrderRun> s_order;
+char s_orderKind = 'P';
+
+bool orderOn()
+{
+    static int s_on = -1;
+    if (s_on < 0)
+        s_on = getenv("IDAS3_STRIP_ORDER") != nullptr;
+    return s_on != 0;
+}
+
+void orderHeader(char kind, u32 list, u32 tcw, float z0, float z1)
+{
+    if (!orderOn())
+        return;
+    if (!s_order.empty() && s_order.back().kind == kind && s_order.back().list == list)
+    {
+        OrderRun& r = s_order.back();
+        r.headers++;
+        if (z0 < r.z0)
+            r.z0 = z0;
+        if (z1 > r.z1)
+            r.z1 = z1;
+        return;
+    }
+    s_order.push_back({kind, list, 1, 0, 1e9f, 1e9f, -1e9f, -1e9f, z0, z1, tcw});
+}
+
+void orderVertex(const Vtx& v)
+{
+    if (!orderOn() || s_order.empty())
+        return;
+    OrderRun& r = s_order.back();
+    r.vtx++;
+    r.x0 = v.x < r.x0 ? v.x : r.x0;
+    r.y0 = v.y < r.y0 ? v.y : r.y0;
+    r.x1 = v.x > r.x1 ? v.x : r.x1;
+    r.y1 = v.y > r.y1 ? v.y : r.y1;
+    r.z0 = v.z < r.z0 ? v.z : r.z0;
+    r.z1 = v.z > r.z1 ? v.z : r.z1;
+}
+
 void newState(u32 pcw, u32 isp, u32 tsp, u32 tcw)
 {
     s_frame.states.push_back({pcw, isp, tsp, tcw, s_tileClip});
     s_stripCount = 0;
+    orderHeader(s_orderKind, s_list, tcw, 1e9f, -1e9f);
+    if (orderOn())
+        s_frame.states.back().run = (u32)s_order.size() - 1;
 }
+
+// IDAS3_STRIP_ORDER with snapshots: each run drawn alone as well (-1: all).
+int s_onlyRun = -1;
 
 void addVertex(const Vtx& v, bool polygon = true)
 {
     const u32 index = (u32)s_frame.vtx.size();
     s_frame.vtx.push_back(v);
+    orderVertex(v);
     if (s_stripCount == 0)
         s_stripFirst = index;
     s_stripCount++;
@@ -682,7 +743,9 @@ void rasterise()
     static const u32 order[3] = {0, 4, 2};
     for (u32 list : order)
         for (const Tri& t : s_frame.tris[list])
-            drawTriangle(s_frame.vtx[t.v[0]], s_frame.vtx[t.v[1]], s_frame.vtx[t.v[2]], s_frame.states[t.state], list);
+            if (s_onlyRun < 0 || s_frame.states[t.state].run == (u32)s_onlyRun)
+                drawTriangle(s_frame.vtx[t.v[0]], s_frame.vtx[t.v[1]], s_frame.vtx[t.v[2]], s_frame.states[t.state],
+                             list);
 }
 
 // ---------------------------------------------------------------------------
@@ -1102,7 +1165,9 @@ struct VertexDecoder
     static void AppendSpriteParam(TA_SpriteParam* p)
     {
         g_host_render.sprites++;
+        s_orderKind = 'S';
         newState(p->pcw.full, p->isp.full, p->tsp.full, p->tcw.full);
+        s_orderKind = 'P';
         s_spriteBase = p->BaseCol;
         s_spriteOfs = p->OffsCol;
     }
@@ -1162,6 +1227,7 @@ struct VertexDecoder
     {
         event('I');
         s_frame.clear();
+        s_order.clear();
     }
     static void SoftReset()
     {
@@ -1187,6 +1253,7 @@ extern "C" bool rend_AddElanItem(u32 pcw, u32, u32, u32, u32, float nearW, float
 {
     if (TileAccel.CurrentList == ListType_None)
         TileAccel.ta_list_start(pcw >> 24 & 7);
+    orderHeader('E', pcw >> 24 & 7, 0, farW > 0.f ? 1.f / farW : 0.f, nearW > 0.f ? 1.f / nearW : 0.f);
     HostRenderStats& h = g_host_render;
     if (h.frameFar == 0.f || nearW < h.frameNear)
         h.frameNear = nearW;
@@ -1377,6 +1444,21 @@ void StartRender()
                    g_elan_exec_seq);
     }
     noteGpuDepthRange();
+    if (orderOn())
+    {
+        static int s_from = -1, s_to = -1;
+        if (s_from == -1)
+            sscanf(getenv("IDAS3_STRIP_ORDER"), "%d:%d", &s_from, &s_to);
+        const int f = (int)g_host_render.vblanks;
+        if (f >= s_from && f <= s_to)
+        {
+            printf("[order] vbl %d render %u%s: %u runs\n", f, g_host_render.renders,
+                   rend_FrameKnownSkipped() ? " (dropped)" : "", (u32)s_order.size());
+            for (const OrderRun& r : s_order)
+                printf("[order]   L%u %c %4u headers %5u vtx  x %4.0f..%4.0f y %4.0f..%4.0f  1/W %.4g..%.4g  tex %08X\n",
+                       r.list, r.kind, r.headers, r.vtx, r.x0, r.x1, r.y0, r.y1, r.z0, r.z1, r.tcw);
+        }
+    }
     if (takeSkipVerdict())
     {
         // Same as gxRend: render-done still fires on schedule, nothing is drawn.
@@ -1422,6 +1504,33 @@ void StartRender()
                    path, (u32)s_frame.tris[0].size(), (u32)s_frame.tris[4].size(), (u32)s_frame.tris[2].size(),
                    (u32)s_frame.states.size(), (u32)s_frame.vtx.size(), g_host_render.lists, g_host_render.sprites,
                    g_host_render.polyParams);
+        if (orderOn())
+        {
+            // IDAS3_STRIP_ORDER: every run with vertices drawn alone.
+            for (u32 r = 0; r < s_order.size(); r++)
+            {
+                if (s_order[r].vtx < 3)
+                    continue;
+                s_onlyRun = (int)r;
+                rasterise();
+                // The run's nearest drawn pixel and how many pixels it covers.
+                float zMax = 0.f;
+                u32 covered = 0, nearPx = 0;
+                for (int i = 0; i < kWidth * kHeight; i++)
+                    if (s_depth[i] > 0.f)
+                    {
+                        covered++;
+                        nearPx += s_depth[i] > 4.f;   // nearer than W = 0.25
+                        zMax = s_depth[i] > zMax ? s_depth[i] : zMax;
+                    }
+                printf("[order]   run %u: %u pixels, nearest 1/W %.4g, %u pixels nearer than W 0.25\n", r, covered,
+                       zMax, nearPx);
+                snprintf(path, sizeof(path), "%s/frame_%05u_run%02u_L%u%c.png", s_snapDir.c_str(),
+                         g_host_render.vblanks, r, s_order[r].list, s_order[r].kind);
+                writePng(path);
+            }
+            s_onlyRun = -1;
+        }
         char ev[65];
         for (u32 i = 0; i < 64; i++)
             ev[i] = s_events[(s_eventPos + i) & 63] ? s_events[(s_eventPos + i) & 63] : '.';

@@ -1638,6 +1638,7 @@ void tnl_SetProjection(const u32* w)
     s.proj[1] = asFloat(w[3]);
     s.proj[2] = asFloat(w[4]);
     s.proj[3] = asFloat(w[5]);
+    naomi_MotionProjection(s.proj[0], s.proj[1], s.proj[2], s.proj[3]);   // MOTION FX: a store
 }
 
 void tnl_SetMatrix(const u32* w)
@@ -1966,6 +1967,8 @@ int tnl_DrawList(const u32* w, u32 vertexSize, int listType)
         s_listBoxState = kListNotDrawn;
         return listType;                          // NAOMI 2 modifier volumes: not drawn yet
     }
+    if (g_motion_fx_preset || g_motion_trace_now)
+        naomi_MotionList(count);                  // MOTION FX: which projection is the scene's
     // The renderer will drop this frame (frame skipping): its geometry is
     // never seen, so don't transform it. Most of a race frame's cost.
     if (rend_NextFrameSkipped())

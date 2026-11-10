@@ -19,8 +19,31 @@ it exists.
   (MSVC: launcher, headless runner and tests, used for bring-up, censuses and A/B checks).
 - GitHub: `BenoitAdam/Initial-D-3-wii`, branch `main`. The owner commits often themselves.
 
-### Status (2026-11-07)
+### Status (2026-11-10)
 
+- **MOTION FX (built 2026-11-10, untested on a Wii; owner to test)**: smoothing a race shown at
+  30 fps, launcher RENDERING 2 page, last two rows: MOTION FX (OFF default / SPEED BLUR / FRAME
+  BLEND / IN-BETWEEN / BLUR + IN-BETWEEN) and MOTION LEVEL (LOW / MEDIUM default / HIGH). Drawn by
+  gxRend (`mfx_*`) after the whole frame as quads at W 0.2 with a GREATER depth test, so only the
+  scenery changes: the HUD is all nearer than W 0.15, the scenery farther than W 0.25 (runner,
+  `IDAS3_STRIP_ORDER`), but the HUD is NOT drawn last (see the lessons). A Z8 copy of the depth
+  (as AUTOSORT's) turns fetches of HUD pixels transparent (TEV alpha compare). SPEED BLUR: two
+  fetches back along the motion (outward with the speed, sideways when turning), from a half-size
+  copy. FRAME BLEND: the last drawn frame's half-size copy mixed over this one (25/40/55%, with
+  the speed). IN-BETWEEN (needs FRAMESKIPPING, in-car view only, not 2 PLAYERS): the drawn frame's
+  display copy keeps the EFB, and a dropped frame's STARTRENDER warps it by one frame of the car's
+  turn (exact rotation) and step (depth from a road-and-walls corridor, drawn in three depth
+  bands: past 0.2, 20, 120 m) and presents it; the next render's start clears a kept EFB no
+  in-between used (`mfx_settle`). Its Z8 buffer (`kMotionMaskBytes`, 360 KB) widens the heap
+  headroom (`_vmem.cpp`) only when chosen. Motion (`naomi_motion.cpp`): the followed car's render
+  state (0C8FF388 player / 0C8FF430 CPU car: velocity a frame in metres, yaw in radians, + to the
+  left), the race view from `naomi_RaceView` (2P's findRace), the in-car view from
+  `g_elan_mirror_seen`, the focal length from the ELAN projection most vertices use (race: fx
+  -404.8 the scene, +280.9 the mirror, -579.4 the HUD). The mirror's user-clip rectangle is kept
+  out of every effect. `[prof] frames shown per second` adds the in-between frames. To check on
+  the Wii: the look of each mode in-car and chase, HUD and mirror untouched, no hitch when the EFB
+  is kept, the in-between's turn direction (wrong sign = double judder in corners), the cost
+  (`rend` per drawn frame; dropped frames' time now has the in-between in `rend`).
 - **2 PLAYERS (branch `two-player-splitscreen`), works on a real Wii** (owner, 2P log 1,
   2026-11-07: "amazing it works"). Launcher page PLAYERS (last page, one press back from
   GENERAL): 2 PLAYERS (OFF / SIDE BY SIDE), GC PAD LAYOUT (A/B PEDALS default, R/L PEDALS
@@ -210,6 +233,7 @@ current work:
 | `port/emu/naomi/naomi_frontend.cpp` | Core init/run/settings, idle-loop skip (`naomi_IdleCycleScale`), assert/BIOS-entry traps |
 | `port/emu/naomi/naomi_board.cpp` | DIMM board, cart DMA, register counters |
 | `port/emu/naomi/naomi_softfloat.cpp` | SOFT FLOAT: the game's software double divide/multiply (GCC soft-float, SH-4 integer code) run natively, fingerprinted; called by the JIT at the routines' entry |
+| `port/emu/naomi/naomi_motion.cpp` | MOTION FX: the race camera's motion a vblank (followed car's step and turn, in-car view, the scene's focal length) for gxRend's `mfx_*` effects |
 | `port/emu/naomi/naomi_2p.cpp` | 2 PLAYERS: whose turn the camera is (rig target, changed at every STARTRENDER), each view's aspect, the CPU car driven by the second pad, the HUD speed of its view; `naomi_2pHalf()` tells the renderers which half a render goes to, `naomi_2pSkip()` pairs their frameskip |
 | `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin + GPU light sets (point lights as GX local lights), `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs (+ each list's bounding box, `cachedBox`) and their GX display-list entries (DISPLAY LISTS: `dlEntry`, its own ring, GPU waits before writing over a queued entry) |
 | `port/emu/plugs/drkPvr/gxRend.cpp` | PowerVR -> GX renderer (TA lists, ELAN items, VRAM present, tile clip, buffer caps) |
@@ -303,6 +327,8 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | env `IDAS3_MODELS=FROM:TO[,...]` | the ELAN models (offsets) each of those frames calls and the lists it links, with the 2 PLAYERS half of the scene it builds (`[models]`, `[links]`) |
 | env `IDAS3_WRITEVAL=FROM:TO:VALUE` | every 32-bit write of VALUE in those frames, address, pc and pr (`[writeval]`) |
 | env `IDAS3_2P_HOLD=FROM-TO:CAR` | 2 PLAYERS keeps the camera on one car (0 player, 1 CPU) in those frames |
+| env `IDAS3_STRIP_ORDER=FROM:TO` | each render in those frames as runs of polygon headers in submission order (list type; E a GPU-drawn ELAN list, P a TA polygon, S a TA sprite) with vertices, screen box, 1/W range; with snapshots, each run also drawn alone (`frame_F_runNN_L?.png`) with its nearest pixel. How the HUD's place and depth were found (CPU path: ELAN lists come as P runs) |
+| env `IDAS3_MOTION=FROM:TO` | a `[motion]` line a vblank: race view, in-car view, both cars' metres and yaw a frame, focal length, and the vertices drawn under each ELAN projection |
 | env `IDAS3_POKE=FROM-TO:ADDR=VALUE[;...]` | a guest word written at every vblank in those frames: try a game variable's effect in the snapshots |
 | env `IDAS3_DUMP_AT=F1,F2,...` (+ `IDAS3_DUMP_DIR`) | guest RAM dumps `ram_F.bin` at those frames (32 MB each; never commit them) |
 | `--dump-ram/-vram/-aica/-elan FILE` | memory dumps at the end (never commit them) |
@@ -405,6 +431,11 @@ GUARD's read-only pages); `[CC]` JIT call-outs into C
   the async ring during the game.
 - Text on screen is 8x16 sprites whose 13th vertex word repeats the character code (handy to
   read menus from dumps).
+- The race HUD is not drawn last: the time, map, rev counter and panels are one ELAN group at
+  the START of the translucent list (before translucent scenery, then the punch-through trees);
+  only the km/h digits are TA sprites, at its end. Each list's groups are separated by dummy
+  sprites at x -1..0. A dropped frame still sends those digits but no ELAN list. The HUD stays in
+  front by depth (W 0.014-0.15; scenery from W 0.25): split HUD and scene by depth, not by order.
 - Depth on GX is 24-bit integer 1/W, the PVR's was float. A race pins the frame's near plane at
   the matrices' 0.01 (the road under the camera), so one Z step is ~6e-6 x W^2 units (0.06 at
   W=100). Exact ties are stable (same vertices, same math); near-ties flicker as the camera

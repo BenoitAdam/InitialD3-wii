@@ -104,6 +104,30 @@ extern "C" void naomi_2pCourse(u32 r4);
 // (naomi_2pView(that, the guest's r12) at the block's entry).
 extern "C" u32 naomi_2pViewEntry(u32 pc);
 extern "C" void naomi_2pView(u32 which, u32 r12);
+// MOTION FX (naomi_motion.cpp): how the camera of a race view moves, read at
+// every vblank (naomi_MotionVBlank) for the renderer's effects. half: the 2
+// PLAYERS half of the render (-1 whole picture, 1 the CPU car's view).
+struct NaomiMotion
+{
+    bool valid;       // a race view following a car
+    float step;       // metres the car moves a frame
+    float kmh;
+    float yawStep;    // radians a frame, + turning to the driver's left
+    float focal;      // the scene's projection: screen pixels (640 wide) a unit of X / Z
+    bool inCar;       // the in-car view (no part of the player's car on screen)
+};
+extern "C" int g_motion_fx_preset;      // 0 OFF, 1 SPEED BLUR, 2 FRAME BLEND, 3 IN-BETWEEN, 4 BLUR + IN-BETWEEN
+// IN-BETWEEN's depth mask (gxRend.cpp): a byte a pixel of the largest EFB.
+// _vmem.cpp leaves the heap this much more for it.
+constexpr u32 kMotionMaskBytes = 640u * 576u;
+inline bool naomi_MotionInBetween() { return g_motion_fx_preset == 3 || g_motion_fx_preset == 4; }
+extern "C" int g_motion_level_preset;   // 1 LOW, 2 MEDIUM, 3 HIGH
+extern "C" bool g_motion_trace_now;     // runner: IDAS3_MOTION's frames
+extern "C" bool naomi_Motion(int half, NaomiMotion* m);
+extern "C" void naomi_MotionProjection(float fx, float tx, float fy, float ty);
+extern "C" void naomi_MotionList(u32 vertices);
+void naomi_MotionVBlank();
+extern "C" bool naomi_RaceView();
 // SOFT FLOAT (naomi_softfloat.cpp): the native version of the game's software
 // double divide or multiply starting at pc (null: not one, or the option is
 // off). Called with r4-r7, it returns 0 to leave the call to the game's code,

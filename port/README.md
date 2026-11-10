@@ -121,7 +121,8 @@ port/
   src/platform/                 platform interface, Wii (libogc) and Windows implementations
   emu/                          emulator core (nullDC4Wii fork)
   emu/naomi/                    NAOMI 2 layer: DIMM board, JVS, card reader, ELAN, HLE boot,
-                                2 PLAYERS split screen (naomi_2p.cpp)
+                                2 PLAYERS split screen (naomi_2p.cpp), the race camera's
+                                motion for MOTION FX (naomi_motion.cpp; drawn in gxRend.cpp)
   emu/wii/                      Wii back-ends: fast memory, audio, exit handling, PPC dynarec driver
   emu/plugs/                    renderer (GX), AICA, ARM7, Maple devices
   tests/                        synthetic-CHD fixture and tests

@@ -425,7 +425,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_page_guard_preset,    &g_mirror_preset,       &g_sfx_menu_level_preset, &g_sfx_tire_level_preset,
         &g_small_cull_preset,    &g_incar_reflect_preset, &g_elan_dl_preset,     &g_elan_colour_fetch_preset,
         &g_elan_prefetch_preset, &g_two_player_preset, &g_gc_layout_preset, &g_p2_car_preset,
-        &g_p2_scenery_preset};
+        &g_p2_scenery_preset,    &g_motion_fx_preset,  &g_motion_level_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {
