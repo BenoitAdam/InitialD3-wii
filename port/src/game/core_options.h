@@ -117,6 +117,7 @@ enum CoreOptionId
     OPT_P2_SCENERY,
     OPT_MOTION_FX,
     OPT_MOTION_LEVEL,
+    OPT_TEST_MODE,
     kCoreOptionCount
 };
 
@@ -344,6 +345,10 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
      PAGE_DEPTH_2, 0, 5, {"OFF", "SPEED BLUR", "FRAME BLEND", "IN-BETWEEN", "BLUR + IN-BETWEEN"}, {0, 1, 2, 3, 4}},
     {"MOTION LEVEL  ", "MOTION FX strength: blur length, blend opacity, how far an in-between frame moves",
      PAGE_DEPTH_2, 1, 3, {"LOW", "MEDIUM", "HIGH"}, {1, 2, 3}},
+    // The TEST button (GC pad D-pad left, Wiimote/Classic left): one tap enters
+    // the BIOS SYSTEM MENU (game_runner.cpp, pollControls), so it is off unless asked.
+    {"TEST MODE     ", "TEST button (D-pad LEFT, every pad): OFF ignored, ON enters the game's test menu",
+     PAGE_PLAYERS, 0, 2, {"OFF", "ON"}, {0, 1}},
 };
 
 } // namespace idas3

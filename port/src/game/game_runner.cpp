@@ -118,6 +118,7 @@ bool cartBusy(void* user)
 
 int g_dimm_ahead_preset = 1;
 int g_gc_layout_preset = 0;             // platform::setPadLayout
+int g_test_mode_preset = 0;             // TEST MODE: 0 the TEST button is ignored, 1 it works
 const DimmImage* s_dimm = nullptr;      // for the profiler's lines
 
 NaomiFrameInfo s_lastFrame;
@@ -205,9 +206,10 @@ void pollControls(NaomiInputs& in)
     if (c.shiftDown)
         in.players[1] |= NAOMI_JVS_DOWN;
     in.coin[0] = c.coin;
-    in.test = c.test;
+    const bool testNow = c.test && g_test_mode_preset != 0;
+    in.test = testNow;
     static bool s_testHeld, s_serviceHeld;
-    logPress("TEST", c.test, s_testHeld);
+    logPress("TEST", testNow, s_testHeld);
     logPress("SERVICE", c.service, s_serviceHeld);
     if (c.quit)
     {
@@ -425,7 +427,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_page_guard_preset,    &g_mirror_preset,       &g_sfx_menu_level_preset, &g_sfx_tire_level_preset,
         &g_small_cull_preset,    &g_incar_reflect_preset, &g_elan_dl_preset,     &g_elan_colour_fetch_preset,
         &g_elan_prefetch_preset, &g_two_player_preset, &g_gc_layout_preset, &g_p2_car_preset,
-        &g_p2_scenery_preset,    &g_motion_fx_preset,  &g_motion_level_preset};
+        &g_p2_scenery_preset,    &g_motion_fx_preset,  &g_motion_level_preset, &g_test_mode_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

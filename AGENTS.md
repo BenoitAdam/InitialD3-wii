@@ -44,6 +44,11 @@ it exists.
   the Wii: the look of each mode in-car and chase, HUD and mirror untouched, no hitch when the EFB
   is kept, the in-between's turn direction (wrong sign = double judder in corners), the cost
   (`rend` per drawn frame; dropped frames' time now has the in-between in `rend`).
+  MOTION FX log 1 (2026-11-10, "BLUR_IN_BETWEEN_noframeskip"): options were MOTION FX IN-BETWEEN
+  (not BLUR + IN-BETWEEN), LEVEL HIGH, FRAMESKIPPING 0, so it tested nothing of the effect: every
+  frame drawn, `0.0 MOTION FX in-between frames` all through. Race (from frame ~7560) 56-61 emulated
+  fps, p50 16.2-17.7 ms, `rend` 0.95-1.6, walk ~800 ns a command; no hang, no memory trouble. Still
+  to test: FRAMESKIPPING AUTO with IN-BETWEEN and BLUR + IN-BETWEEN, in-car.
 - **2 PLAYERS (branch `two-player-splitscreen`), works on a real Wii** (owner, 2P log 1,
   2026-11-07: "amazing it works"). Launcher page PLAYERS (last page, one press back from
   GENERAL): 2 PLAYERS (OFF / SIDE BY SIDE), GC PAD LAYOUT (A/B PEDALS default, R/L PEDALS
