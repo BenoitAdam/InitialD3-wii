@@ -21,6 +21,9 @@ it exists.
 
 ### Status (2026-11-10)
 
+- **HEADLIGHTS (built 2026-11-10, untested on a Wii; owner to test)**: the night headlight beam showed
+  the road's polygons; RENDERING 2, last row: ARCADE (OLD) / SOFT / SMOOTH (projected per-pixel cone).
+  Details, numbers and what to check: "Open issues", night headlight beam.
 - **MOTION FX (built 2026-11-10, untested on a Wii; owner to test)**: smoothing a race shown at
   30 fps, launcher RENDERING 2 page, last two rows: MOTION FX (OFF default / SPEED BLUR / FRAME
   BLEND / IN-BETWEEN / BLUR + IN-BETWEEN) and MOTION LEVEL (LOW / MEDIUM default / HIGH). Drawn by
@@ -328,6 +331,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--two-player 1` | 2 PLAYERS: split screen in races, snapshots `split_F.png` (the views of frames F and F+1 side by side). Driving from the start: start every 300 frames up to 9300, then `gas` (and `gas2`) every 10 frames from 9400 (the race starts ~9500, "GO!") |
 | `--gpu-tnl` | take the lists the Wii GPU path would take; runs the **GPU fetch check** (`[run] GPU fetch check`: program triangles vs the CPU draw; must stay at 0 mismatches). Known exception, unexplained, in every driving-route run since at least 2026-11-05: 15 lists at two menu renders (frames ~5640, ELAN +17F1xxx-17F5xxx quads, and ~6720, +1750xxx-175Bxxx), cached programs whose records changed with no page write seen |
 | `--frameskip N`, `--model-skip 0/1`, `--fixes on/off` | same as the launcher options, for A/B runs |
+| `--headlights 0/1/2` | HEADLIGHTS (default 0 here and in the launcher): 1 SOFT (wider cone, CPU path too: shows in snapshots), 2 SMOOTH (with `--gpu-tnl --point-lights 1`): `HEADLIGHTS SMOOTH per drawn render` line, every beam's projected cone (texture through its matrix) against the ELAN's cone at each vertex in front of the lamp: max error must stay ~0.02, 0 over 0.1. the mask check (lists reaching behind the lamp) likewise. `HEADLIGHTS per frame` line: beams, of which masked, headlights left out of lists their cone misses |
 | `--point-lights 0/1` | NIGHT LIGHTS: 1 = point lights as GX local lights; without `--gpu-tnl` the CPU draws those lists lit the way GX would (snapshot preview). With `--gpu-tnl`: `point-lit light sets per frame` line, every reused set rebuilt and compared (`STALE` must stay 0). The night attract demo (no presses, 9000 frames) is not deterministic on Windows past render ~5300: compare `record digest` lines only up to where two runs of the same code agree |
 | `--cull 0/1/2` | BACKFACE CULL in the snapshots: 2 = the polygons' cull modes (launcher ON), 1 = the other winding |
 | `--list-cull 0/1/2/3` | 3D LIST CULL with `--gpu-tnl`: 1 = behind the camera, 2 = out of view, 3 = also whole models (launcher default). Prints `3D list cull per frame` and `3D list boxes ... N STALE` (every box used is checked against its list's records, every model stepped over against its block: must stay at 0) and `record digest` (all that the renderer is handed: for a refactor of the recording side, two runs at the same value must match line for line; run them one at a time, four at once lost one) |
@@ -363,6 +367,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | env `IDAS3_2P_HOLD=FROM-TO:CAR` | 2 PLAYERS keeps the camera on one car (0 player, 1 CPU) in those frames |
 | env `IDAS3_STRIP_ORDER=FROM:TO` | each render in those frames as runs of polygon headers in submission order (list type; E a GPU-drawn ELAN list, P a TA polygon, S a TA sprite) with vertices, screen box, 1/W range; with snapshots, each run also drawn alone (`frame_F_runNN_L?.png`) with its nearest pixel. How the HUD's place and depth were found (CPU path: ELAN lists come as P runs) |
 | env `IDAS3_MOTION=FROM:TO` | a `[motion]` line a vblank: race view, in-car view, both cars' metres and yaw a frame, focal length, and the vertices drawn under each ELAN projection |
+| env `IDAS3_HEADLIGHT_CENSUS=1` | CPU path (no `--gpu-tnl`): two `[headlight]` lines per 60 renders: lists the cars' headlights reach, lit vertices and strip edges, hard edges (light changing > 0.25 along one) by the angle they span seen from the lamp and by distance, cone edges (the cone term alone changing > 0.5: the polygon seen in the beam) and the lists holding them by type, lit vertices over 1. The night attract demo (no presses, 9000 frames) has headlights from ~5000 |
 | env `IDAS3_POKE=FROM-TO:ADDR=VALUE[;...]` | a guest word written at every vblank in those frames: try a game variable's effect in the snapshots |
 | env `IDAS3_DUMP_AT=F1,F2,...` (+ `IDAS3_DUMP_DIR`) | guest RAM dumps `ram_F.bin` at those frames (32 MB each; never commit them) |
 | `--dump-ram/-vram/-aica/-elan FILE` | memory dumps at the end (never commit them) |
@@ -513,6 +518,30 @@ GUARD's read-only pages); `[CC]` JIT call-outs into C
 
 - Specular is dropped on the GPU T&L path (visible on untextured lists, and at night on
   bumpers, grilles and the road's glints, where the headlights make it).
+- Night headlight beam shows the road's polygons (owner, since day 1, NIGHT LIGHTS CPU and GPU
+  alike): the ELAN lights per vertex (Flycast too, same formula) and the cone is hard, 0 from
+  24.9 degrees and full within 14.8 (angle A 1.555, B -16.75; reach 200, full to 100; one light a car sent 4
+  times, colour 0.5, so 4.0 with the x2 scale), so on big road polygons each corner is either lit or not.
+  `IDAS3_HEADLIGHT_CENSUS` on the night demo's race (2026-11-10): the beam reaches 150-280 lists a
+  render; 100-1100 cone edges a render, in 20-55 lists (half opaque, half translucent, 10-23K
+  vertices); up to ~1.7K lit vertices over 1. Owner: "make it look good, then make it fast".
+  Built (2026-11-10, untested on a Wii): HEADLIGHTS (RENDERING 2, last row, default ARCADE (OLD)).
+  SOFT: a headlight's cone edge spread 10 degrees each way (4.8-34.9), per vertex, both paths (`softenCone`).
+  SMOOTH (GPU path with NIGHT LIGHTS GPU): a list whose bounding sphere crosses the cone's edge gets the
+  strongest such headlight as a beam (`ElanGxBeam`): GX light 7 lights colour channel 1 per vertex
+  (colour x2 x copies, the excess over 1 on the angle term scale x c, which also gives 0 behind the lamp;
+  distance fitted as NIGHT LIGHTS'), TEXCOORD3 projects a 64x64 I8 cone texture (TEXMAP7, TEXMTX3) from the
+  lamp, TEV stage 1 puts channel 1 x cone in TEVREG2, stage 2 adds TEVREG2 x the list's texture (untextured:
+  one stage); gxRend puts its offset and fog stages back after the item (`elan_gx_draw` returns true).
+  Not for vertex-coloured or env-mapped lists, nor under AUTOSORT. A projection mirrors behind the lamp:
+  a list whose sphere reaches behind the lamp's plane (85-95% of the lists where the polygon showed: the
+  long road segments around the car) also gets a front-mask stage (TEXCOORD4 along the axis, TEXMTX4, a
+  16x4 I8 step in TEXMAP3: 0 behind, 1 from 4 units in front), so 3-4 stages. SOFT and SMOOTH also leave a
+  headlight out of a list its cone misses (exact). Windows: the cone check holds (max error 0.023 at ~2-3M
+  vertices a run). SMOOTH gives beams to many more lists than show cone edges (bounding spheres are loose),
+  so the cost is the first thing to read on the Wii (`rend`, `[prof]   HEADLIGHTS per frame`). To check
+  on the Wii: the beam's look per value, no ghost beam behind the car (chase view); SMOOTH showing NO beam
+  at all would mean the GX spot direction sign is wrong (it is unverified, see NIGHT LIGHTS below).
 - Night scenes with NIGHT LIGHTS = GPU: point lights are GX local lights (`gxPointLight` in
   `naomi_elan_tnl.cpp`): fitted distance attenuation (dimmer core, faint tail past the reach),
   parabola for saturating spots, duplicates merged, lights out of a list's reach left out, at

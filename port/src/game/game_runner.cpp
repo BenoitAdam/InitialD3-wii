@@ -312,6 +312,11 @@ void logMemoryActivity(const NaomiFrameInfo& info)
             log::write("[prof]   point-lit light sets per frame: %u built, %u the last one again\n",
                        (es.lightSetsBuilt - s_prevBox.lightSetsBuilt) / frames,
                        (es.lightSetsReused - s_prevBox.lightSetsReused) / frames);
+        if (es.beamLists != s_prevBox.beamLists || es.coneOut != s_prevBox.coneOut)
+            log::write("[prof]   HEADLIGHTS per frame: %u lists with a projected beam (SMOOTH), %u of them masked "
+                       "(reaching behind the lamp), %u headlights left out of lists their cone misses\n",
+                       (es.beamLists - s_prevBox.beamLists) / frames, (es.beamMasked - s_prevBox.beamMasked) / frames,
+                       (es.coneOut - s_prevBox.coneOut) / frames);
         if (es.mirrorModels != s_prevBox.mirrorModels)
             log::write("[prof]   MIRROR OFF per frame: %u models not drawn (%u from their summary), %u lists, %u "
                        "vertices\n",
@@ -428,7 +433,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_small_cull_preset,    &g_incar_reflect_preset, &g_elan_dl_preset,     &g_elan_colour_fetch_preset,
         &g_elan_prefetch_preset, &g_two_player_preset, &g_gc_layout_preset, &g_p2_car_preset,
         &g_p2_scenery_preset,    &g_motion_fx_preset,  &g_motion_level_preset, &g_test_mode_preset,
-        &g_between_warp_preset};
+        &g_between_warp_preset,  &g_headlight_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

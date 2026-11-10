@@ -11159,8 +11159,23 @@ void DoRender()
       // was applied above like any strip's; it streams its own vertices.
       if (!ts_active && listElanItem[drawLST - lists])
       {
-        if (!strip_skip)
-          elan_gx_draw(listElanItem[drawLST - lists] - 1u, s_elan_frame, force_vtx_alpha_opaque);
+        if (!strip_skip &&
+            elan_gx_draw(listElanItem[drawLST - lists] - 1u, s_elan_frame, force_vtx_alpha_opaque))
+        {
+          // HEADLIGHTS SMOOTH: the item borrowed stages 1-3 (and set its own
+          // count). Put this file's back (1 and 2), as after the YUV program.
+          if (offset_fix)
+          {
+            GX_SetTevOrder(GX_TEVSTAGE1, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR1A1);
+            GX_SetTevColorIn(GX_TEVSTAGE1, GX_CC_RASC, GX_CC_ZERO, GX_CC_ZERO, GX_CC_CPREV);
+            GX_SetTevColorOp(GX_TEVSTAGE1, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+            GX_SetTevAlphaIn(GX_TEVSTAGE1, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
+            GX_SetTevAlphaOp(GX_TEVSTAGE1, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+          }
+          if (fog_on && last_fog_mode >= 0 && last_fog_mode != 2)
+            FogSetStage(fog_stage, last_fog_mode);
+          GX_SetNumTevStages(last_tev_stages);
+        }
       }
       else
 #endif

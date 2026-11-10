@@ -119,6 +119,7 @@ enum CoreOptionId
     OPT_MOTION_LEVEL,
     OPT_TEST_MODE,
     OPT_BETWEEN_WARP,
+    OPT_HEADLIGHTS,
     kCoreOptionCount
 };
 
@@ -355,6 +356,11 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // are tests to tell the warp's depth guess from the path itself.
     {"BETWEEN WARP  ", "IN-BETWEEN picture: BANDS, SMOOTH, ROTATION ONLY (turn, no depth), NO MOVE (test: same picture)",
      PAGE_DEPTH_2, 0, 4, {"ROTATION ONLY", "BANDS (OLD)", "SMOOTH", "NO MOVE (TEST)"}, {2, 1, 0, 3}},
+    // The cars' headlights at night (naomi_elan_tnl.cpp, naomi_elan_gx.cpp): the
+    // ELAN lights per vertex and the cone's edge is hard, so the road's big
+    // polygons show in the beam. SMOOTH needs 3D T&L GPU and NIGHT LIGHTS GPU.
+    {"HEADLIGHTS    ", "night: ARCADE beam shows the road's polygons; SOFT wider edge (free); SMOOTH per pixel",
+     PAGE_DEPTH_2, 0, 3, {"ARCADE (OLD)", "SOFT", "SMOOTH"}, {0, 1, 2}},
 };
 
 } // namespace idas3

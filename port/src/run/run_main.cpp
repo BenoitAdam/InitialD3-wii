@@ -1278,6 +1278,15 @@ void host_on_vblank()
                          (es.boxCulledSmall - last.boxCulledSmall) / 60);
                 logLine(line);
             }
+            if (es.beamLists != last.beamLists || es.coneOut != last.coneOut)
+            {
+                snprintf(line, sizeof(line),
+                         "[run]   HEADLIGHTS per frame: %u lists with a projected beam (SMOOTH), %u of them masked "
+                         "(reaching behind the lamp), %u headlights left out of lists their cone misses\n",
+                         (es.beamLists - last.beamLists) / 60, (es.beamMasked - last.beamMasked) / 60,
+                         (es.coneOut - last.coneOut) / 60);
+                logLine(line);
+            }
             if (es.lightSetsBuilt != last.lightSetsBuilt || es.lightSetsReused != last.lightSetsReused)
             {
                 snprintf(line, sizeof(line),
@@ -1630,6 +1639,14 @@ int main(int argc, char** argv)
         // the lists stay on the CPU, lit the way GX would (a preview).
         extern int g_elan_point_preset;
         g_elan_point_preset = atoi(pl);
+    }
+    if (const char* hl = argValue(argc, argv, "--headlights"))
+    {
+        // HEADLIGHTS: 0 ARCADE, 1 SOFT (wider cone: shows in the snapshots), 2
+        // SMOOTH (with --gpu-tnl --point-lights 1: projected beams, each one's
+        // texture coordinates checked against the ELAN's cone at every vertex).
+        extern int g_headlight_preset;
+        g_headlight_preset = atoi(hl);
     }
     if (const char* lc = argValue(argc, argv, "--list-cull"))
     {

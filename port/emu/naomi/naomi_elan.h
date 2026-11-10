@@ -38,6 +38,10 @@ struct NaomiElanStats
     u32 boxCulledSmall;                     // SMALL 3D: lists dropped (their vertices in boxCulledVertices)
     u32 lightSetsBuilt, lightSetsReused;    // point-lit lists (GPU path): light sets built, last one reused
     u32 lightSetsStale;                     // host: ...reused where a build gives another set
+    // HEADLIGHTS SOFT / SMOOTH (point-lit lists picked on the GPU path): headlights
+    // left out of a list their cone misses, lists given a projected beam (SMOOTH),
+    // of which with the front mask (reaching behind the lamp).
+    u32 coneOut, beamLists, beamMasked;
     // Host census of boxed lists drawn: vertices by the box's nearest depth
     // (< 25, 50, 100, 200, 400, 800, 1600, more) and by its diagonal on screen
     // (< 2, 4, 8, 16, 32, 64, 128 pixels, more), and lists.

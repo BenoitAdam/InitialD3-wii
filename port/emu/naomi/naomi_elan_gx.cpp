@@ -10,6 +10,98 @@ int g_elan_dl_preset = 0;
 int g_elan_colour_fetch_preset = 0;
 int g_elan_point_preset = 0;
 int g_elan_box_preset = 0;
+int g_headlight_preset = 0;
+
+#include <math.h>
+
+// ---- HEADLIGHTS = SMOOTH: the projected cone (Wii draw and Windows check) ---
+float elan_beam_tan(const ElanGxBeam& b)
+{
+    // The cone term's zero, c0 = -p / q, plus a 15% margin: the texture's
+    // outer ring is then dark, which GX's clamp repeats outside it.
+    const float c0 = b.coneQ > 0.f ? -b.coneP / b.coneQ : 0.f;
+    const float c = c0 > 0.05f ? (c0 < 0.9999f ? c0 : 0.9999f) : 0.05f;
+    return sqrtf(1.f - c * c) / c * 1.15f;
+}
+
+void elan_beam_texture(const ElanGxBeam& b, u8* texels)
+{
+    // Texel i's centre is s = (i + 0.5) / N, at x / z = (s - 0.5) * 2 tan.
+    const float t = elan_beam_tan(b), step = 2.f * t / kElanBeamTex;
+    for (u32 j = 0; j < kElanBeamTex; j++)
+        for (u32 i = 0; i < kElanBeamTex; i++)
+        {
+            const float x = ((float)i + 0.5f) * step - t, y = ((float)j + 0.5f) * step - t;
+            const float c = 1.f / sqrtf(1.f + x * x + y * y);
+            float v = b.coneP + b.coneQ * c;
+            v = v < 0.f ? 0.f : v > 1.f ? 1.f : v;
+            const bool edge = i == 0 || j == 0 || i == kElanBeamTex - 1 || j == kElanBeamTex - 1;
+            texels[j * kElanBeamTex + i] = edge ? 0 : (u8)(v * 255.f + 0.5f);
+        }
+}
+
+void elan_beam_texmtx(const ElanGxXform& x, const ElanGxBeam& b, float m[3][4])
+{
+    // Two unit vectors across the axis (the cone is round: which two is free).
+    const float* a = b.axis;
+    float h[3] = {0.f, 1.f, 0.f};
+    if (fabsf(a[1]) > 0.9f)
+    {
+        h[0] = 1.f;
+        h[1] = 0.f;
+    }
+    float u[3] = {h[1] * a[2] - h[2] * a[1], h[2] * a[0] - h[0] * a[2], h[0] * a[1] - h[1] * a[0]};
+    const float ul = 1.f / sqrtf(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+    for (float& c : u)
+        c *= ul;
+    const float v[3] = {a[1] * u[2] - a[2] * u[1], a[2] * u[0] - a[0] * u[2], a[0] * u[1] - a[1] * u[0]};
+    // Lighting space to (s t q): s = 0.5 + k x / z with x, z the point's
+    // offsets from the lamp across and along the axis, k = 0.5 / tan.
+    const float k = 0.5f / elan_beam_tan(b);
+    float B[3][4];
+    for (int c = 0; c < 3; c++)
+    {
+        B[0][c] = k * u[c] + 0.5f * a[c];
+        B[1][c] = k * v[c] + 0.5f * a[c];
+        B[2][c] = a[c];
+    }
+    for (int r = 0; r < 3; r++)
+        B[r][3] = -(B[r][0] * b.pos[0] + B[r][1] * b.pos[1] + B[r][2] * b.pos[2]);
+    // Times the position matrix: model space to lighting space (-X, Y, -Z),
+    // as the GPU path's drawItem loads it.
+    const float* t = x.tm;
+    const float mv[3][4] = {{-t[0], -t[3], -t[6], -t[9]}, {t[1], t[4], t[7], t[10]}, {-t[2], -t[5], -t[8], -t[11]}};
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 4; c++)
+            m[r][c] = B[r][0] * mv[0][c] + B[r][1] * mv[1][c] + B[r][2] * mv[2][c] + (c == 3 ? B[r][3] : 0.f);
+}
+
+void elan_beam_mask_texture(u8* texels)
+{
+    // Black left half, white right half: sampled bilinear, 0 up to the centre
+    // of the last black texel and 1 from the first white one.
+    for (u32 j = 0; j < kElanBeamMaskH; j++)
+        for (u32 i = 0; i < kElanBeamMaskW; i++)
+            texels[j * kElanBeamMaskW + i] = i < kElanBeamMaskW / 2 ? 0 : 255;
+}
+
+void elan_beam_maskmtx(const ElanGxXform& x, const ElanGxBeam& b, float m[2][4])
+{
+    // s = (W/2 - 0.5 + z / mask) / W, z the distance along the axis in front of
+    // the lamp: the black texel's centre at z = 0, the white one's at z = mask.
+    // Behind the lamp s goes below 0 and clamps black (|s| stays small: GX
+    // texture coordinates have a limited range). t: the middle row.
+    const float w = (float)kElanBeamMaskW, k = 1.f / (b.mask * w);
+    const float B[4] = {k * b.axis[0], k * b.axis[1], k * b.axis[2],
+                        (w * 0.5f - 0.5f) / w - k * (b.axis[0] * b.pos[0] + b.axis[1] * b.pos[1] + b.axis[2] * b.pos[2])};
+    const float* t = x.tm;
+    const float mv[3][4] = {{-t[0], -t[3], -t[6], -t[9]}, {t[1], t[4], t[7], t[10]}, {-t[2], -t[5], -t[8], -t[11]}};
+    for (int c = 0; c < 4; c++)
+    {
+        m[0][c] = B[0] * mv[0][c] + B[1] * mv[1][c] + B[2] * mv[2][c] + (c == 3 ? B[3] : 0.f);
+        m[1][c] = c == 3 ? 0.5f : 0.f;
+    }
+}
 
 // ---- Strip structure of an ICH list (Wii draw and Windows census) ----------
 // Vertex records: word 0 header (bit 31 ends the strip, bits 29-30 == 2 make
@@ -553,6 +645,16 @@ std::vector<FetchRec> s_fetchRecs;
 std::vector<const FetchList*> s_drawnPrograms;  // this render's
 CheckTotals s_check = {};
 u32 s_checkRenders = 0;
+// HEADLIGHTS SMOOTH's cone check (beamCheck): lists with a beam, their
+// vertices, those in front of the lamp, and the projected cone's error there.
+struct BeamCheck
+{
+    u64 lists, vertices, front, over;
+    float maxErr;
+    u64 masked, maskVertices, maskOver;     // ...and the front mask's, on lists reaching behind the lamp
+    float maskMaxErr;
+};
+BeamCheck s_beamCheck = {};
 u64 s_recordDigest = 14695981039346656037ull;   // recordDigest()
 
 // This render's light sets, shared as the Wii's elan_gx_record shares them:
@@ -785,6 +887,15 @@ void elan_gx_census_render()
             printf("[run]   3D list boxes: %u lists asked, %u had a box (%.0f%%), every box checked against the "
                    "list's records: %u STALE\n",
                    s_check.boxAsked, s_check.boxes, 100.0 * s_check.boxes / s_check.boxAsked, s_check.boxStale);
+        if (s_beamCheck.lists)
+            printf("[run]   HEADLIGHTS SMOOTH per drawn render: %.1f lists with a beam (%.1f masked) | cone check: %llu "
+                   "vertices, %llu in front of the lamp, the projected cone against the ELAN's: max error %.3f, %llu "
+                   "over 0.1 | mask check: %llu vertices, max error %.3f, %llu over 0.1\n",
+                   s_beamCheck.lists / d, s_beamCheck.masked / d, (unsigned long long)s_beamCheck.vertices,
+                   (unsigned long long)s_beamCheck.front, s_beamCheck.maxErr, (unsigned long long)s_beamCheck.over,
+                   (unsigned long long)s_beamCheck.maskVertices, s_beamCheck.maskMaxErr,
+                   (unsigned long long)s_beamCheck.maskOver);
+        s_beamCheck = {};
         printf("[run]   record digest at render %u: %016llX\n", s_render, (unsigned long long)s_recordDigest);
         s_check = {};
         s_checkRenders = 0;
@@ -855,6 +966,98 @@ bool elan_gx_unwritten_since(const void* p, u32 bytes, u32 since)
            unwrittenSince((u32)((const u8*)p - ram), bytes, since);
 }
 
+// HEADLIGHTS SMOOTH: the Wii's projected cone at each vertex of a list with a
+// beam (the texture through the texture matrix, sampled bilinear as GX does)
+// against the ELAN's cone term there. A wrong matrix, axis or texture shows as
+// large errors; between the vertices, per pixel, is where the two differ.
+static float sampleBeam(const u8* tex, float s, float t)
+{
+    const float n = (float)kElanBeamTex;
+    float x = s * n - 0.5f, y = t * n - 0.5f;
+    x = x < 0.f ? 0.f : x > n - 1.f ? n - 1.f : x;
+    y = y < 0.f ? 0.f : y > n - 1.f ? n - 1.f : y;
+    const u32 x0 = (u32)x, y0 = (u32)y;
+    const u32 x1 = x0 + 1 < kElanBeamTex ? x0 + 1 : x0, y1 = y0 + 1 < kElanBeamTex ? y0 + 1 : y0;
+    const float fx = x - (float)x0, fy = y - (float)y0;
+    const float top = tex[y0 * kElanBeamTex + x0] * (1.f - fx) + tex[y0 * kElanBeamTex + x1] * fx;
+    const float bottom = tex[y1 * kElanBeamTex + x0] * (1.f - fx) + tex[y1 * kElanBeamTex + x1] * fx;
+    return (top * (1.f - fy) + bottom * fy) / 255.f;
+}
+
+static void beamCheck(const ElanGxRecord& r)
+{
+    const ElanGxBeam& b = r.lights.beamLight;
+    static float texP = NAN, texQ = NAN;
+    static u8 tex[kElanBeamTex * kElanBeamTex];
+    if (b.coneP != texP || b.coneQ != texQ)
+    {
+        elan_beam_texture(b, tex);
+        texP = b.coneP;
+        texQ = b.coneQ;
+    }
+    float m[3][4];
+    elan_beam_texmtx(r.xform, b, m);
+    const float* tm = r.xform.tm;
+    s_beamCheck.lists++;
+    static u8 maskTex[kElanBeamMaskW * kElanBeamMaskH];
+    float mm[2][4] = {};
+    if (b.mask > 0.f)
+    {
+        elan_beam_mask_texture(maskTex);
+        elan_beam_maskmtx(r.xform, b, mm);
+        s_beamCheck.masked++;
+    }
+    const u32 words = r.vsize / 4;
+    for (u32 i = 0; i < r.count; i++)
+    {
+        const u32* v = r.vtx + i * words;
+        if (elan_strips::placeholder(v))
+            continue;
+        float p[3];
+        memcpy(p, v + 1, sizeof(p));
+        float stq[3];
+        for (int k = 0; k < 3; k++)
+            stq[k] = m[k][0] * p[0] + m[k][1] * p[1] + m[k][2] * p[2] + m[k][3];
+        s_beamCheck.vertices++;
+        // The ELAN's terms at the vertex, in lighting space (-X, Y, -Z).
+        const float P[3] = {-(tm[0] * p[0] + tm[3] * p[1] + tm[6] * p[2] + tm[9]),
+                            tm[1] * p[0] + tm[4] * p[1] + tm[7] * p[2] + tm[10],
+                            -(tm[2] * p[0] + tm[5] * p[1] + tm[8] * p[2] + tm[11])};
+        if (b.mask > 0.f)
+        {
+            // The mask: 0 behind the lamp's plane, 1 from `mask` in front of it.
+            const float z = (P[0] - b.pos[0]) * b.axis[0] + (P[1] - b.pos[1]) * b.axis[1] + (P[2] - b.pos[2]) * b.axis[2];
+            float want = z / b.mask;
+            want = want < 0.f ? 0.f : want > 1.f ? 1.f : want;
+            const float s = mm[0][0] * p[0] + mm[0][1] * p[1] + mm[0][2] * p[2] + mm[0][3];
+            const float n = (float)kElanBeamMaskW;
+            float tx = s * n - 0.5f;
+            tx = tx < 0.f ? 0.f : tx > n - 1.f ? n - 1.f : tx;
+            const u32 x0 = (u32)tx, x1 = x0 + 1 < kElanBeamMaskW ? x0 + 1 : x0;
+            const float got = (maskTex[x0] * (1.f - (tx - (float)x0)) + maskTex[x1] * (tx - (float)x0)) / 255.f;
+            const float err = fabsf(got - want);
+            s_beamCheck.maskVertices++;
+            s_beamCheck.maskOver += err > 0.1f;
+            if (err > s_beamCheck.maskMaxErr)
+                s_beamCheck.maskMaxErr = err;
+        }
+        if (stq[2] <= 0.f)
+            continue;                           // behind the lamp: no light there (channel 1, the mask)
+        const float L[3] = {b.pos[0] - P[0], b.pos[1] - P[1], b.pos[2] - P[2]};
+        const float d = sqrtf(L[0] * L[0] + L[1] * L[1] + L[2] * L[2]);
+        if (!(d > 0.f))
+            continue;
+        const float c = -(L[0] * b.axis[0] + L[1] * b.axis[1] + L[2] * b.axis[2]) / d;
+        float exact = b.coneP + b.coneQ * (c > 0.f ? c : 0.f);
+        exact = exact < 0.f ? 0.f : exact > 1.f ? 1.f : exact;
+        const float err = fabsf(sampleBeam(tex, stq[0] / stq[2], stq[1] / stq[2]) - exact);
+        s_beamCheck.front++;
+        s_beamCheck.over += err > 0.1f;
+        if (err > s_beamCheck.maxErr)
+            s_beamCheck.maxErr = err;
+    }
+}
+
 // Digest of everything the renderer is handed (printed every 64 renders): an
 // optimisation of the recording side must leave it exactly the same.
 static void recordDigest(const ElanGxRecord& r)
@@ -881,6 +1084,8 @@ bool elan_gx_record(const ElanGxRecord& r)
     fetchNote(r);
     lightSetNote(r);
     recordDigest(r);
+    if (r.lights.beam)
+        beamCheck(r);
     return rend_AddElanItem(r.pcw, r.isp, r.tsp, r.tcw, 0, r.nearW, r.farW);
 }
 
@@ -918,6 +1123,7 @@ struct Item
     u16 xform;
     u16 lights;
     u8 base[4];                                 // RGBA, material colour
+    u8 textured;                                // PCW Texture: gxRend's stage 0 samples TEXMAP0
 };
 
 Item* s_items = nullptr;
@@ -1055,6 +1261,78 @@ void loadLights(const ElanGxLightSet& ls)
         }
         GX_LoadLightObj(&lo, GX_LIGHT0 << i);
     }
+    if (ls.beam)
+    {
+        // HEADLIGHTS SMOOTH, channel 1's only light: no cone (the texture is
+        // the cone), angle term scale x c, c = dot(vertex-to-lamp, -axis).
+        const ElanGxBeam& b = ls.beamLight;
+        GXLightObj lo;
+        GX_InitLightColor(&lo, (GXColor){toByte(b.color[0]), toByte(b.color[1]), toByte(b.color[2]), 255});
+        GX_InitLightPos(&lo, b.pos[0], b.pos[1], b.pos[2]);
+        GX_InitLightDir(&lo, b.axis[0], b.axis[1], b.axis[2]);   // stored negated: -axis, towards the lamp
+        GX_InitLightAttn(&lo, 0.f, b.scale, 0.f, b.dist[0], b.dist[1], b.dist[2]);
+        GX_LoadLightObj(&lo, GX_LIGHT7);
+    }
+}
+
+// HEADLIGHTS SMOOTH: the cone textures (I8, tiled for GX), one per cone shape
+// (Initial D has one or two). Static: nothing may grow on the heap in a game.
+constexpr u32 kBeamTexSlots = 4;
+struct BeamTex
+{
+    float p, q;
+    GXTexObj obj;
+};
+BeamTex s_beamTex[kBeamTexSlots];
+u32 s_nBeamTex = 0;
+u8 s_beamTexels[kBeamTexSlots][kElanBeamTex * kElanBeamTex] __attribute__((aligned(32)));
+
+const BeamTex* beamTexture(const ElanGxBeam& b)
+{
+    for (u32 k = 0; k < s_nBeamTex; k++)
+        if (s_beamTex[k].p == b.coneP && s_beamTex[k].q == b.coneQ)
+            return &s_beamTex[k];
+    if (s_nBeamTex == kBeamTexSlots)
+        return nullptr;
+    BeamTex& t = s_beamTex[s_nBeamTex];
+    static u8 linear[kElanBeamTex * kElanBeamTex];
+    elan_beam_texture(b, linear);
+    // I8 tiles: 8 x 4 texels, 32 bytes, row by row.
+    u8* out = s_beamTexels[s_nBeamTex];
+    const u32 tilesX = kElanBeamTex / 8;
+    for (u32 y = 0; y < kElanBeamTex; y++)
+        for (u32 x = 0; x < kElanBeamTex; x++)
+            out[((y / 4) * tilesX + x / 8) * 32 + (y % 4) * 8 + x % 8] = linear[y * kElanBeamTex + x];
+    DCFlushRange(out, kElanBeamTex * kElanBeamTex);
+    GX_InitTexObj(&t.obj, out, kElanBeamTex, kElanBeamTex, GX_TF_I8, GX_CLAMP, GX_CLAMP, GX_FALSE);
+    GX_InitTexObjLOD(&t.obj, GX_LINEAR, GX_LINEAR, 0.f, 0.f, 0.f, GX_FALSE, GX_FALSE, GX_ANISO_1);
+    t.p = b.coneP;
+    t.q = b.coneQ;
+    s_nBeamTex++;
+    return &t;
+}
+
+// The front mask's step texture (I8, two 8 x 4 tiles side by side).
+u8 s_maskTexels[kElanBeamMaskW * kElanBeamMaskH] __attribute__((aligned(32)));
+GXTexObj s_maskObj;
+bool s_maskReady = false;
+
+GXTexObj* beamMaskTexture()
+{
+    if (!s_maskReady)
+    {
+        u8 linear[kElanBeamMaskW * kElanBeamMaskH];
+        elan_beam_mask_texture(linear);
+        const u32 tilesX = kElanBeamMaskW / 8;
+        for (u32 y = 0; y < kElanBeamMaskH; y++)
+            for (u32 x = 0; x < kElanBeamMaskW; x++)
+                s_maskTexels[((y / 4) * tilesX + x / 8) * 32 + (y % 4) * 8 + x % 8] = linear[y * kElanBeamMaskW + x];
+        DCFlushRange(s_maskTexels, sizeof(s_maskTexels));
+        GX_InitTexObj(&s_maskObj, s_maskTexels, kElanBeamMaskW, kElanBeamMaskH, GX_TF_I8, GX_CLAMP, GX_CLAMP, GX_FALSE);
+        GX_InitTexObjLOD(&s_maskObj, GX_LINEAR, GX_LINEAR, 0.f, 0.f, 0.f, GX_FALSE, GX_FALSE, GX_ANISO_1);
+        s_maskReady = true;
+    }
+    return &s_maskObj;
 }
 
 } // namespace
@@ -1117,6 +1395,7 @@ bool elan_gx_record(const ElanGxRecord& r)
     it.lights = (u16)li;
     for (int c = 0; c < 4; c++)
         it.base[c] = toByte(r.base[c]);
+    it.textured = (u8)(r.pcw >> 3 & 1);
     return true;
 }
 
@@ -1137,6 +1416,12 @@ struct RunState
     u32 matColor, ambColor;     // their register colours...
     bool matValid, ambValid;    // ...when loaded since the channel was set up
     bool envTexgen;             // TEXCOORD0 generated from the normal
+    // HEADLIGHTS SMOOTH: the cone texture in TEXMAP7, whose beam matrices are
+    // in TEXMTX3 / TEXMTX4 (xform << 16 | light set, of that render; ~0 =
+    // none), the mask texture loaded in TEXMAP3.
+    const void* beamTex;
+    u32 beamMtxKey, beamMtxRender;
+    bool maskLoaded;
 };
 RunState s_run = {};
 
@@ -1651,18 +1936,18 @@ void elan_gx_restore(const ElanGxFrame& f)
         GX_SetChanCtrl(GX_COLOR1A1, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, 0, GX_DF_NONE, GX_AF_NONE);
 }
 
-static void drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha);
+static bool drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha);
 
 static void prefetchAhead(u32 index);
 
-void elan_gx_draw(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
+bool elan_gx_draw(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
 {
     // PROFILER: [HW] line, the ELAN share of a render on the CPU.
     FP_T0(t);
     prefetchAhead(index);
     s_canvasW = f.width;
     s_canvasH = f.height;
-    drawItem(index, f, forceOpaqueAlpha);
+    const bool borrowed = drawItem(index, f, forceOpaqueAlpha);
     if (FRAME_PROF_ON())
     {
         g_fp_elan_ticks += FP_TICKS32() - t;
@@ -1672,6 +1957,7 @@ void elan_gx_draw(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
             g_fp_elan_items++;
         }
     }
+    return borrowed;
 }
 
 // The renderer draws the items mostly in recorded order, and each costs a few
@@ -1721,15 +2007,99 @@ static void prefetchAhead(u32 index)
 #endif
 }
 
-static void drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
+// HEADLIGHTS SMOOTH: the item's beam (ElanGxBeam). Channel 1 lights it per
+// vertex (GX light 7, no cone), TEXCOORD3 projects the cone texture (TEXMAP7)
+// from the lamp, and TEV stages after gxRend's stage 0 add texture x channel
+// 1 x cone: stage 1 puts channel 1 x cone in TEVREG2, the mask stage (a list
+// reaching behind the lamp: TEXCOORD4 along the axis, the step in TEXMAP3)
+// multiplies it, the last stage adds it times the list's texture sampled
+// again (untextured: the last of the others adds it straight to the colour).
+// The channel's light is clamped at 1 as the ELAN clamps the sum of its
+// lights; the ELAN would also clamp the beam with the other lights.
+// TEXCOORD3 and TEVREG2 as the FMV program borrows them (gxRend.cpp's resource
+// notes: TEXCOORD1-2 are AUTOSORT's). The offset and fog stages these cover add
+// nothing to an ELAN list (its channel 1 is black), and gxRend sets them back
+// after the item (elan_gx_draw's result).
+static void beamStage(u8 stage, u8 coord, u8 map, u8 chan, u8 a, u8 b, u8 c, bool last)
+{
+    GX_SetTevDirect(stage);
+    GX_SetTevOrder(stage, coord, map, chan);
+    GX_SetTevColorIn(stage, a, b, c, last ? GX_CC_CPREV : GX_CC_ZERO);
+    GX_SetTevColorOp(stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, last ? GX_TEVPREV : GX_TEVREG2);
+    GX_SetTevAlphaIn(stage, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
+    GX_SetTevAlphaOp(stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+}
+
+static bool beamBegin(const Item& it, const ElanGxXform& x, const ElanGxLightSet& ls)
+{
+    const BeamTex* t = beamTexture(ls.beamLight);
+    if (!t)
+        return false;
+    const bool mask = ls.beamLight.mask > 0.f;
+    if (s_run.beamTex != t)
+    {
+        GX_LoadTexObj(const_cast<GXTexObj*>(&t->obj), GX_TEXMAP7);
+        s_run.beamTex = t;
+    }
+    if (mask && !s_run.maskLoaded)
+    {
+        GX_LoadTexObj(beamMaskTexture(), GX_TEXMAP3);
+        s_run.maskLoaded = true;
+    }
+    const u32 mtxKey = (u32)it.xform << 16 | it.lights;
+    if (s_run.beamMtxKey != mtxKey || s_run.beamMtxRender != s_render)
+    {
+        float m[3][4];
+        elan_beam_texmtx(x, ls.beamLight, m);
+        GX_LoadTexMtxImm(m, GX_TEXMTX3, GX_MTX3x4);
+        if (mask)
+        {
+            float mm[3][4] = {};
+            elan_beam_maskmtx(x, ls.beamLight, mm);
+            GX_LoadTexMtxImm(mm, GX_TEXMTX4, GX_MTX2x4);
+        }
+        s_run.beamMtxKey = mtxKey;
+        s_run.beamMtxRender = s_render;
+    }
+    GX_SetTexCoordGen(GX_TEXCOORD3, GX_TG_MTX3x4, GX_TG_POS, GX_TEXMTX3);
+    if (mask)
+        GX_SetTexCoordGen(GX_TEXCOORD4, GX_TG_MTX2x4, GX_TG_POS, GX_TEXMTX4);
+    GX_SetNumTexGens(mask ? 5 : 4);
+    GX_SetNumChans(2);
+    GX_SetChanCtrl(GX_COLOR1, GX_ENABLE, GX_SRC_REG, GX_SRC_REG, GX_LIGHT7, GX_DF_CLAMP, GX_AF_SPOT);
+    GX_SetChanCtrl(GX_ALPHA1, GX_DISABLE, GX_SRC_REG, GX_SRC_REG, 0, GX_DF_NONE, GX_AF_NONE);
+    GX_SetChanAmbColor(GX_COLOR1A1, (GXColor){0, 0, 0, 0});
+    GX_SetChanMatColor(GX_COLOR1A1, (GXColor){it.base[0], it.base[1], it.base[2], 0});
+    u8 stage = GX_TEVSTAGE1;
+    // Channel 1 x cone.
+    beamStage(stage++, GX_TEXCOORD3, GX_TEXMAP7, GX_COLOR1A1, GX_CC_ZERO, GX_CC_RASC, GX_CC_TEXC,
+              !it.textured && !mask);
+    if (mask)                                   // ... x the front mask
+        beamStage(stage++, GX_TEXCOORD4, GX_TEXMAP3, GX_COLORNULL, GX_CC_ZERO, GX_CC_C2, GX_CC_TEXC, !it.textured);
+    if (it.textured)                            // ... x the list's texture, added
+        beamStage(stage++, GX_TEXCOORD0, GX_TEXMAP0, GX_COLORNULL, GX_CC_ZERO, GX_CC_TEXC, GX_CC_C2, true);
+    GX_SetNumTevStages(stage);                  // GX_TEVSTAGEn == n
+    return true;
+}
+
+// Back to what the next item and gxRend expect, but the TEV stages (gxRend's).
+static void beamEnd(const Item& it, const ElanGxFrame& f)
+{
+    GX_SetNumTexGens(it.textured ? 1 : 0);
+    GX_SetChanMatColor(GX_COLOR1A1, (GXColor){0, 0, 0, 0});
+    GX_SetChanCtrl(GX_COLOR1A1, GX_DISABLE, GX_SRC_REG, GX_SRC_REG, 0, GX_DF_NONE, GX_AF_NONE);
+    GX_SetNumChans(f.clr1 ? 2 : 1);
+}
+
+static bool drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
 {
     if (index >= s_nItems)
-        return;
+        return false;
     const Item& it = s_items[index];
     const ElanGxXform& x = s_xforms[it.xform];
     const ElanGxLightSet& ls = s_lsets[it.lights];
     if (it.count < 3)
-        return;
+        return false;
 
     if (!s_run.active)
     {
@@ -1737,6 +2107,9 @@ static void drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
         s_run.active = true;
         s_run.format = s_run.chan = 0xFFFFFFFFu;
         s_run.envTexgen = false;
+        s_run.beamTex = nullptr;
+        s_run.beamMtxKey = 0xFFFFFFFFu;
+        s_run.maskLoaded = false;
         s_run.proj[0] = s_run.proj[1] = s_run.proj[2] = s_run.proj[3] = NAN;   // never equal
         GX_SetCurrentMtx(GX_PNMTX1);
         if (f.clr1)
@@ -1866,10 +2239,15 @@ static void drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
     const u32 fmtKey = (hasNormal ? 8u : 0u) | (hasNormal && floatNormal ? 4u : 0u) | (hasColor ? 2u : 0u) |
                        (hasUV ? 1u : 0u);
     const u32 alphaOr = forceOpaqueAlpha ? 0xFF000000u : 0u;
-    if (s_fetchOn && (!hasColor || g_elan_colour_fetch_preset) && fetchDraw(it, fmtKey, alphaOr))
-        return;
-    useFormat(fmtKey);
-    kDraw[fmtKey](it, 0, it.count, alphaOr, kEmit[fmtKey]);
+    const bool beam = ls.lit && ls.beam && !hasColor && !env && beamBegin(it, x, ls);
+    if (!(s_fetchOn && (!hasColor || g_elan_colour_fetch_preset) && fetchDraw(it, fmtKey, alphaOr)))
+    {
+        useFormat(fmtKey);
+        kDraw[fmtKey](it, 0, it.count, alphaOr, kEmit[fmtKey]);
+    }
+    if (beam)
+        beamEnd(it, f);
+    return beam;
 }
 
 #endif

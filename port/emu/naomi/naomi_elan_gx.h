@@ -41,13 +41,48 @@ struct ElanGxLight
     float angle[3], dist[3];
 };
 
+// HEADLIGHTS = SMOOTH: a car's headlight on a list it crosses the edge of. The
+// ELAN lights per vertex, and a headlight's cone goes from full to nothing in
+// ~10 degrees, so on a big road polygon each corner is lit or not and the
+// polygon shows. Here the cone is a texture projected from the lamp (one
+// texgen, sampled per pixel), times colour channel 1 lit per vertex by this
+// light without its cone (colour, distance, N.L, and nothing behind the lamp).
+struct ElanGxBeam
+{
+    float pos[3];               // the lamp, lighting space
+    float axis[3];              // unit vector, the way it shines
+    float color[3];             // GX light colour (<= 1)
+    float scale;                // what the colour lost to stay <= 1, carried by the angle term
+    float dist[3];              // distance attenuation k0 k1 k2 (as a local light's)
+    float coneP, coneQ;         // the ELAN's cone term clamp(p + q c), c the cosine to the axis
+    // A list reaching behind the lamp's plane (the road around the car): the
+    // projection mirrors there, so the beam is also multiplied by a front mask,
+    // 0 behind the plane rising to 1 over this distance in front (0: no mask).
+    float mask;
+};
+constexpr u32 kElanBeamTex = 64;            // the cone texture's side, texels
+constexpr u32 kElanBeamMaskW = 16, kElanBeamMaskH = 4;   // the mask texture: a step at its middle
+// Tangent of the half angle the cone texture spans (its zero ring with a margin).
+float elan_beam_tan(const ElanGxBeam& b);
+// The cone texture, kElanBeamTex^2 bytes, row-major (the GX upload tiles it).
+void elan_beam_texture(const ElanGxBeam& b, u8* texels);
+// The texture matrix: model-space position (the list's vertices) to the cone
+// texture's (s t q), s/q and t/q in 0..1 across it.
+void elan_beam_texmtx(const ElanGxXform& x, const ElanGxBeam& b, float m[3][4]);
+// The mask texture (kElanBeamMaskW x kElanBeamMaskH bytes, row-major) and its
+// matrix: model-space position to (s t), s the distance along the axis.
+void elan_beam_mask_texture(u8* texels);
+void elan_beam_maskmtx(const ElanGxXform& x, const ElanGxBeam& b, float m[2][4]);
+
 struct ElanGxLightSet
 {
     bool lit;
-    u8 count;                   // <= 8 (GX hardware lights)
+    u8 count;                   // <= 8 (GX hardware lights); <= 7 with a beam
     u8 localMask;               // lights that are local (point) lights
+    u8 beam;                    // 1: beamLight is drawn as a projected cone (GX light 7)
     float ambient[3];
     ElanGxLight lights[8];
+    ElanGxBeam beamLight;
 };
 
 struct ElanGxRecord
@@ -101,7 +136,9 @@ struct ElanGxFrame
     bool clr1;                  // gxRend's vertex format carries CLR1 this frame
 };
 void elan_gx_frame_reset();     // the renderer restarts its lists (new frame)
-void elan_gx_draw(u32 item, const ElanGxFrame& f, bool forceOpaqueAlpha);
+// True when the item borrowed TEV stages 1-3 and the texgen count (HEADLIGHTS
+// SMOOTH): the renderer then sets its own stages 1+ and their count back.
+bool elan_gx_draw(u32 item, const ElanGxFrame& f, bool forceOpaqueAlpha);
 // Puts gxRend's GX state back after a run of elan_gx_draw() calls (no-op
 // otherwise). The renderer calls it before it draws anything itself.
 void elan_gx_restore(const ElanGxFrame& f);
@@ -127,6 +164,10 @@ extern int g_elan_colour_fetch_preset;
 // Launch option NIGHT LIGHTS: 0 = lists lit by point lights stay on the CPU
 // (exact), 1 = the GPU path lights them with GX local lights (approximate).
 extern int g_elan_point_preset;
+// Launch option HEADLIGHTS (the cars' headlights at night): 0 ARCADE (per
+// vertex, as the ELAN), 1 SOFT (per vertex, a wider and softer cone), 2 SMOOTH
+// (GPU path: the cone projected per pixel on lists crossing its edge).
+extern int g_headlight_preset;
 // Launch option 3D LIST CULL (GPU path, lists with a fetch program's box):
 // 0 = off (every list recorded, depth measured as before), 1 = lists behind
 // the camera dropped, 2 = also lists beside or above/below the picture, 3 =

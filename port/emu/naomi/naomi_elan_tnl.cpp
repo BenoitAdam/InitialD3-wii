@@ -154,7 +154,21 @@ struct Light
     bool distAtten = false, angleAtten = false;   // distA/B, angleA/B not identity
     float distA = 1, distB = 0, angleA = 1, angleB = 0;
     float reachSq = INFINITY;   // squared distance from which distance attenuation is 0
+    // Headlights (isHeadlight): the cosines to the axis where the cone term
+    // reaches 0 and 1.
+    float coneCos0 = 0, coneCos1 = 1;
 };
+
+// A car's headlight: a point light whose cone term clamp(p + q c), c the
+// cosine to its axis, rises from 0 to 1 short of the axis (Initial D: 0 from
+// 24.9 degrees, 1 within 14.8). Street lamps' terms are constant.
+bool isHeadlight(const Light& l)
+{
+    if (l.parallel || !l.angleAtten)
+        return false;
+    const float p = l.angleA + l.angleB, q = -l.angleB;
+    return q > 0.f && p < 1.f && p + q > 1.f;
+}
 
 struct LightModel
 {
@@ -827,6 +841,47 @@ bool gxPointLight(const Light& l, float scale, ElanGxLight& g)
     return true;
 }
 
+// HEADLIGHTS = SMOOTH: a headlight as a projected beam, `scale` times its
+// colour. What goes over 1 rides on channel 1's angle term, scale x c with c
+// the cosine to the axis (0.91-1 across the cone, 0 behind the lamp: the
+// projection's mirror image there gets no light); the cone itself is the
+// texture. Distance attenuation fitted as gxPointLight's (beamable: inverse).
+// `mask`: the list reaches behind the lamp; the mask's ramp is 4 units (under
+// the car's nose), long enough to keep GX's texture coordinates small.
+void gxBeam(const Light& l, float scale, bool mask, ElanGxBeam& b)
+{
+    b.mask = mask ? 4.f : 0.f;
+    float c[3], top = 1.f;
+    for (int i = 0; i < 3; i++)
+    {
+        c[i] = l.color[i] * scale;
+        top = c[i] > top ? c[i] : top;
+    }
+    for (int i = 0; i < 3; i++)
+        b.color[i] = c[i] / top;
+    b.scale = top;
+    if (!l.distAtten)
+    {
+        b.dist[0] = 1.f;
+        b.dist[1] = b.dist[2] = 0.f;
+    }
+    else
+    {
+        const float reach = l.distB / -l.distA;
+        b.dist[0] = 0.84f;
+        b.dist[1] = 0.f;
+        b.dist[2] = (1.5f + 1.9f / -l.distA) / (reach * reach);
+    }
+    b.pos[0] = l.pos.x;
+    b.pos[1] = l.pos.y;
+    b.pos[2] = l.pos.z;
+    b.axis[0] = -l.dirN.x;
+    b.axis[1] = -l.dirN.y;
+    b.axis[2] = -l.dirN.z;
+    b.coneP = l.angleA + l.angleB;
+    b.coneQ = -l.angleB;
+}
+
 bool sameLight(const Light& a, const Light& b)
 {
     return a.parallel == b.parallel && a.pos.x == b.pos.x && a.pos.y == b.pos.y && a.pos.z == b.pos.z &&
@@ -847,15 +902,22 @@ bool sameLight(const Light& a, const Light& b)
 // pick (which lights, how many copies of each) is a few box distances; the set
 // (cleared, converted with several divisions a light, compared) is only built
 // when the pick differs from the last one (pointLightRecord).
+//
+// HEADLIGHTS SOFT and SMOOTH: a headlight whose cone misses the list's sphere
+// is left out (exact: its cone term is 0 there); SMOOTH draws the strongest
+// headlight whose cone edge crosses the sphere as a projected beam.
 struct LightPick
 {
     u32 gen;                // s_lightGen: every light, the light model and the active list
     u32 n;
     u8 slot[8], copies[8];  // in the set's order
+    u8 beamSlot, beamCopies; // the beam's light, 0xFF: none
+    u8 beamMask;             // ...with the front mask (the list reaches behind the lamp)
 
     bool same(const LightPick& o) const
     {
-        return gen == o.gen && n == o.n && !memcmp(slot, o.slot, n) && !memcmp(copies, o.copies, n);
+        return gen == o.gen && n == o.n && beamSlot == o.beamSlot && beamCopies == o.beamCopies &&
+               beamMask == o.beamMask && !memcmp(slot, o.slot, n) && !memcmp(copies, o.copies, n);
     }
 };
 
@@ -900,8 +962,291 @@ const LightPlan& lightPlan()
     return p;
 }
 
+// A list's bounding sphere in lighting space (r < 0: unknown).
+struct Sphere
+{
+    Vec3 c;
+    float r;
+};
+
+Sphere boxSphere(const Box& b)
+{
+    const Vec3 lo = {b.mn[0], b.mn[1], b.mn[2]}, hi = {b.mx[0], b.mx[1], b.mx[2]};
+    const Vec3 d = hi - lo;
+    return {{(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f}, std::sqrt(dot(d, d)) * 0.5f};
+}
+
+// A model-space box (min x y z, max x y z) under the instance matrix: its
+// centre, and half its diagonal times the matrix's Frobenius norm (an upper
+// bound of how much it can stretch).
+Sphere modelBoxSphere(const float* b, const float* tm)
+{
+    const float x = (b[0] + b[3]) * 0.5f, y = (b[1] + b[4]) * 0.5f, z = (b[2] + b[5]) * 0.5f;
+    const float X = tm[0] * x + tm[3] * y + tm[6] * z + tm[9];
+    const float Y = tm[1] * x + tm[4] * y + tm[7] * z + tm[10];
+    const float Z = tm[2] * x + tm[5] * y + tm[8] * z + tm[11];
+    float f2 = 0.f;
+    for (int k = 0; k < 9; k++)
+        f2 += tm[k] * tm[k];
+    const float dx = b[3] - b[0], dy = b[4] - b[1], dz = b[5] - b[2];
+    return {{-X, Y, -Z}, std::sqrt(f2 * (dx * dx + dy * dy + dz * dz)) * 0.5f};
+}
+
+// Where a list's sphere lies against a headlight's cone: wholly outside its
+// edge (the cone term is 0 on all of it), wholly inside its full core (1 on all
+// of it), across the edge, or reaching behind the lamp's plane (unknown sphere
+// too). Cosines only: acos is software on the Wii.
+//
+// A projected texture mirrors behind the lamp, and channel 1's light, though 0
+// at the vertices behind it, ramps up across a triangle that straddles its
+// plane: such a list would show a faint mirrored beam behind the car (chase
+// view). Those lists (the road around the car: most of those where the polygon
+// showed, night demo census) get the beam with a front mask (ElanGxBeam::mask).
+enum ConeSide
+{
+    kConeOut,
+    kConeCore,
+    kConeEdge,
+    kConeBehind
+};
+
+ConeSide coneSide(const Light& l, const Sphere& sp)
+{
+    if (sp.r < 0.f)
+        return kConeBehind;
+    const Vec3 d = sp.c - l.pos;
+    const float dist2 = dot(d, d);
+    if (dist2 <= sp.r * sp.r * 1.0001f + 1e-6f)
+        return kConeBehind;                      // the lamp is in it
+    const float inv = rsqrt(dist2);
+    // The ELAN's direction points back at the lamp: the axis is its opposite.
+    const float cosC = -dot(d, l.dirN) * inv;    // the centre's angle C to the axis
+    const float sinD = sp.r * inv;               // the sphere's half angle D seen from the lamp
+    const float cosD = std::sqrt(std::fmax(0.f, 1.f - sinD * sinD));
+    const float sinC = std::sqrt(std::fmax(0.f, 1.f - cosC * cosC));
+    if (cosC <= cosD && cosC * cosD + sinC * sinD <= l.coneCos0)
+        return kConeOut;                         // C - D >= the edge's angle
+    if (cosC * cosD - sinC * sinD >= l.coneCos1)
+        return kConeCore;                        // C + D <= the core's angle
+    if (cosC < sinD * 1.02f)
+        return kConeBehind;                      // centre less than r ahead of the lamp's plane
+    return kConeEdge;
+}
+
+// HEADLIGHTS = SMOOTH: whether a headlight can be drawn as a projected cone
+// (gxBeam), as far as the light goes.
+bool beamable(const Light& l)
+{
+    return isHeadlight(l) && l.coneCos0 > 0.05f && (!l.distAtten || (!l.distMode && l.distA < 0.f && l.distB > 0.f));
+}
+
+#if !defined(GEKKO)
+// Host census (env IDAS3_HEADLIGHT_CENSUS=1): how coarse the meshes under the
+// cars' headlights are. A headlight here is a point light whose cone term
+// rises from 0 to 1 short of its axis (gxPointLight's parabola case). The
+// ELAN lights per vertex, so along a strip edge whose ends get very different
+// headlight light the colour ramps across the whole polygon: that is where
+// the polygon shows. Per render: lists a headlight reaches, vertices it lights,
+// strip edges with its light at one end at least, and the hard ones among them
+// (its light changing by more than 0.25 along the edge), by the angle the edge
+// spans seen from the lamp and by the distance of its lit end from the lamp.
+// Cone edges: hard ones whose cone term alone changes by more than 0.5 (what
+// a per-pixel cone would smooth; the rest are normals); the lists holding
+// them by type (opaque, translucent, punch-through) and their vertices; lit
+// vertices over 1 (saturated).
+struct HeadlightCensus
+{
+    u32 renders, lists, vertices, litVertices, edges, hard;
+    u32 edgeBins[6], hardBins[6];   // degrees seen from the lamp: < 1, 2, 5, 10, 20, more
+    u32 hardDist[6];                // its lit end from the lamp: < 5, 10, 20, 40, 80, more
+    u32 coneEdges, coneLists[3], coneListVertices, over1;
+    // Lists with cone edges as HEADLIGHTS SMOOTH would take them (coneSide of
+    // their exact box's sphere): a beam, a beam with the front mask (reaching
+    // behind the lamp), other (core / out: another headlight's edges).
+    u32 coneSmooth[3];
+};
+HeadlightCensus s_hlCensus = {};
+const bool s_hlCensusOn = getenv("IDAS3_HEADLIGHT_CENSUS") != nullptr;
+
+void headlightCensus(const u32* v, u32 count, u32 vertexSize, u32 layout, int list)
+{
+    if (!s_hlCensusOn || !s.lightModel.set || (s.material.set && (s.material.select >> 9 & 1)))
+        return;
+    if (s.lightsDirty)
+        rebuildActiveLights();
+    int hl[16];
+    u32 nh = 0;
+    for (u32 k = 0; k < s.activeCount[0]; k++)
+    {
+        const int i = s.active[0][k];
+        if ((s.lightModel.diffuseMask[0] >> i & 1) && isHeadlight(s.lights[i]))
+            hl[nh++] = i;
+    }
+    if (!nh)
+        return;
+    struct V
+    {
+        Vec3 P;
+        float light, cone;
+        int lamp;
+    };
+    HeadlightCensus& c = s_hlCensus;
+    u32 lit = 0, coneEdges = 0;
+    auto edge = [&](const V& a, const V& b) {
+        const V& hi = a.light >= b.light ? a : b;
+        if (hi.light <= 0.02f)
+            return;
+        const Vec3 lp = s.lights[hi.lamp].pos;
+        const float cosA = dot(normalize(a.P - lp), normalize(b.P - lp));
+        const float deg = std::acos(std::fmax(-1.f, std::fmin(1.f, cosA))) * 57.29578f;
+        const int bin = deg < 1.f ? 0 : deg < 2.f ? 1 : deg < 5.f ? 2 : deg < 10.f ? 3 : deg < 20.f ? 4 : 5;
+        c.edges++;
+        c.edgeBins[bin]++;
+        if (std::fabs(a.light - b.light) > 0.25f)
+        {
+            const Vec3 t = hi.P - lp;
+            const float d = std::sqrt(dot(t, t));
+            c.hard++;
+            c.hardBins[bin]++;
+            c.hardDist[d < 5.f ? 0 : d < 10.f ? 1 : d < 20.f ? 2 : d < 40.f ? 3 : d < 80.f ? 4 : 5]++;
+            coneEdges += std::fabs(a.cone - b.cone) > 0.5f;
+        }
+    };
+    const Matrix& m = s.matrix;
+    V prev1 = {}, prev2 = {}, center = {};
+    bool start = true;
+    u32 inStrip = 0;
+    Box box = {{1e30f, 1e30f, 1e30f}, {-1e30f, -1e30f, -1e30f}};
+    int lamp = -1;                               // the brightest lamp at any vertex
+    float lampBest = 0.f;
+    for (u32 i = 0; i < count; i++, v += vertexSize / 4)
+    {
+        const float x = asFloat(v[1]), y = asFloat(v[2]), z = asFloat(v[3]);
+        const float X = m.tm[0] * x + m.tm[3] * y + m.tm[6] * z + m.tm[9];
+        const float Y = m.tm[1] * x + m.tm[4] * y + m.tm[7] * z + m.tm[10];
+        const float Z = m.tm[2] * x + m.tm[5] * y + m.tm[8] * z + m.tm[11];
+        if (!std::isfinite(X) || !std::isfinite(Y) || !std::isfinite(Z))
+        {
+            start = true;
+            continue;
+        }
+        Vec3 n;
+        if (layout == 0x00E)
+            n = {asFloat(v[4]), asFloat(v[5]), asFloat(v[6])};
+        else
+            n = {(s8)(v[0] & 0xFF) / 127.f, (s8)((v[0] >> 8) & 0xFF) / 127.f, (s8)((v[0] >> 16) & 0xFF) / 127.f};
+        const Vec3 N = normalize({m.lm[0] * n.x + m.lm[1] * n.y + m.lm[2] * n.z, m.lm[3] * n.x + m.lm[4] * n.y + m.lm[5] * n.z,
+                                  m.lm[6] * n.x + m.lm[7] * n.y + m.lm[8] * n.z});
+        V cur = {{-X, Y, -Z}, 0.f, 0.f, hl[0]};
+        float best = -1.f;
+        for (u32 j = 0; j < nh; j++)
+        {
+            const Light& l = s.lights[hl[j]];
+            const Vec3 toLight = l.pos - cur.P;
+            const float d2 = dot(toLight, toLight);
+            if (d2 >= l.reachSq || d2 <= 0.f)
+                continue;
+            const float inv = 1.f / std::sqrt(d2);
+            const Vec3 L = toLight * inv;
+            float f = 2.f * std::fmax(l.color[0], std::fmax(l.color[1], l.color[2]));
+            if (l.distAtten)
+                f *= clamp01(l.distB * (l.distMode ? d2 * inv : inv) + l.distA);
+            const float cone = clamp01((1.f - std::fmax(0.f, dot(L, l.dir))) * l.angleB + l.angleA);
+            f *= cone * std::fmax(dot(N, L), 0.f);
+            cur.light += f;
+            if (f > best)
+            {
+                best = f;
+                cur.lamp = hl[j];
+                cur.cone = cone;
+            }
+        }
+        lit += cur.light > 0.02f;
+        c.over1 += cur.light > 1.f;
+        const float q[3] = {cur.P.x, cur.P.y, cur.P.z};
+        for (int k = 0; k < 3; k++)
+        {
+            box.mn[k] = std::fmin(box.mn[k], q[k]);
+            box.mx[k] = std::fmax(box.mx[k], q[k]);
+        }
+        if (cur.light > lampBest)
+        {
+            lampBest = cur.light;
+            lamp = cur.lamp;
+        }
+        const u32 header = v[0];
+        if (start)
+        {
+            center = cur;
+            inStrip = 0;
+            start = false;
+        }
+        else if ((header >> 29 & 3) == 2)         // fan vertex
+        {
+            edge(center, cur);
+            edge(prev1, cur);
+        }
+        else
+        {
+            edge(prev1, cur);
+            if (inStrip >= 2)
+                edge(prev2, cur);
+        }
+        prev2 = prev1;
+        prev1 = cur;
+        inStrip++;
+        if (header >> 31)
+            start = true;
+    }
+    if (lit)
+    {
+        c.lists++;
+        c.vertices += count;
+        c.litVertices += lit;
+    }
+    if (coneEdges)
+    {
+        c.coneEdges += coneEdges;
+        c.coneLists[list == 0 ? 0 : list == 2 ? 1 : 2]++;
+        c.coneListVertices += count;
+        if (lamp >= 0)
+        {
+            const ConeSide side = coneSide(s.lights[lamp], boxSphere(box));
+            c.coneSmooth[side == kConeEdge ? 0 : side == kConeBehind ? 1 : 2]++;
+        }
+    }
+}
+
+void headlightCensusPrint()
+{
+    HeadlightCensus& c = s_hlCensus;
+    if (!s_hlCensusOn || ++c.renders < 60)
+        return;
+    const u32 r = c.renders;
+    if (!c.lists)
+    {
+        c = {};
+        return;
+    }
+    printf("[headlight] cone edges %u a render, in lists: opaque %u translucent %u punch-through %u (%u vertices) | "
+           "lit vertices over 1: %u | as SMOOTH takes them (lists x 60): beam %u, beam with the front mask %u, "
+           "other %u\n",
+           c.coneEdges / r, c.coneLists[0] / r, c.coneLists[1] / r, c.coneLists[2] / r, c.coneListVertices / r,
+           c.over1 / r, c.coneSmooth[0], c.coneSmooth[1], c.coneSmooth[2]);
+    printf("[headlight] per render: %u lists, %u of their %u vertices lit, %u lit edges, %u hard | lit edges by degrees "
+           "seen from the lamp <1 %u <2 %u <5 %u <10 %u <20 %u more %u | hard ones <1 %u <2 %u <5 %u <10 %u <20 %u "
+           "more %u | hard by distance <5 %u <10 %u <20 %u <40 %u <80 %u more %u\n",
+           c.lists / r, c.litVertices / r, c.vertices / r, c.edges / r, c.hard / r, c.edgeBins[0] / r,
+           c.edgeBins[1] / r, c.edgeBins[2] / r, c.edgeBins[3] / r, c.edgeBins[4] / r, c.edgeBins[5] / r,
+           c.hardBins[0] / r, c.hardBins[1] / r, c.hardBins[2] / r, c.hardBins[3] / r, c.hardBins[4] / r,
+           c.hardBins[5] / r, c.hardDist[0] / r, c.hardDist[1] / r, c.hardDist[2] / r, c.hardDist[3] / r,
+           c.hardDist[4] / r, c.hardDist[5] / r);
+    c = {};
+}
+#endif
+
 template <class DistSq>
-bool pickLights(LightPick& out, DistSq distSq)
+bool pickLights(LightPick& out, DistSq distSq, const Sphere& sphere, bool beamOk)
 {
     const LightPlan& plan = lightPlan();
     if (plan.refuse)
@@ -939,13 +1284,59 @@ bool pickLights(LightPick& out, DistSq distSq)
         at[k] = (s8)n;
         pick[n++] = {(u8)i, 1, near};
     }
-    if (n > 8)
+    out.beamSlot = 0xFF;
+    out.beamCopies = 0;
+    out.beamMask = 0;
+    if (g_headlight_preset)
     {
-        // The 8 nearest, then back in slot order (same lights, same set).
+        // Headlights against the sphere (copies are counted by now).
+        u32 m = 0;
+        int best = -1;
+        bool bestMask = false;
+        float bestPower = 0.f;
+        for (u32 j = 0; j < n; j++)
+        {
+            const Light& l = s.lights[pick[j].slot];
+            if (isHeadlight(l))
+            {
+                const ConeSide side = coneSide(l, sphere);
+                if (side == kConeOut)
+                {
+                    elan_Stats().coneOut++;
+                    continue;
+                }
+                const float power = pick[j].copies * std::fmax(l.color[0], std::fmax(l.color[1], l.color[2]));
+                if (side != kConeCore && beamOk && g_headlight_preset == 2 && beamable(l) && power > bestPower)
+                {
+                    best = (int)m;
+                    bestMask = side == kConeBehind;
+                    bestPower = power;
+                }
+            }
+            pick[m++] = pick[j];
+        }
+        n = m;
+        if (best >= 0)
+        {
+            out.beamSlot = pick[best].slot;
+            out.beamCopies = pick[best].copies;
+            out.beamMask = bestMask;
+            for (u32 j = (u32)best; j + 1 < n; j++)
+                pick[j] = pick[j + 1];
+            n--;
+            elan_Stats().beamLists++;
+            if (bestMask)
+                elan_Stats().beamMasked++;
+        }
+    }
+    const u32 cap = out.beamSlot != 0xFF ? 7 : 8;   // a beam takes GX light 7
+    if (n > cap)
+    {
+        // The nearest, then back in slot order (same lights, same set).
         for (u32 a = 1; a < n; a++)
             for (u32 b = a; b > 0 && pick[b].near < pick[b - 1].near; b--)
                 std::swap(pick[b], pick[b - 1]);
-        n = 8;
+        n = cap;
         for (u32 a = 1; a < n; a++)
             for (u32 b = a; b > 0 && pick[b].slot < pick[b - 1].slot; b--)
                 std::swap(pick[b], pick[b - 1]);
@@ -987,14 +1378,19 @@ bool buildLightSet(const LightPick& p, ElanGxLightSet& out)
         }
         out.count++;
     }
+    if (p.beamSlot != 0xFF)
+    {
+        gxBeam(s.lights[p.beamSlot], 2.f * p.beamCopies, p.beamMask != 0, out.beamLight);
+        out.beam = 1;
+    }
     return true;
 }
 
 template <class DistSq>
-bool pointLightSet(ElanGxLightSet& out, DistSq distSq)
+bool pointLightSet(ElanGxLightSet& out, DistSq distSq, const Sphere& sphere)
 {
     LightPick p;
-    return pickLights(p, distSq) && buildLightSet(p, out);
+    return pickLights(p, distSq, sphere, false) && buildLightSet(p, out);
 }
 
 // The light set of a point-lit list into rec.lights / rec.lightKey: the last
@@ -1013,13 +1409,13 @@ struct LastLightSet
 LastLightSet s_lastLightSet = {};
 
 template <class DistSq>
-bool pointLightRecord(ElanGxRecord& rec, DistSq distSq)
+bool pointLightRecord(ElanGxRecord& rec, DistSq distSq, const Sphere& sphere, bool beamOk)
 {
     LightPick& lastPick = s_lastLightSet.pick;
     ElanGxLightSet& last = s_lastLightSet.set;
     u32& key = s_lastLightSet.key;
     LightPick p;
-    if (!pickLights(p, distSq))
+    if (!pickLights(p, distSq, sphere, beamOk))
     {
         rec.lightKey = 0;
         return false;
@@ -1557,9 +1953,15 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
 
     if (pointLit)
     {
-        // Picked for every list (its box), built when the pick changes.
-        const bool built = measure ? pointLightRecord(r, [&](Vec3 p) { return distanceSq(box, p); })
-                                   : pointLightRecord(r, lightDistance);
+        // Picked for every list (its box), built when the pick changes. A
+        // HEADLIGHTS SMOOTH beam needs a texture coordinate of its own: not on
+        // environment-mapped lists, nor vertex-coloured ones (channel 1's
+        // material would have to be a second vertex colour), nor under
+        // AUTOSORT (whose peeling owns the TEV stages it would take).
+        const bool beamOk = !r.colorFromVertex && !r.envMap && !g_autosort_preset;
+        const bool built = measure ? pointLightRecord(r, [&](Vec3 p) { return distanceSq(box, p); },
+                                                      boxSphere(box), beamOk)
+                                   : pointLightRecord(r, lightDistance, modelBoxSphere(mbox, s.matrix.tm), beamOk);
         if (!built)
             return false;
     }
@@ -1698,6 +2100,23 @@ void tnl_SetLightModel(const u32* w)
     unpackColor(w[7], lm.ambientOffset[1]);
 }
 
+// HEADLIGHTS = SOFT: the cone's edge spread 10 degrees further each way (Initial
+// D's 14.8-24.9 becomes 4.8-34.9), so between a lit and an unlit corner of a
+// big polygon the per-vertex ramp is gentler. Free: the same light, other terms.
+void softenCone(Light& l)
+{
+    const float p = l.angleA + l.angleB, q = -l.angleB;
+    const float a0 = std::acos(std::fmax(-1.f, std::fmin(1.f, -p / q)));
+    const float a1 = std::acos(std::fmax(-1.f, std::fmin(1.f, (1.f - p) / q)));
+    const float k = 10.f * 3.14159265f / 180.f;
+    const float c0 = std::cos(std::fmin(a0 + k, 1.5f)), c1 = std::cos(std::fmax(a1 - k, 0.0175f));
+    if (!(c1 > c0 + 1e-4f))
+        return;
+    const float q2 = 1.f / (c1 - c0), p2 = -q2 * c0;
+    l.angleB = -q2;
+    l.angleA = p2 + q2;
+}
+
 void tnl_SetLight(const u32* w)
 {
     s_lightGen++;
@@ -1742,6 +2161,14 @@ void tnl_SetLight(const u32* w)
         l.reachSq = (l.distB / l.distA) * (l.distB / l.distA);
     else if (l.distAtten && l.distMode && l.distA > 0.f && l.distB < 0.f)
         l.reachSq = (l.distA / l.distB) * (l.distA / l.distB);
+    if (isHeadlight(l))
+    {
+        if (g_headlight_preset == 1)
+            softenCone(l);
+        const float p = l.angleA + l.angleB, q = -l.angleB;
+        l.coneCos0 = -p / q;
+        l.coneCos1 = (1.f - p) / q;
+    }
 #if !defined(GEKKO)
     if (!l.parallel)
     {
@@ -1904,6 +2331,9 @@ void tnl_DataCensusRender()
 
 void tnl_OnStartRender()
 {
+#if !defined(GEKKO)
+    headlightCensusPrint();
+#endif
     // A render with no GPU list (a frame the frameskip dropped, a 2D screen)
     // says nothing about the depth range: keep the last verdict. Clearing it
     // there made every drawn frame after a skipped one measure every vertex
@@ -2056,6 +2486,7 @@ int tnl_DrawList(const u32* w, u32 vertexSize, int listType)
 
     s_out.begin(outPcw, isp, tsp, w[3]);
 #if !defined(GEKKO)
+    headlightCensus(w + 8, count, vertexSize, layout, list);
     // NIGHT LIGHTS = GPU, Windows preview: the point-lit lists the Wii's GPU
     // path would take are lit as GX would (--gpu-tnl drops them instead).
     ElanGxLightSet preview;
@@ -2065,7 +2496,7 @@ int tnl_DrawList(const u32* w, u32 vertexSize, int listType)
         Box box;
         float minZ, maxZ;
         measureList<true>(w + 8, count, vertexSize, s.matrix.tm, minZ, maxZ, &box);
-        if (pointLightSet(preview, [&](Vec3 p) { return distanceSq(box, p); }))
+        if (pointLightSet(preview, [&](Vec3 p) { return distanceSq(box, p); }, boxSphere(box)))
             s_gxPreview = &preview;
     }
 #endif
