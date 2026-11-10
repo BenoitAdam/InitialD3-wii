@@ -42,6 +42,16 @@ struct NaomiElanStats
     // left out of a list their cone misses, lists given a projected beam (SMOOTH),
     // of which with the front mask (reaching behind the lamp).
     u32 coneOut, beamLists, beamMasked;
+    // Light commands decoded (not skipped by frameskip), and those that send a
+    // slot the light it already holds (nothing to change); light model likewise.
+    u32 lightCmds, lightCmdsSame, lightModelCmds, lightModelCmdsSame;
+    // Point-lit picks (one per point-lit list on the GPU path), the lights they
+    // tested against the list's box and those in reach of it, and light plans
+    // rebuilt (once a generation).
+    u32 lightPicks, lightTests, lightsInReach, lightPlans;
+    // ...of the tests, those settled by the quick test (out of reach of the
+    // box's sphere), and (host) those the full test would have kept: must stay 0.
+    u32 lightsQuickFar, lightsQuickWrong;
     // Host census of boxed lists drawn: vertices by the box's nearest depth
     // (< 25, 50, 100, 200, 400, 800, 1600, more) and by its diagonal on screen
     // (< 2, 4, 8, 16, 32, 64, 128 pixels, more), and lists.

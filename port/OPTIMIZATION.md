@@ -487,6 +487,41 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
+### Done 2026-11-10: night lighting on the recording side (awaiting a night log)
+
+The owner gave up on the headlight beam's look (HEADLIGHTS SOFT / SMOOTH kept as options, ARCADE
+default) and asked for the lighting work to be as cheap as it can be. All of it exact, no option;
+checked by the runner on every use. Night attract demo, `--gpu-tnl --point-lights 1 --list-cull 3
+--display-lists 1 --colour-fetch 1`, new `[run]   lights per frame:` line and two numbers on the
+`GPU fetch per drawn render` line:
+- **Light commands that repeat the slot's light skip** (`tnl_SetLight`, `tnl_SetLightModel`: the
+  same 8 words change nothing). ~53 of ~78 light commands a night frame, 36 of 48 by day; the light
+  generation then stands, and with it the light plan and the keys below.
+- **The last 4 point-lit picks kept** with their sets and keys (`s_setCache`, LRU), not only the
+  last: a model's lists switch between a few picks (A, B, A), and each return to A was a build and,
+  in the renderer, a new set compared by contents. Sets built 13-67 -> 8-18 a frame. Every reuse
+  is rebuilt and compared by the runner (`STALE` 0).
+- **The renderer finds matrices and light sets by key first** (`findShared`, naomi_elan_gx.cpp:
+  each arena entry keeps its latest key, a key always names the same contents; then the old
+  4-deep memcmp). Light-set compares (~600 bytes each) when recorded 120-244 -> 45-90 a render
+  (the runner mirrors the Wii's lookup and checks every key hit against the contents: `STALE` 0);
+  matrices (~110 bytes, one per model, by day too) are not counted on the runner.
+- **A quick test before each light's box test** (`ModelBoxDistance::farFrom`): the box's centre in
+  lighting space and a bound on the matrix's largest stretch (Gershgorin on A^T A) settle 55-67% of
+  the 1.2-3.9K tests a frame with ~9 flops instead of ~25, never rejecting a light the full test
+  keeps (the runner runs the full test on each: `WRONG` 0). The matrix part (a 3x3 inverse) is kept
+  per instance matrix instead of made for every point-lit list.
+- Parallel-lit sets kept by key are now checked too (rebuilt and compared: `STALE` 0).
+- Day race route: record digests identical to the previous code on all 136 lines (renders to
+  8705). Night demo: identical as far as two runs of the old code agree, then the demo's own
+  timing drift (two runs of the same old code part at render 5825).
+Expected on the Wii: ~0.3 ms off a drawn night frame (recording ~3.2 us a list at night against
+~2.5 by day), a little by day (matrix compares). New [prof] line `night lights per frame:`
+(commands decoded and repeats skipped, picks, lights tested and those the quick test settled);
+`point-lit light sets per frame: N built, M reused`. To read: the ELAN T&L "GPU lists" ms of a
+drawn night frame against log 23/24 (night Akina uphill, MIRROR OFF, SMALL 3D 4 px: 2.85-3.6 us a
+list with a box).
+
 ### Done after log 25 (awaiting log 26)
 
 - **ELAN PREFETCH** (RENDERING 2, second row, default ON; OFF (LEGACY) keeps the old walk).

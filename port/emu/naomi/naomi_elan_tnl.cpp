@@ -154,9 +154,11 @@ struct Light
     bool distAtten = false, angleAtten = false;   // distA/B, angleA/B not identity
     float distA = 1, distB = 0, angleA = 1, angleB = 0;
     float reachSq = INFINITY;   // squared distance from which distance attenuation is 0
+    float reach = INFINITY;     // ...and that distance
     // Headlights (isHeadlight): the cosines to the axis where the cone term
     // reaches 0 and 1.
     float coneCos0 = 0, coneCos1 = 1;
+    u32 raw[8] = {};            // the command's words (tnl_SetLight: the same again changes nothing)
 };
 
 // A car's headlight: a point light whose cone term clamp(p + q c), c the
@@ -177,6 +179,7 @@ struct LightModel
     bool baseOver = false;
     u16 diffuseMask[2] = {}, specularMask[2] = {};
     float ambientBase[2][4] = {}, ambientOffset[2][4] = {};
+    u32 raw[8] = {};            // the command's words
 };
 
 struct Material
@@ -938,6 +941,7 @@ const LightPlan& lightPlan()
     LightPlan& p = s_lightPlan;
     if (p.gen == s_lightGen)
         return p;
+    elan_Stats().lightPlans++;
     p.gen = s_lightGen;
     p.refuse = false;
     const LightModel& lm = s.lightModel;
@@ -1245,9 +1249,20 @@ void headlightCensusPrint()
 }
 #endif
 
+// A light the list's distance test would find out of reach, known cheaply:
+// only ModelBoxDistance has such a test (farFrom, overloaded after it); a box
+// in lighting space is already cheap to test.
+template <class DistSq>
+inline bool quickFar(const DistSq&, const Light&)
+{
+    return false;
+}
+
 template <class DistSq>
 bool pickLights(LightPick& out, DistSq distSq, const Sphere& sphere, bool beamOk)
 {
+    NaomiElanStats& st = elan_Stats();
+    st.lightPicks++;
     const LightPlan& plan = lightPlan();
     if (plan.refuse)
         return false;
@@ -1276,9 +1291,20 @@ bool pickLights(LightPick& out, DistSq distSq, const Sphere& sphere, bool beamOk
         float near = -1.f;
         if (!l.parallel)
         {
+            st.lightTests++;
+            if (quickFar(distSq, l))
+            {
+                st.lightsQuickFar++;
+#if !defined(GEKKO)
+                if (distSq(l.pos) < l.reachSq)
+                    st.lightsQuickWrong++;           // runner: the full test must agree
+#endif
+                continue;
+            }
             const float d2 = distSq(l.pos);
             if (d2 >= l.reachSq)
                 continue;
+            st.lightsInReach++;
             near = d2 / l.reachSq;
         }
         at[k] = (s8)n;
@@ -1393,40 +1419,52 @@ bool pointLightSet(ElanGxLightSet& out, DistSq distSq, const Sphere& sphere)
     return pickLights(p, distSq, sphere, false) && buildLightSet(p, out);
 }
 
-// The light set of a point-lit list into rec.lights / rec.lightKey: the last
-// one built when the pick is the same (copied back only if a parallel-lit list
-// overwrote it since). An unchanged set keeps its key, so the renderer shares
-// it without comparing; keys with the top bit set never meet a light
-// generation. False: CPU path.
-// The last set built, its pick and key: one for every caller (a function
-// template's statics would be one per DistSq type, with keys that collide).
-struct LastLightSet
+// The light set of a point-lit list into rec.lights / rec.lightKey: a set
+// built for the same pick lately (copied back only if another list's set
+// overwrote it since), else a new one. A set keeps its key, so the renderer
+// finds it by key without comparing; keys with the top bit set never meet a
+// light generation. False: CPU path.
+// The last few sets built, their picks and keys: neighbouring lists switch
+// between a handful of picks (a model's lists lie at different distances from
+// the lamps: A, B, A...), and with only the last one kept each return to A
+// was a new set and key, i.e. a build and a ~600-byte compare in the renderer.
+// One cache for every caller (a function template's statics would be one per
+// DistSq type, with keys that collide).
+constexpr u32 kSetCache = 4;
+struct CachedLightSet
 {
     LightPick pick;                             // gen 0: none yet (s_lightGen starts at 1)
     ElanGxLightSet set;
     u32 key;
+    u32 used;                                   // s_setUses when last used
 };
-LastLightSet s_lastLightSet = {};
+CachedLightSet s_setCache[kSetCache] = {};
+u32 s_setCacheLast = 0;                         // the entry used last
+u32 s_setKeyNext = 0;                           // the last key given
+u32 s_setUses = 0;
 
 template <class DistSq>
 bool pointLightRecord(ElanGxRecord& rec, DistSq distSq, const Sphere& sphere, bool beamOk)
 {
-    LightPick& lastPick = s_lastLightSet.pick;
-    ElanGxLightSet& last = s_lastLightSet.set;
-    u32& key = s_lastLightSet.key;
     LightPick p;
     if (!pickLights(p, distSq, sphere, beamOk))
     {
         rec.lightKey = 0;
         return false;
     }
-    if (p.same(lastPick))
+    for (u32 k = 0; k < kSetCache; k++)
     {
-        if (rec.lightKey != key)
+        const u32 e = (s_setCacheLast + k) % kSetCache;   // the last used first
+        CachedLightSet& c = s_setCache[e];
+        if (!c.pick.gen || !p.same(c.pick))
+            continue;
+        if (rec.lightKey != c.key)
         {
-            memcpy(&rec.lights, &last, sizeof(last));   // padding too: sets are compared with memcmp
-            rec.lightKey = key;
+            memcpy(&rec.lights, &c.set, sizeof(c.set));   // padding too: sets are compared with memcmp
+            rec.lightKey = c.key;
         }
+        s_setCacheLast = e;
+        c.used = ++s_setUses;
         elan_Stats().lightSetsReused++;
 #if !defined(GEKKO)
         // Runner: the set reused must be the one a build would give.
@@ -1442,12 +1480,25 @@ bool pointLightRecord(ElanGxRecord& rec, DistSq distSq, const Sphere& sphere, bo
         return false;
     }
     elan_Stats().lightSetsBuilt++;
-    if (memcmp(&last, &rec.lights, sizeof(last)))
-    {
-        memcpy(&last, &rec.lights, sizeof(last));
-        key = (key + 1) | 0x80000000u;
-    }
-    lastPick = p;
+    // The same contents as the set used last (another pick, same lights): its
+    // key, so the renderer still shares it by key. Else a new key.
+    const CachedLightSet& last = s_setCache[s_setCacheLast];
+    u32 key;
+    if (last.pick.gen && !memcmp(&last.set, &rec.lights, sizeof(rec.lights)))
+        key = last.key;
+    else
+        key = s_setKeyNext = (s_setKeyNext + 1) | 0x80000000u;
+    // Into the entry used longest ago (an empty one first: used 0).
+    u32 victim = 0;
+    for (u32 k = 1; k < kSetCache; k++)
+        if (s_setCache[k].used < s_setCache[victim].used)
+            victim = k;
+    CachedLightSet& c = s_setCache[victim];
+    c.pick = p;
+    memcpy(&c.set, &rec.lights, sizeof(c.set));
+    c.key = key;
+    c.used = ++s_setUses;
+    s_setCacheLast = victim;
     rec.lightKey = key;
     return true;
 }
@@ -1562,10 +1613,78 @@ struct ModelBoxDistance
 {
     Box box;
     float inv[9], t[3], minScaleSq;
+    // The quick test (farFrom): the most the matrix can stretch a length,
+    // squared (sigma2), 1 / sqrt(minScaleSq), and the box's centre in lighting
+    // space with its half diagonal in model space.
+    float sigma2, invMinScale;
+    Vec3 centre;
+    float half;
+
+    // init's matrix part for the current instance matrix (s.matrix.tm): the
+    // lists of a model share it, and it is a 3x3 inverse plus norms.
+    struct Cached
+    {
+        u32 gen;                                 // s_xformGen it was made for (0: none)
+        bool ok;
+        float inv[9], t[3], minScaleSq, sigma2, invMinScale;
+    };
+    static Cached s_cached;
 
     bool init(const float* b, const float* tm)
     {
         memcpy(&box, b, sizeof(box));
+        Cached& c = s_cached;
+        bool ok;
+        if (tm == s.matrix.tm && c.gen == s_xformGen)
+        {
+            memcpy(inv, c.inv, sizeof(inv));
+            memcpy(t, c.t, sizeof(t));
+            minScaleSq = c.minScaleSq;
+            sigma2 = c.sigma2;
+            invMinScale = c.invMinScale;
+            ok = c.ok;
+        }
+        else
+        {
+            ok = initMatrix(tm);
+            if (tm == s.matrix.tm)
+            {
+                c.gen = s_xformGen;
+                c.ok = ok;
+                memcpy(c.inv, inv, sizeof(inv));
+                memcpy(c.t, t, sizeof(t));
+                c.minScaleSq = minScaleSq;
+                c.sigma2 = sigma2;
+                c.invMinScale = invMinScale;
+            }
+        }
+        if (ok)
+        {
+            const float x = (b[0] + b[3]) * 0.5f, y = (b[1] + b[4]) * 0.5f, z = (b[2] + b[5]) * 0.5f;
+            centre = {-(tm[0] * x + tm[3] * y + tm[6] * z + tm[9]), tm[1] * x + tm[4] * y + tm[7] * z + tm[10],
+                      -(tm[2] * x + tm[5] * y + tm[8] * z + tm[11])};
+            const float dx = b[3] - b[0], dy = b[4] - b[1], dz = b[5] - b[2];
+            half = std::sqrt(dx * dx + dy * dy + dz * dz) * 0.5f;
+        }
+        return ok;
+    }
+
+    // A light whose distance this test would find at reach or beyond, known
+    // without taking it into model space. The test's value is minScaleSq x the
+    // model-space distance to the box squared; that distance is at least the
+    // distance to the box's centre minus its half diagonal, and that at least
+    // the lighting-space distance D to the centre over the matrix's largest
+    // stretch. So D >= sqrt(sigma2) (half + reach / sqrt(minScaleSq)), with a
+    // margin for rounding, means out of reach for the full test too.
+    bool farFrom(Vec3 p, float reach) const
+    {
+        const Vec3 d = p - centre;
+        const float k = half + reach * invMinScale;
+        return dot(d, d) >= sigma2 * k * k * 1.002f;
+    }
+
+    bool initMatrix(const float* tm)
+    {
         // View space = A p + t, A's rows (tm0 tm3 tm6), (tm1 tm4 tm7), (tm2 tm5 tm8).
         const float a[9] = {tm[0], tm[3], tm[6], tm[1], tm[4], tm[7], tm[2], tm[5], tm[8]};
         const float c0 = a[4] * a[8] - a[5] * a[7], c1 = a[5] * a[6] - a[3] * a[8], c2 = a[3] * a[7] - a[4] * a[6];
@@ -1596,17 +1715,24 @@ struct ModelBoxDistance
         for (int j = 0; j < 3; j++)
             n[j] = a[j] * a[j] + a[3 + j] * a[3 + j] + a[6 + j] * a[6 + j];
         bool square = true;
+        float off[3] = {};                       // sum over j != i of |column i . column j|
         for (int i = 0; i < 3; i++)
             for (int j = i + 1; j < 3; j++)
             {
                 const float d = a[i] * a[j] + a[3 + i] * a[3 + j] + a[6 + i] * a[6 + j];
                 square = square && d * d <= 1e-6f * n[i] * n[j];
+                off[i] += std::fabs(d);
+                off[j] += std::fabs(d);
             }
         if (square)
         {
             const float m = std::fmin(n[0], std::fmin(n[1], n[2])) * 0.998f;
             minScaleSq = m > minScaleSq ? m : minScaleSq;
         }
+        // The largest stretch squared is A^T A's largest eigenvalue, at most its
+        // largest row sum (Gershgorin): |column i|^2 + the |dot products|.
+        sigma2 = std::fmax(n[0] + off[0], std::fmax(n[1] + off[1], n[2] + off[2])) * 1.001f;
+        invMinScale = 1.f / std::sqrt(minScaleSq);
         return true;
     }
 
@@ -1619,6 +1745,12 @@ struct ModelBoxDistance
         return distanceSq(box, q) * minScaleSq;
     }
 };
+ModelBoxDistance::Cached ModelBoxDistance::s_cached = {};
+
+inline bool quickFar(const ModelBoxDistance& d, const Light& l)
+{
+    return d.farFrom(l.pos, l.reach);
+}
 
 // The list being drawn, for its model's box (naomi_elan_cmd.cpp).
 float s_listBox[6];
@@ -1736,6 +1868,39 @@ bool droppedBox(const u32* vtx, u32 count, u32 vertexSize, float* box)
         return true;
     }
     return false;
+}
+
+// The GX light set of a list lit by parallel lights only (or unlit). False:
+// the GPU path cannot light it (a point light, unusual routing, over 8 lights).
+bool parallelLightSet(ElanGxLightSet& out)
+{
+    memset(&out, 0, sizeof(out));                // padding too: sets are compared with memcmp
+    const LightModel& lm = s.lightModel;
+    out.lit = listIsLit();
+    if (!out.lit)
+        return true;
+    if (s.lightsDirty)
+        rebuildActiveLights();
+    for (u32 k = 0; k < s.activeCount[0]; k++)
+    {
+        const int i = s.active[0][k];
+        const Light& l = s.lights[i];
+        if (!l.parallel || (l.routing & 0xE))
+            return false;                        // point light, or routed to offset/alpha/negative
+        if (!(lm.diffuseMask[0] >> i & 1))
+            continue;                            // specular only: no offset colour on this path
+        if (out.count == 8)
+            return false;
+        ElanGxLight& g = out.lights[out.count++];
+        g.dir[0] = l.dirN.x;
+        g.dir[1] = l.dirN.y;
+        g.dir[2] = l.dirN.z;
+        for (int c = 0; c < 3; c++)
+            g.color[c] = clamp01(2.f * l.color[c]);   // the ELAN's x2 light scale
+    }
+    for (int c = 0; c < 3; c++)
+        out.ambient[c] = clamp01(lm.ambientBase[0][c]);
+    return true;
 }
 
 // The list's state as an ElanGxRecord for the GPU path, or false when the
@@ -1971,35 +2136,19 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
         // key: most lists have a material of their own, and a set rebuilt for
         // each was ~900 times a frame 500 bytes cleared, filled and compared.
         r.lightKey = 0;                              // until built: a refused set is rebuilt next time
-        memset(&r.lights, 0, sizeof(r.lights));
-        const LightModel& lm = s.lightModel;
-        r.lights.lit = listIsLit();
-        if (r.lights.lit)
-        {
-            if (s.lightsDirty)
-                rebuildActiveLights();
-            for (u32 k = 0; k < s.activeCount[0]; k++)
-            {
-                const int i = s.active[0][k];
-                const Light& l = s.lights[i];
-                if (!l.parallel || (l.routing & 0xE))
-                    return false;                        // point light, or routed to offset/alpha/negative
-                if (!(lm.diffuseMask[0] >> i & 1))
-                    continue;                            // specular only: no offset colour on this path
-                if (r.lights.count == 8)
-                    return false;
-                ElanGxLight& g = r.lights.lights[r.lights.count++];
-                g.dir[0] = l.dirN.x;
-                g.dir[1] = l.dirN.y;
-                g.dir[2] = l.dirN.z;
-                for (int c = 0; c < 3; c++)
-                    g.color[c] = clamp01(2.f * l.color[c]);   // the ELAN's x2 light scale
-            }
-            for (int c = 0; c < 3; c++)
-                r.lights.ambient[c] = clamp01(lm.ambientBase[0][c]);
-        }
+        if (!parallelLightSet(r.lights))
+            return false;
         r.lightKey = s_lightGen * 2u + (u32)r.lights.lit;
     }
+#if !defined(GEKKO)
+    else
+    {
+        // Runner: the set kept by its key must be the one a build gives.
+        static ElanGxLightSet check;
+        if (!parallelLightSet(check) || memcmp(&check, &r.lights, sizeof(check)))
+            elan_Stats().lightSetsStale++;
+    }
+#endif
     return elan_gx_record(r);
 }
 
@@ -2079,10 +2228,18 @@ void tnl_SetMatrix(const u32* w)
 
 void tnl_SetLightModel(const u32* w)
 {
+    // As tnl_SetLight: the model it already holds changes nothing.
+    LightModel& lm = s.lightModel;
+    if (lm.set && !memcmp(lm.raw, w, sizeof(lm.raw)))
+    {
+        elan_Stats().lightModelCmdsSame++;
+        return;
+    }
     s_lightGen++;
     if (skipStateCommand())
         return;
-    LightModel& lm = s.lightModel;
+    elan_Stats().lightModelCmds++;
+    memcpy(lm.raw, w, sizeof(lm.raw));
     lm.set = true;
     s.lightsDirty = true;
     lm.ambientBaseMaterial[0] = w[1] >> 5 & 1;
@@ -2119,12 +2276,26 @@ void softenCone(Light& l)
 
 void tnl_SetLight(const u32* w)
 {
+    // The game sends each model its lights, mostly the ones the slots already
+    // hold (the same street lamps and headlights, model after model). The
+    // light is a function of its 8 words: the same words change nothing, so
+    // the light generation stands, and with it the light plan, the last pick
+    // and set, and the keys the renderer shares sets by. (A slot left stale by
+    // a skipped command holds the words it was decoded from, so it still
+    // compares right.)
+    Light& l = s.lights[w[1] & 15];
+    if (l.defined && !memcmp(l.raw, w, sizeof(l.raw)))
+    {
+        elan_Stats().lightCmdsSame++;
+        return;
+    }
     s_lightGen++;
     if (skipStateCommand())
         return;
-    Light& l = s.lights[w[1] & 15];
+    elan_Stats().lightCmds++;
     l = Light();
     l.defined = true;
+    memcpy(l.raw, w, sizeof(l.raw));
     l.color[0] = (w[1] >> 24) / 255.f;
     l.color[1] = ((w[1] >> 16) & 0xFF) / 255.f;
     l.color[2] = ((w[1] >> 8) & 0xFF) / 255.f;
@@ -2161,6 +2332,8 @@ void tnl_SetLight(const u32* w)
         l.reachSq = (l.distB / l.distA) * (l.distB / l.distA);
     else if (l.distAtten && l.distMode && l.distA > 0.f && l.distB < 0.f)
         l.reachSq = (l.distA / l.distB) * (l.distA / l.distB);
+    if (l.reachSq < INFINITY)
+        l.reach = std::sqrt(l.reachSq);
     if (isHeadlight(l))
     {
         if (g_headlight_preset == 1)

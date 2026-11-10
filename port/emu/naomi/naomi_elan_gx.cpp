@@ -660,18 +660,53 @@ u64 s_recordDigest = 14695981039346656037ull;   // recordDigest()
 // This render's light sets, shared as the Wii's elan_gx_record shares them:
 // same key as the last list, or a copy among the last kDedupDepth (4) sets.
 std::vector<ElanGxLightSet> s_renderSets;
-u32 s_lastSetKey = 0;
+std::vector<u32> s_renderSetKeys;               // each set's latest key, as the Wii's s_lsetKeys
+u32 s_lastSetKey = 0, s_lastSetIndex = 0;
+// The Wii's draw loads a lit item's set into the XF lights when the item
+// before it (gxRend draws each list type in recorded order) had another set.
+u32 s_lastDrawnSet[8];
+u64 s_setLoads = 0, s_setCompares = 0;
+u32 s_setKeyStale = 0;                          // sets found by key whose contents differ (must stay 0)
 
 void lightSetNote(const ElanGxRecord& r)
 {
+    u32 index;
     if (r.lightKey && r.lightKey == s_lastSetKey)
-        return;
-    s_lastSetKey = r.lightKey;
-    const size_t n = s_renderSets.size();
-    for (size_t k = 0; k < 4 && k < n; k++)
-        if (!memcmp(&s_renderSets[n - 1 - k], &r.lights, sizeof(r.lights)))
-            return;
-    s_renderSets.push_back(r.lights);
+        index = s_lastSetIndex;
+    else
+    {
+        s_lastSetKey = r.lightKey;
+        const size_t n = s_renderSets.size();
+        index = (u32)n;
+        for (size_t k = 0; r.lightKey && k < 16 && k < n; k++)
+            if (s_renderSetKeys[n - 1 - k] == r.lightKey)
+            {
+                index = (u32)(n - 1 - k);
+                // A key names one set's contents: check that it does.
+                if (memcmp(&s_renderSets[index], &r.lights, sizeof(r.lights)))
+                    s_setKeyStale++;
+                break;
+            }
+        for (size_t k = 0; index == n && k < 4 && k < n; k++)
+        {
+            s_setCompares++;
+            if (!memcmp(&s_renderSets[n - 1 - k], &r.lights, sizeof(r.lights)))
+                index = (u32)(n - 1 - k);
+        }
+        if (index == n)
+        {
+            s_renderSets.push_back(r.lights);
+            s_renderSetKeys.push_back(0);
+        }
+        s_renderSetKeys[index] = r.lightKey;
+        s_lastSetIndex = index;
+    }
+    const u32 type = r.pcw >> 24 & 7;
+    if (r.lights.lit && s_lastDrawnSet[type] != index)
+    {
+        s_setLoads++;
+        s_lastDrawnSet[type] = index;
+    }
 }
 
 void fetchNote(const ElanGxRecord& r)
@@ -734,7 +769,10 @@ void elan_gx_census_render()
     if (s_renderSets.size() > s_check.lightSetsMax)
         s_check.lightSetsMax = (u32)s_renderSets.size();
     s_renderSets.clear();
+    s_renderSetKeys.clear();
     s_lastSetKey = 0;
+    for (u32& k : s_lastDrawnSet)
+        k = 0xFFFFFFFFu;
     takeWrites();                               // up to the draw, for pages not checked yet this render
     // gxRend waits for the previous render's GPU work before it draws.
     dlRenderStart();
@@ -863,11 +901,14 @@ void elan_gx_census_render()
         printf("[run]   GPU fetch per drawn render: %.0f vertices in %.0f lists | from programs %.0f (%.0f%%), "
                "built now %.0f (%.0f%%), pages written since the last render %.0f (%.0f%%), colour lists %.0f "
                "(%.0f more fetched), other CPU-fed %.0f | patched records %.0f | programs drawn take %.0f of the "
-               "ring's %u KB | light sets %.1f (most %u)\n",
+               "ring's %u KB | light sets %.1f (most %u), loaded at draw %.1f, compared when recorded %.1f (found "
+               "by key with other contents: %u STALE so far)\n",
                s_check.vertices / d, s_check.lists / d, s_check.fetched / d, 100.0 * s_check.fetched / v,
                s_check.built / d, 100.0 * s_check.built / v, s_check.written / d, 100.0 * s_check.written / v,
                s_check.color / d, s_check.colorFetched / d, s_check.other / d, s_check.patchVertices / d, s_check.liveWords * 2 / 1024.0 / d,
-               s_progWords * 2 / 1024, s_check.lightSets / d, s_check.lightSetsMax);
+               s_progWords * 2 / 1024, s_check.lightSets / d, s_check.lightSetsMax, s_setLoads / d,
+               s_setCompares / d, s_setKeyStale);
+        s_setLoads = s_setCompares = 0;
         printf("[run]   GPU fetch check: %u draws compared with the CPU draw, %u MISMATCHES, %u ring overruns | "
                "programs so far: %u built, %u patches (%.1f records each), %u ring passes, %u too big, %u aborted, "
                "%u stale caught, %u table restarts\n",
@@ -1140,6 +1181,11 @@ u32 s_loadedPos = 0xFFFFFFFFu;                  // xform index in the position m
 u32 s_loadedNrm = 0xFFFFFFFFu;                  // xform index * 2 + float normals, normal matrix
 // The last xform / light set recorded and the state key it came from.
 u32 s_lastXformKey = 0, s_lastXi = 0, s_lastLightKey = 0, s_lastLi = 0;
+// Each entry's latest state key (0: none). A key always names the same
+// contents (naomi_elan_tnl.cpp: matrix and light change counters, point-lit
+// sets' own keys), so a record whose key an earlier entry has is that entry,
+// without comparing ~100 (matrix) or ~600 (light set) bytes.
+u32 s_xformKeys[kMaxXforms], s_lsetKeys[kMaxLightSets];
 // GPU fetch (naomi_elan_fetch.inc, renders counted by elan_gx_frame_reset):
 // an ELAN page's frame and whether it was written since (wii_fastmem.cpp),
 // the program ring's physical addresses.
@@ -1221,6 +1267,20 @@ int findRecent(const T* table, u32 n, const T& v)
         if (!memcmp(&table[n - 1 - k], &v, sizeof(T)))
             return (int)(n - 1 - k);
     return -1;
+}
+
+// The same, looking first for an entry with the record's key among the last
+// kKeyDepth (a few word compares; nearby lists alternate between a handful of
+// matrices and light sets, e.g. point-lit and parallel-lit ones).
+constexpr u32 kKeyDepth = 16;
+template <class T>
+int findShared(const T* table, const u32* keys, u32 n, const T& v, u32 key)
+{
+    if (key)
+        for (u32 k = 0; k < kKeyDepth && k < n; k++)
+            if (keys[n - 1 - k] == key)
+                return (int)(n - 1 - k);
+    return findRecent(table, n, v);
 }
 
 inline float asFloat(u32 w)
@@ -1359,8 +1419,12 @@ bool elan_gx_record(const ElanGxRecord& r)
         return false;
     // Nearby lists mostly share their matrix and lights: keep one copy. Same
     // state key as the last list: same contents, nothing to compare.
-    const int xr = r.xformKey && r.xformKey == s_lastXformKey ? (int)s_lastXi : findRecent(s_xforms, s_nXforms, r.xform);
-    const int lr = r.lightKey && r.lightKey == s_lastLightKey ? (int)s_lastLi : findRecent(s_lsets, s_nLsets, r.lights);
+    const int xr = r.xformKey && r.xformKey == s_lastXformKey
+                       ? (int)s_lastXi
+                       : findShared(s_xforms, s_xformKeys, s_nXforms, r.xform, r.xformKey);
+    const int lr = r.lightKey && r.lightKey == s_lastLightKey
+                       ? (int)s_lastLi
+                       : findShared(s_lsets, s_lsetKeys, s_nLsets, r.lights, r.lightKey);
     if ((xr < 0 && s_nXforms >= s_capXforms) || (lr < 0 && s_nLsets >= s_capLsets))
         return false;
     u32 xi, li;
@@ -1378,6 +1442,8 @@ bool elan_gx_record(const ElanGxRecord& r)
         s_lsets[s_nLsets] = r.lights;
         li = s_nLsets++;
     }
+    s_xformKeys[xi] = r.xformKey;               // the newest key naming these contents
+    s_lsetKeys[li] = r.lightKey;
     s_lastXformKey = r.xformKey;
     s_lastXi = xi;
     s_lastLightKey = r.lightKey;

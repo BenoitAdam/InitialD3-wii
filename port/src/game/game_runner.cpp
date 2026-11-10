@@ -309,9 +309,18 @@ void logMemoryActivity(const NaomiFrameInfo& info)
             log::write("[prof]   SMALL 3D per frame: %u lists not drawn (whole models among the culled above)\n",
                        (es.boxCulledSmall - s_prevBox.boxCulledSmall) / frames);
         if (es.lightSetsBuilt != s_prevBox.lightSetsBuilt || es.lightSetsReused != s_prevBox.lightSetsReused)
-            log::write("[prof]   point-lit light sets per frame: %u built, %u the last one again\n",
+            log::write("[prof]   point-lit light sets per frame: %u built, %u reused (one of the last 4)\n",
                        (es.lightSetsBuilt - s_prevBox.lightSetsBuilt) / frames,
                        (es.lightSetsReused - s_prevBox.lightSetsReused) / frames);
+        if (es.lightPicks != s_prevBox.lightPicks || es.lightCmds != s_prevBox.lightCmds)
+            log::write("[prof]   night lights per frame: %u light commands decoded, %u repeats skipped | %u point-lit "
+                       "picks, %u lights tested (%u settled by the quick test), %u in reach\n",
+                       (es.lightCmds - s_prevBox.lightCmds) / frames,
+                       (es.lightCmdsSame - s_prevBox.lightCmdsSame) / frames,
+                       (es.lightPicks - s_prevBox.lightPicks) / frames,
+                       (es.lightTests - s_prevBox.lightTests) / frames,
+                       (es.lightsQuickFar - s_prevBox.lightsQuickFar) / frames,
+                       (es.lightsInReach - s_prevBox.lightsInReach) / frames);
         if (es.beamLists != s_prevBox.beamLists || es.coneOut != s_prevBox.coneOut)
             log::write("[prof]   HEADLIGHTS per frame: %u lists with a projected beam (SMOOTH), %u of them masked "
                        "(reaching behind the lamp), %u headlights left out of lists their cone misses\n",

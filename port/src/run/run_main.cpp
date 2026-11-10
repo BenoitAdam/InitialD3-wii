@@ -1287,11 +1287,25 @@ void host_on_vblank()
                          (es.coneOut - last.coneOut) / 60);
                 logLine(line);
             }
+            if (es.lightCmds != last.lightCmds || es.lightCmdsSame != last.lightCmdsSame || es.lightPicks != last.lightPicks)
+            {
+                snprintf(line, sizeof(line),
+                         "[run]   lights per frame: %u light commands decoded, %u the slot's light again | light model %u, "
+                         "%u again | %u light plans | point-lit picks %u, %u lights tested (%u settled by the quick "
+                         "test, %u WRONG so far), %u in reach\n",
+                         (es.lightCmds - last.lightCmds) / 60, (es.lightCmdsSame - last.lightCmdsSame) / 60,
+                         (es.lightModelCmds - last.lightModelCmds) / 60,
+                         (es.lightModelCmdsSame - last.lightModelCmdsSame) / 60, (es.lightPlans - last.lightPlans) / 60,
+                         (es.lightPicks - last.lightPicks) / 60, (es.lightTests - last.lightTests) / 60,
+                         (es.lightsQuickFar - last.lightsQuickFar) / 60, es.lightsQuickWrong,
+                         (es.lightsInReach - last.lightsInReach) / 60);
+                logLine(line);
+            }
             if (es.lightSetsBuilt != last.lightSetsBuilt || es.lightSetsReused != last.lightSetsReused)
             {
                 snprintf(line, sizeof(line),
-                         "[run]   point-lit light sets per frame: %u built, %u the last one again (checked: %u STALE "
-                         "so far)\n",
+                         "[run]   point-lit light sets per frame: %u built, %u reused (one of the last 4; checked: %u "
+                         "STALE so far)\n",
                          (es.lightSetsBuilt - last.lightSetsBuilt) / 60, (es.lightSetsReused - last.lightSetsReused) / 60,
                          es.lightSetsStale);
                 logLine(line);

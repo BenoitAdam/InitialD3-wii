@@ -21,9 +21,15 @@ it exists.
 
 ### Status (2026-11-10)
 
-- **HEADLIGHTS (built 2026-11-10, untested on a Wii; owner to test)**: the night headlight beam showed
-  the road's polygons; RENDERING 2, last row: ARCADE (OLD) / SOFT / SMOOTH (projected per-pixel cone).
-  Details, numbers and what to check: "Open issues", night headlight beam.
+- **HEADLIGHTS (built 2026-11-10)**: the night headlight beam showed the road's polygons; RENDERING
+  2, last row: ARCADE (OLD) / SOFT / SMOOTH (projected per-pixel cone). Owner's Wii test: "not much
+  better"; the owner thinks the arcade had it too. Kept as options, ARCADE default; the look is dropped.
+  Details: "Open issues", night headlight beam.
+- **Night lighting made cheaper (2026-11-10, exact, no option; awaiting a night log)**: repeated
+  light commands skipped, the last 4 point-lit picks cached, matrices and light sets found by key in
+  the renderer, a quick reach test before each light's box test. Runner: sets built 13-67 -> 8-18 a
+  frame, set compares 120-244 -> 45-90 a render, 55-67% of light tests settled cheaply; day-route
+  digests identical. Expected ~0.3 ms off a drawn night frame. OPTIMIZATION.md, "Done 2026-11-10".
 - **MOTION FX (built 2026-11-10, untested on a Wii; owner to test)**: smoothing a race shown at
   30 fps, launcher RENDERING 2 page, last two rows: MOTION FX (OFF default / SPEED BLUR / FRAME
   BLEND / IN-BETWEEN / BLUR + IN-BETWEEN) and MOTION LEVEL (LOW / MEDIUM default / HIGH). Drawn by
@@ -332,7 +338,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--gpu-tnl` | take the lists the Wii GPU path would take; runs the **GPU fetch check** (`[run] GPU fetch check`: program triangles vs the CPU draw; must stay at 0 mismatches). Known exception, unexplained, in every driving-route run since at least 2026-11-05: 15 lists at two menu renders (frames ~5640, ELAN +17F1xxx-17F5xxx quads, and ~6720, +1750xxx-175Bxxx), cached programs whose records changed with no page write seen |
 | `--frameskip N`, `--model-skip 0/1`, `--fixes on/off` | same as the launcher options, for A/B runs |
 | `--headlights 0/1/2` | HEADLIGHTS (default 0 here and in the launcher): 1 SOFT (wider cone, CPU path too: shows in snapshots), 2 SMOOTH (with `--gpu-tnl --point-lights 1`): `HEADLIGHTS SMOOTH per drawn render` line, every beam's projected cone (texture through its matrix) against the ELAN's cone at each vertex in front of the lamp: max error must stay ~0.02, 0 over 0.1. the mask check (lists reaching behind the lamp) likewise. `HEADLIGHTS per frame` line: beams, of which masked, headlights left out of lists their cone misses |
-| `--point-lights 0/1` | NIGHT LIGHTS: 1 = point lights as GX local lights; without `--gpu-tnl` the CPU draws those lists lit the way GX would (snapshot preview). With `--gpu-tnl`: `point-lit light sets per frame` line, every reused set rebuilt and compared (`STALE` must stay 0). The night attract demo (no presses, 9000 frames) is not deterministic on Windows past render ~5300: compare `record digest` lines only up to where two runs of the same code agree |
+| `--point-lights 0/1` | NIGHT LIGHTS: 1 = point lights as GX local lights; without `--gpu-tnl` the CPU draws those lists lit the way GX would (snapshot preview). With `--gpu-tnl`: `point-lit light sets per frame` line, every reused set rebuilt and compared (`STALE` must stay 0, parallel-lit sets kept by key included); `lights per frame` line (light commands and repeats skipped, picks, lights tested and those the quick test settled: `WRONG` must stay 0); the `GPU fetch per drawn render` line adds light sets loaded at draw and compared when recorded, sets found by key checked against their contents (`STALE` must stay 0). The night attract demo (no presses, 9000 frames) is not deterministic on Windows past render ~5300: compare `record digest` lines only up to where two runs of the same code agree |
 | `--cull 0/1/2` | BACKFACE CULL in the snapshots: 2 = the polygons' cull modes (launcher ON), 1 = the other winding |
 | `--list-cull 0/1/2/3` | 3D LIST CULL with `--gpu-tnl`: 1 = behind the camera, 2 = out of view, 3 = also whole models (launcher default). Prints `3D list cull per frame` and `3D list boxes ... N STALE` (every box used is checked against its list's records, every model stepped over against its block: must stay at 0) and `record digest` (all that the renderer is handed: for a refactor of the recording side, two runs at the same value must match line for line; run them one at a time, four at once lost one) |
 | env `IDAS3_GX_DEPTH=N:F:rules;...` | each snapshot redrawn with the Wii's 24-bit Z (near N, far F; N 0 = exact) and other depth rules, `_diffK.png` + winning lists of the differing pixels; a config against itself with `j0.5` = pixels that flicker (rules in `soft_renderer.cpp`, `GxDepth`). Race: `0:1:geq+cull;0.00999:100100:geq+cull;0.00999:100100:geq+cull+j0.5+r1` |
