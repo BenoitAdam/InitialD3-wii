@@ -7164,10 +7164,18 @@ static void mfx_emit(const MfxFrame &f, float W)
 static void mfx_blur(const MfxFrame &f, const NaomiMotion &m)
 {
   static const float kZoom[4] = {0.f, 0.03f, 0.06f, 0.10f};   // blur length / distance from the centre
-  static const float kTurn[4] = {0.f, 1.f, 2.f, 3.f};         // frames of turning
+  // Frames of turning blurred, and the most it may smear: a sharp corner is
+  // ~15 px of picture a frame, and the owner found the full amount (1-3
+  // frames) far too much (first Wii test, 2026-11-10).
+  static const float kTurn[4] = {0.f, 0.15f, 0.25f, 0.4f};
+  static const float kTurnMax[4] = {0.f, 3.f, 5.f, 8.f};   // EFB pixels
   const float zoom = kZoom[mfx_level()] * mfx_ramp(m.kmh, 30.f, 140.f);
   const float H = (float)rmode->efbHeight;
-  const float turn = m.yawStep * kTurn[mfx_level()] * m.focal * (f.vpw / f.dcw);   // EFB pixels
+  float turn = m.yawStep * kTurn[mfx_level()] * m.focal * (f.vpw / f.dcw);   // EFB pixels
+  if (turn > kTurnMax[mfx_level()])
+    turn = kTurnMax[mfx_level()];
+  else if (turn < -kTurnMax[mfx_level()])
+    turn = -kTurnMax[mfx_level()];
   if (zoom <= 0.f && fabsf(turn) < 1.f)
     return;
   const int thr8 = mfx_thr8(f);
