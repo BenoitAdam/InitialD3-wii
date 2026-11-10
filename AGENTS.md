@@ -75,6 +75,9 @@ it exists.
   ONLY tears => the yaw read (sign/size); both clean => the translation/depth guess is the cause, and the way
   on is the opponent's own state (0C8FF430; axes unidentified, print its position/velocity with
   IDAS3_MOTION on the runner) or the depth at the grid vertices (GX_PeekZ).
+  Owner's answer (2026-11-10): ROTATION ONLY is clean => the forward-step/depth guess was the cause. It is now
+  the default (BETWEEN WARP first value). In 2 PLAYERS only SPEED BLUR is wired (`mfx_after_render`: FRAME
+  BLEND and IN-BETWEEN need the whole picture, `s_mfx.half < 0`); SPEED BLUR in 2P is untested.
 - **2 PLAYERS (branch `two-player-splitscreen`), works on a real Wii** (owner, 2P log 1,
   2026-11-07: "amazing it works"). Launcher page PLAYERS (last page, one press back from
   GENERAL): 2 PLAYERS (OFF / SIDE BY SIDE), GC PAD LAYOUT (A/B PEDALS default, R/L PEDALS

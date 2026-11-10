@@ -23,7 +23,7 @@
 extern "C" {
 int g_motion_fx_preset = 0;      // 0 OFF, 1 SPEED BLUR, 2 FRAME BLEND, 3 IN-BETWEEN, 4 BLUR + IN-BETWEEN
 int g_motion_level_preset = 2;   // 1 LOW, 2 MEDIUM, 3 HIGH
-int g_between_warp_preset = 1;   // 0 SMOOTH, 1 BANDS, 2 ROTATION ONLY, 3 NO MOVE
+int g_between_warp_preset = 2;   // 0 SMOOTH, 1 BANDS, 2 ROTATION ONLY, 3 NO MOVE
 bool g_motion_trace_now = false; // runner: this vblank is in IDAS3_MOTION's range
 }
 

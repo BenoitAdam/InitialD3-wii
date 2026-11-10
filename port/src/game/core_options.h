@@ -354,7 +354,7 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // car, SMOOTH (one pass) tears the scenery too. ROTATION ONLY and NO MOVE
     // are tests to tell the warp's depth guess from the path itself.
     {"BETWEEN WARP  ", "IN-BETWEEN picture: BANDS, SMOOTH, ROTATION ONLY (turn, no depth), NO MOVE (test: same picture)",
-     PAGE_DEPTH_2, 0, 4, {"BANDS (OLD)", "SMOOTH", "ROTATION ONLY", "NO MOVE (TEST)"}, {1, 0, 2, 3}},
+     PAGE_DEPTH_2, 0, 4, {"ROTATION ONLY", "BANDS (OLD)", "SMOOTH", "NO MOVE (TEST)"}, {2, 1, 0, 3}},
 };
 
 } // namespace idas3
