@@ -220,6 +220,7 @@ int g_idle_skip_preset = 1;     // idle loop below: charge it 30x its cycles
 int g_vram32_fast_preset = 1;   // rec: inline 32-bit VRAM stores (wii_driver.cpp)
 int g_sq_fast_preset = 1;       // rec: inline store-queue flushes to memory (wii_driver.cpp shop_pref)
 int g_cold_entry_preset = 1;    // rec: timeslice exit after the block's tail (wii_driver.cpp ngen_Begin)
+int g_jit_frswap_preset = 1;    // rec: FPSCR.FR bank swap inline, no C call (wii_driver.cpp shop_sync_fpscr)
 int g_fifo_wake_preset = 1;     // gxRend: wake from a full GX FIFO early (InitRenderer)
 int g_mem_sweep_preset = 1;     // wii_fastmem: short synchronous sweeps (page_alloc)
 int g_fifo_size_preset = 1;     // gxRend: 512 KB GX FIFO (InitRenderer)
@@ -317,6 +318,41 @@ extern "C" u32 naomi_ReflectionSkip(u32 row)
     }
     const u32 rate = g_reflection_rate_preset < 1 ? 1u : (u32)g_reflection_rate_preset;
     return ++builds % rate != 0;
+}
+
+// MIRROR = OFF + GAME SKIP (value 2). The game draws a frame view by view:
+// 0C024100 (r4 = the view) sets the view's user clip mode, its word +138 (0
+// none, 2 inside the rear-view mirror's rectangle, 3 outside it), into the
+// model calls' flags (0C1FB320 -> 0C989FF0 bits 16-17), draws the scene and
+// sets it back to 0. The mirror is the view with mode 2, drawn before the
+// main one (mode 3). Returning from that call at once skips the game's whole
+// mirror pass: its SH-4 work (~5% of a race frame's, runner) and every command
+// the ELAN would walk for it. MIRROR OFF's dark panel stays where it was.
+// Found on the runner (IDAS3_WRITEVAL on a mirror model call 08020800, then
+// IDAS3_TIMELINE on 0C989FF0). Matched on its opcodes.
+extern "C" {
+u32 g_mirror_pass_skips = 0;    // mirror views not drawn (log)
+}
+
+extern "C" u32 naomi_MirrorViewEntry(u32 pc)
+{
+    if (g_mirror_preset != 2 || (pc & 0x1FFFFFFF) != 0x0C024100)
+        return 0;
+    const u32 base = pc & 0xE0000000;
+    // Prologue, the view kept in r11, the clip setter's call with word +138.
+    return ReadMem16(base | 0x0C024100) == 0x2F86 && ReadMem16(base | 0x0C024110) == 0x6B43 &&
+           ReadMem16(base | 0x0C02416A) == 0xD91F && ReadMem16(base | 0x0C02416C) == 0x490B &&
+           ReadMem16(base | 0x0C02416E) == 0x548F && ReadMem32(base | 0x0C0241E8) == 0x0C1FB320;
+}
+
+extern "C" u32 naomi_MirrorViewSkip(u32 view)
+{
+    const u32 v = view & 0x1FFFFFFF;
+    if (g_mirror_preset != 2 || v < 0x0C000000 || v + 0x13C > 0x0E000000 || ReadMem32(view + 0x138) != 2)
+        return 0;
+    g_mirror_pass_skips++;
+    g_elan_mirror_seen++;           // still the in-car view (IN-CAR REFLECT, MOTION FX)
+    return 1;
 }
 
 void naomi_Run()

@@ -68,6 +68,12 @@ void naomi_SetFrameHook(NaomiFrameHook fn, u32 period);
 // block, or every build is made), and whether the build at that row is skipped.
 extern "C" u32 naomi_ReflectionExit(u32 pc);
 extern "C" u32 naomi_ReflectionSkip(u32 row);
+// MIRROR = OFF + GAME SKIP: nonzero if the block at pc is the game's per-view
+// draw (0C024100); the CPU back ends then call naomi_MirrorViewSkip(r4) at its
+// entry and return to the caller (pc = pr) if it says so (the mirror's view).
+extern "C" u32 naomi_MirrorViewEntry(u32 pc);
+extern "C" u32 naomi_MirrorViewSkip(u32 view);
+extern "C" u32 g_mirror_pass_skips;
 // 2 PLAYERS (naomi_2p.cpp): split-screen races, the second pad driving the
 // CPU car. The host passes the second pad each poll; the core calls the two
 // hooks from naomi_VBlank() and naomi_OnStartRender().

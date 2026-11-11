@@ -61,6 +61,8 @@ extern "C" int g_idle_skip_preset;    // emu/naomi/naomi_frontend.cpp
 extern "C" int g_vram32_fast_preset;
 extern "C" int g_sq_fast_preset;
 extern "C" int g_cold_entry_preset;
+extern "C" int g_jit_frswap_preset;       // JIT FR SWAP (naomi_frontend.cpp)
+extern "C" int g_aica_half_mix_preset;    // SOUND MIX (sgc_if.cpp)
 extern "C" int g_fifo_wake_preset;
 extern "C" int g_mem_sweep_preset;
 extern "C" int g_fifo_size_preset;
@@ -333,6 +335,14 @@ void logMemoryActivity(const NaomiFrameInfo& info)
                        (es.mirrorSummarised - s_prevBox.mirrorSummarised) / frames,
                        (es.mirrorLists - s_prevBox.mirrorLists) / frames,
                        (es.mirrorVertices - s_prevBox.mirrorVertices) / frames);
+        {
+            // MIRROR = OFF + GAME SKIP: the game's mirror views not drawn.
+            static u32 s_prevSkips = 0;
+            if (g_mirror_pass_skips != s_prevSkips)
+                log::write("[prof]   MIRROR GAME SKIP: %u of %u frames had their mirror view skipped\n",
+                           g_mirror_pass_skips - s_prevSkips, frames);
+            s_prevSkips = g_mirror_pass_skips;
+        }
         static u32 s_prevInCarSkips = 0;
         if (g_reflection_incar_skips != s_prevInCarSkips)
             log::write("[prof]   IN-CAR REFLECT: %u of %u frames without a reflection map build (in-car view)\n",
@@ -372,6 +382,9 @@ void logMemoryActivity(const NaomiFrameInfo& info)
         else
             log::write("[prof]   ELAN walk: no dropped frame | %.2f ms a frame, %u commands read (%.0f ns a command)\n",
                        walkKept / frames, readKept / frames, readKept ? walkKept * 1e6 / readKept : 0.0);
+        if (g_elan_model_prefetch_preset)
+            log::write("[prof]   MODEL PREFETCH: %u models a frame had their headers asked for ahead\n",
+                       (es.modelPrefetches - s_prevBox.modelPrefetches) / frames);
     }
     const NaomiElanStats& es = naomi_ElanStats();
     s_prevBox = es;
@@ -442,7 +455,8 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_small_cull_preset,    &g_incar_reflect_preset, &g_elan_dl_preset,     &g_elan_colour_fetch_preset,
         &g_elan_prefetch_preset, &g_two_player_preset, &g_gc_layout_preset, &g_p2_car_preset,
         &g_p2_scenery_preset,    &g_motion_fx_preset,  &g_motion_level_preset, &g_test_mode_preset,
-        &g_between_warp_preset,  &g_headlight_preset};
+        &g_between_warp_preset,  &g_headlight_preset,  &g_jit_frswap_preset,  &g_elan_model_prefetch_preset,
+        &g_aica_half_mix_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

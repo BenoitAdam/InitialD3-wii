@@ -299,9 +299,15 @@ extern "C" int get_jit_fmov_preset();
 extern "C" int g_cold_entry_preset;
 static ppc_label* s_cold_entry;
 
+// JIT FR SWAP preset (naomi_frontend.cpp): shop_sync_fpscr swaps the FPU banks
+// inline instead of flushing, calling UpdateFPSCR and reloading.
+extern "C" int g_jit_frswap_preset;
+
 // REFLECTIONS preset (naomi_frontend.cpp): skipped reflection map builds.
 extern "C" u32 naomi_ReflectionExit(u32 pc);
 extern "C" u32 naomi_ReflectionSkip(u32 row);
+extern "C" u32 naomi_MirrorViewEntry(u32 pc);
+extern "C" u32 naomi_MirrorViewSkip(u32 view);
 
 // SOFT FLOAT preset (naomi_softfloat.cpp): the game's software double divide
 // and multiply, run natively.
@@ -3171,6 +3177,21 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		own->MarkLabel();
 	}
 
+	// MIRROR = OFF + GAME SKIP (naomi_frontend.cpp): this block is the game's
+	// per-view draw; for the rear-view mirror's view (r4) it returns at once,
+	// as the SOFT FLOAT entries do.
+	if (naomi_MirrorViewEntry(block->start))
+	{
+		ppc_ori(ppc_rarg0,GetIntReg(reg_r4),0);	// mr rarg0,R4 (the view)
+		ppc_call((void*)&naomi_MirrorViewSkip);
+		ppc_cmpi(ppc_cr0,ppc_rrv0,0,0);
+		ppc_label* draw=ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq draw
+		ppc_sh_load(ppc_next_pc,reg_pr);
+		ppc_jump(loop_no_update);
+		draw->MarkLabel();
+	}
+
 	// 2 PLAYERS (naomi_2p.cpp): this block reads the HUD meter's speed; the
 	// second player's view is given the CPU car's first.
 	if (naomi_2pHudEntry(block->start))
@@ -4745,9 +4766,44 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				ppc_label* done = ppc_CreateLabel();
 				ppc_bx(0, 0, 0);					// b done
 				swap->MarkLabel();
-				reg_flush_all_fpu();
-				ppc_call(&UpdateFPSCR);
-				reg_reload_all_fpu();
+				if (g_jit_frswap_preset)
+				{
+					// JIT FR SWAP: what UpdateFPSCR does on a Wii when FR
+					// changed, inline (log 26: ~2000 swaps a frame at night,
+					// each a 16-register spill, a C call swapping 16 words
+					// and a 16-register reload). old_fpscr first, while rarg0
+					// still holds fpscr; SetFloatStatusReg has no body here.
+					// With FPU PIN the front bank lives in f14..f29 (its
+					// memory copy is stale), so a register swaps with its xf
+					// word through f0, as the spill/reload pair would have:
+					// the same lfs/stfs conversions, the same bits. Without,
+					// both banks are memory: swap the words.
+					ppc_stw(ppc_rarg0, ppc_contex, (u32)SH4CTX_OFS_OLD_FPSCR);
+					for (u32 i = 0; i < 16; i++)
+					{
+						const u32 fo = Sh4cntx.offset(reg_fr_0 + i), xo = Sh4cntx.offset(reg_xf_0 + i);
+						if (get_fpu_pin_preset())
+						{
+							const ppc_freg rf = GetFloatReg(reg_fr_0 + i);
+							ppc_lfs(ppc_f0, ppc_contex, xo);
+							ppc_stfs(rf, ppc_contex, xo);
+							ppc_fmrx(rf, ppc_f0, 0);
+						}
+						else
+						{
+							ppc_lwz(ppc_rarg0, ppc_contex, fo);
+							ppc_lwz(ppc_rarg1, ppc_contex, xo);
+							ppc_stw(ppc_rarg1, ppc_contex, fo);
+							ppc_stw(ppc_rarg0, ppc_contex, xo);
+						}
+					}
+				}
+				else
+				{
+					reg_flush_all_fpu();
+					ppc_call(&UpdateFPSCR);
+					reg_reload_all_fpu();
+				}
 				done->MarkLabelLong();
 			}
 			break;

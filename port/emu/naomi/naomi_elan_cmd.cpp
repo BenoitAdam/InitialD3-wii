@@ -36,6 +36,7 @@ extern "C" {
 int g_elan_model_skip_preset = 1;
 int g_mirror_preset = 1;
 int g_elan_prefetch_preset = 1;
+int g_elan_model_prefetch_preset = 1;
 }
 
 #if HOST_OS != OS_WII
@@ -143,6 +144,8 @@ struct ModelWalk
     const u8* base;     // the block
     u32 lastGmp;        // offset of its last material + 1, 0: none
     u32 indexed;        // lists that took a depth slice (tnl_ListsIndexed)
+    u16 heads[8];       // MODEL PREFETCH: its first command headers, 32-byte units
+    u32 nHeads;
 };
 
 // Two cache lines, the first enough to tell a model that stays visible.
@@ -160,6 +163,13 @@ struct alignas(32) ModelEntry
 };
 constexpr u32 kModelSlots = 2048;
 ModelEntry s_models[kModelSlots];
+// MODEL PREFETCH: where a model's first command headers were the last time it
+// was walked (same slot as its summary; 0xFFFF ends the list). A model's
+// headers sit between its vertices, each a cache miss on a Wii; asked for
+// together at the model's call, they arrive while the first is handled. Only
+// a hint: a block that changed is walked as before, from its own words.
+constexpr u32 kModelHeads = 8;
+u16 s_modelHeads[kModelSlots][kModelHeads];
 ModelWalk* s_walk = nullptr;        // the innermost model list being walked
 int s_dropLists = 0;                // inside a model MIRROR OFF does not draw
 
@@ -231,6 +241,9 @@ void rememberModel(u32 offset, u32 size, const ModelWalk& w, int typeIn, int typ
     m.typeOut = (s8)typeOut;
     m.pure = pure;
     m.used = 1;
+    u16* const heads = s_modelHeads[&m - s_models];
+    for (u32 i = 0; i < kModelHeads; i++)
+        heads[i] = i < w.nHeads ? w.heads[i] : 0xFFFF;
     m.boxed = pure && w.boxOk && w.ich && w.indexed <= 0xFFFF;
     if (m.boxed)
     {
@@ -402,7 +415,7 @@ bool hiddenModel(const u8* list, u32 listSize, u32 offset, u32 size)
 // would. Its lists take no depth slice either way.
 bool mirrorModel(const u8* data, u32 offset, u32 size, u32 depth)
 {
-    if (g_mirror_preset || s_ta.secondHalfPending || rend_NextFrameSkipped())
+    if (g_mirror_preset == 1 || s_ta.secondHalfPending || rend_NextFrameSkipped())
         return false;
     u32 listSize = size;
     const u8* list = elanRamPtr(offset, listSize);
@@ -622,6 +635,63 @@ u32 ichVertexSize(u32 flags)
     }
 }
 
+// MODEL PREFETCH: the cache lines of a model's remembered command headers.
+void prefetchModel(const u8* list, u32 listSize, u32 offset, u32 size)
+{
+#if defined(__GNUC__)
+    const ModelEntry& m = modelSlot(offset, size);
+    if (!m.used || m.offset != offset || m.size != size)
+        return;
+    const u16* const heads = s_modelHeads[&m - s_models];
+    for (u32 i = 0; i < kModelHeads && heads[i] != 0xFFFF; i++)
+        if ((u32)heads[i] << 5 < listSize)
+            __builtin_prefetch(list + ((u32)heads[i] << 5));
+    elan_Stats().modelPrefetches++;
+#endif
+}
+
+// ...and of the next model called from the same list, a model's walk ahead:
+// the top-level list (matrix, model, matrix, model...) is already in the cache
+// (ELAN PREFETCH), so peeking a few commands ahead costs no miss of its own.
+void prefetchNextModel(const u8* data, u32 size)
+{
+    for (u32 n = 0; n < 4 && size >= 32; n++)
+    {
+        const u32 pcw = word(data, 0);
+        if (!isNaomi2(pcw))
+            return;
+        u32 used = 32;
+        switch ((pcw >> 8) & 0xF)
+        {
+        case N2_MODEL:
+        {
+            const u32 offset = word(data, 4) & 0x1FFFFFF8, msize = word(data, 6);
+            u32 listSize = msize;
+            const u8* list = elanRamPtr(offset, listSize);
+            if (list)
+                prefetchModel(list, listSize, offset, msize);
+            return;
+        }
+        case N2_MATRIX_OR_LIGHT:
+            if (word(data, 1) == 0xF && word(data, 2) == 0x7F)
+                used = 160;
+            break;
+        case N2_GMP:
+            used = 64;
+            break;
+        case N2_ICH:
+        case N2_LINK:
+            return;
+        default:
+            break;
+        }
+        if (used > size)
+            return;
+        data += used;
+        size -= used;
+    }
+}
+
 void execute(const u8* data, u32 size, u32 depth)
 {
     if (depth > kMaxDepth)
@@ -663,6 +733,12 @@ void execute(const u8* data, u32 size, u32 depth)
 
         const u32 pcw = word(data, 0);
         st.walkRead++;
+        if (s_walk && s_walk->base && s_walk->nHeads < kModelHeads)
+        {
+            const u32 at = (u32)(data - s_walk->base) >> 5;
+            if (data >= s_walk->base && at < 0xFFFF)
+                s_walk->heads[s_walk->nHeads++] = (u16)at;
+        }
         if (!isNaomi2(pcw))
         {
             walkImpure();
@@ -820,6 +896,12 @@ void execute(const u8* data, u32 size, u32 depth)
                 ModelWalk* const outer = s_walk;
                 const int typeIn = s_ta.listType;
                 const u32 indexed = tnl_ListsIndexed();
+                if (g_elan_model_prefetch_preset)
+                {
+                    prefetchModel(list, listSize, modelOffset, modelSize);
+                    if (!outer && size > 32)
+                        prefetchNextModel(data + 32, size - 32);
+                }
                 s_walk = &walk;
                 tnl_BeginModel((const u32*)data);
                 execute(list, listSize, depth + 1);

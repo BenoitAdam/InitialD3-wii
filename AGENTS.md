@@ -51,6 +51,22 @@ it exists.
   `sh4` at most; its walk (~170 model calls and matrices, ~65 models walked without drawing) maybe
   ~0.5 ms. Skipping it would need the game's mirror routine found and stepped over (not done).
   Summaries for mirror-only models were retried and dropped again (OPTIMIZATION.md, Tried and dropped).
+- **Built after log 26 (2026-11-11), awaiting log 27**, four speed items, each behind a launcher
+  row with the old behaviour kept (OPTIMIZATION.md, "Done 2026-11-11: four items"):
+  MIRROR gains OFF + GAME SKIP (value 2, not the default): the game's per-view draw 0C024100 returns
+  at once for the mirror's view (word +138 = 2), so the game builds no mirror at all (runner, frames
+  9300-9900 in-car: 2572 ELAN commands a frame instead of 4098, 931 lists instead of 1562, 106K
+  vertices instead of 147K; the player's state block identical at frame 9900; CPU-path snapshots of
+  in-car frames 9500/9700/9900 pixel-identical to MIRROR OFF). JIT FR SWAP
+  (RECOMPILER 2, default INLINE): the FPSCR.FR bank swap in the recompiled code, three instructions
+  a register with FPU PIN, no C call (Wii only, untestable on the runner). MODEL PREFETCH
+  (RENDERING 2, default ON): a model's command headers, remembered from its last walk, asked for
+  at its call, and the next model's from the top-level list. SOUND MIX (AUDIO, default FULL): HALF
+  steps the voices without mixing them every other sample and plays the last sample again; the
+  game and the sound CPU see the same registers (runner: even-sample hash and record digests
+  identical to FULL). To read in log 27: `sh4`/`elan` in-car with OFF + GAME SKIP, `[prof] MIRROR
+  GAME SKIP`, `[CC] sync_fpscr` (call-outs should nearly vanish with JIT CCALLS on), `[prof] MODEL
+  PREFETCH` and the walk's ns a command, `aica`/`vox` with SOUND MIX HALF.
 - **MOTION FX (built 2026-11-10, untested on a Wii; owner to test)**: smoothing a race shown at
   30 fps, launcher RENDERING 2 page, last two rows: MOTION FX (OFF default / SPEED BLUR / FRAME
   BLEND / IN-BETWEEN / BLUR + IN-BETWEEN) and MOTION LEVEL (LOW / MEDIUM default / HIGH). Drawn by
@@ -394,7 +410,9 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--incar-reflect N` | IN-CAR REFLECT (default 0 here = as REFLECTIONS, the launcher's is 16): while the in-car view's mirror models are on screen, one reflection map build in N, -1 = none; an `IN-CAR REFLECT per 60 frames` line and an exit line count the builds not made. The race starts in the in-car view; `view` toggles it with the chase view |
 | `--colour-fetch 0/1` | COLOUR LISTS with `--gpu-tnl` (default 0 here, the launcher's is GPU FETCH): colour lists get fetch programs (so boxes) and are drawn from them when TSP UseAlpha is 0 or every record's alpha is 255 (the Wii also takes gxRend's other forced-opaque cases); the `GPU fetch per drawn render` line shows "colour lists N (M more fetched)" and they join the fetch, display-list and box checks |
 | `--display-lists 0/1` | DISPLAY LISTS with `--gpu-tnl` (default 0 here, the launcher's is ON): every cached list's display-list entry is built as on the Wii, its bytes read back as the GPU would and compared with the CPU draw. `DISPLAY LISTS per drawn render` line: MISMATCHES (only where the GPU fetch check has them too) and HAZARDS (an entry written over one still queued) must stay 0; also the ring bytes the drawn entries take, ring passes and GPU waits. Env `IDAS3_DL_RING_KB`: ring size (the Wii's is 1024) |
-| `--mirror 0/1` | MIRROR: 0 = models clipped inside the user clip rectangle (the in-car view's rear-view mirror) not drawn; `MIRROR OFF per frame` line. The race starts in the in-car view (~9350) and each `view` press toggles in-car/chase: with presses at 9950, 10250, 10550 the route is in-car at 9350-9950 and 10300-10550 |
+| `--mirror 0/1/2` | MIRROR: 0 = models clipped inside the user clip rectangle (the in-car view's rear-view mirror) not drawn; `MIRROR OFF per frame` line. 2 = OFF + GAME SKIP: the game's own mirror view is not drawn (0C024100 returns for the view whose word +138 is 2); exit line `MIRROR OFF + GAME SKIP: N mirror views not drawn`. The race starts in the in-car view (~9350) and each `view` press toggles in-car/chase: with presses at 9950, 10250, 10550 the route is in-car at 9350-9950 and 10300-10550 |
+| `--sound-mix 0/1` | SOUND MIX: 1 = HALF (odd samples step the voices without mixing, the last sample is played again). Exit line `sound output: N samples, hash of all, of the even ones`: HALF must give FULL's even-sample hash exactly (and the same record digests) |
+| `--model-prefetch 0/1` | MODEL PREFETCH: a cache hint only (no effect on the PC's output or digests) |
 | `--small N` | SMALL 3D with `--gpu-tnl`: lists and whole models under N pixels on screen not drawn; `SMALL 3D per frame` line. Snapshots cannot show it (GPU lists are not drawn in them) |
 | env `IDAS3_FAR_CENSUS=1` | drawn GPU-path vertices and lists by their box's nearest depth and by its size on screen |
 | env `IDAS3_AICA_KEYS=FROM:TO` | a `[keyon]` line per sound channel key-on in those frames: format, loop, address, loop points, pitch, levels and the sample fingerprint SOUND LEVELS matches. The exit line `SOUND LEVELS` counts the key-ons recognised |

@@ -735,6 +735,7 @@ static int softFloatTest(u32 pairs)
 }
 
 static bool s_reflectionHook;
+static bool s_mirrorHook;           // MIRROR = OFF + GAME SKIP (--mirror 2)
 
 // --two-player: the HUD speed of the second player's view, where the JIT
 // calls it on the Wii (block entry).
@@ -773,6 +774,9 @@ static void pcHook()
     }
     if (s_reflectionHook)
         reflectionHook();
+    if (s_mirrorHook && (next_pc & 0x1FFFFFFF) == 0x0C024100 && naomi_MirrorViewEntry(next_pc) &&
+        naomi_MirrorViewSkip(r[4]))
+        next_pc = pr;
     if (s_probeHi)
         probeStep();
     if (s_softFloat)
@@ -918,6 +922,8 @@ static u32 s_frameLimit = 600;
 static u64 s_startUs = 0;
 extern u32 g_ccn_ici_count;   // emu/dc/sh4/ccn.cpp
 extern "C" u32 g_sfx_hits[2];   // plugs/nullAICA/sgc_if.cpp, SOUND LEVELS
+extern "C" u64 g_host_sound_hash_all, g_host_sound_hash_even, g_host_sound_samples;   // host_win.cpp
+extern "C" int g_aica_half_mix_preset;   // SOUND MIX (sgc_if.cpp)
 
 // --press F:name[,F:name...]: hold a control for 10 frames from frame F
 // (coin, start, view, up, down = shifter, left, right = steering, gas,
@@ -1728,7 +1734,17 @@ int main(int argc, char** argv)
         // MIRROR: 0 = the in-car view's rear-view mirror (models clipped inside
         // the user clip rectangle) is not drawn.
         g_mirror_preset = atoi(mi);
+        // 2 = OFF + GAME SKIP: the game's own mirror view is not drawn at all.
+        if (g_mirror_preset == 2)
+        {
+            s_mirrorHook = true;
+            g_sh4_pc_hook = pcHook;
+        }
     }
+    if (const char* sm = argValue(argc, argv, "--sound-mix"))
+        g_aica_half_mix_preset = atoi(sm);     // SOUND MIX: 1 = HALF
+    if (const char* mp = argValue(argc, argv, "--model-prefetch"))
+        g_elan_model_prefetch_preset = atoi(mp);   // MODEL PREFETCH (a cache hint: no effect on the PC's output)
     if (const char* cu = argValue(argc, argv, "--cull"))
     {
         // BACKFACE CULL: 2 = the polygons' own cull modes (the launcher's ON),
@@ -1828,6 +1844,12 @@ int main(int argc, char** argv)
         // SOUND LEVELS (sgc_if.cpp): key-ons recognised by their sample.
         printf("[run] SOUND LEVELS: %u menu cursor key-ons, %u tire squeal key-ons recognised\n", g_sfx_hits[0],
                g_sfx_hits[1]);
+        if (g_mirror_preset == 2)
+            printf("[run] MIRROR OFF + GAME SKIP: %u mirror views not drawn\n", g_mirror_pass_skips);
+        // SOUND MIX check: HALF must give FULL's even samples exactly.
+        printf("[run] sound output: %llu samples, hash of all %016llX, of the even ones %016llX\n",
+               (unsigned long long)g_host_sound_samples, (unsigned long long)g_host_sound_hash_all,
+               (unsigned long long)g_host_sound_hash_even);
     }
     if (g_incar_reflect_preset)
         printf("[run] IN-CAR REFLECT: %u reflection map builds not made in the in-car view\n",

@@ -487,6 +487,41 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
+### Done 2026-11-11: four items behind presets (awaiting log 27)
+
+1. **MIRROR = OFF + GAME SKIP** (value 2). The game draws a frame view by view: 0C024100 (r4 =
+   the view) calls 0C1FB320 with the view's word +138 (user clip mode: 0, 2 inside the mirror's
+   rectangle, 3 outside), which puts it in bits 16-17 of 0C989FF0, ORed into every model call
+   (0C1D80C6: 08000800 | flags); then the scene, then mode 0 again. Each frame: a view with mode 0,
+   the mirror (2), the main view (3). Found with IDAS3_WRITEVAL on a mirror model call (08020800,
+   written at 0C1D80C8) and IDAS3_TIMELINE on 0C989FF0. At 0C024100, for the view with mode 2, the
+   recompiler's block entry (and the runner's PC hook) returns to PR; `g_elan_mirror_seen` is
+   bumped so IN-CAR REFLECT and MOTION FX still know the in-car view. Runner, day route in-car
+   (frames 9300-9900): ELAN commands a frame 4098 -> 2572, lists 1562 -> 931, vertices in 147K ->
+   106K; CPU-path snapshots of in-car frames 9500/9700/9900 pixel-identical to MIRROR OFF;
+   player block, render states, probes and vehicle identical in a RAM dump at frame 9900;
+   11 pages differ (the command-buffer counters, the mirror view's own data, the engine sound state
+   by timing). Record digests differ once in-car: they hash each list's ELAN RAM address, and the
+   game's per-frame buffers land elsewhere without the mirror's share. Expected on a Wii: the
+   game's mirror pass (~5% of `sh4`, <= ~0.45 ms) plus its walk (~0.5 ms?) in the in-car view.
+2. **JIT FR SWAP** (RECOMPILER 2, INLINE default): `shop_sync_fpscr`'s bank swap inline. With FPU
+   PIN the front bank lives in f14-f29 (its memory copy stale): each register swaps with its xf
+   word through f0 (`lfs f0,xf; stfs fN,xf; fmr fN,f0`), the same conversions the spill/reload
+   pair did; without FPU PIN, 16 word swaps in memory. old_fpscr is stored first;
+   SetFloatStatusReg has no body on a Wii. Replaces a 16-register spill, a C call (census, loop
+   over 16 words) and a 16-register reload, ~2000 times a night frame. Only runs on a Wii.
+3. **MODEL PREFETCH** (RENDERING 2, ON default): each model's first 8 command headers (offsets
+   in its block, 32-byte units, `s_modelHeads`, 32 KB beside the summaries) are remembered when a
+   drawn walk summarises it; at its next call they are all asked for (`dcbt`) before the walk,
+   and from the top-level list the next model's too (peeking up to 4 commands ahead, already in
+   the cache by ELAN PREFETCH). A hint only: a changed block is walked from its own words.
+   `[prof]   MODEL PREFETCH: N models a frame`.
+4. **SOUND MIX** (AUDIO, FULL default): HALF steps the voices on odd samples without mixing
+   (`ChannelStepState`: envelope, stream, LFO, and the attack restart a silent voice in decay
+   triggers, which depends on the mix), and plays the last sample again; not with the DSP on.
+   Runner: 7.29M samples, the even-sample hash and the 109 record digests identical to FULL.
+   Expected: the mixing part of `vox` on half the samples (~0.1-0.2 ms); sound at 22 kHz.
+
 ### Mirror audit and log 26 (2026-11-11)
 
 Log 26 (one player, night, in-car, every frame drawn, MIRROR OFF, JIT CCALLS on): p50 17.9-19.3
@@ -876,7 +911,7 @@ there; the push runs free in that mode since (Done after log 24).
 - BAT-mapping hot guest RAM: DTLB walks were 0-1% on hardware.
 - Real-time sound clock: broke the streamed music on 2026-10-17; OK in the log 15 build (see Sound).
 - Inlining the FR bank swap in `sync_fpscr` (~1.5K real swaps a frame): ~0.2 ms, not worth it
-  yet.
+  yet. Done after log 26 (JIT FR SWAP), when the margin left made it worth it.
 - Trusting Dolphin's numbers for anything cache-related.
 - MIRROR OFF summaries for mirror-only models (after log 23): ~65 mirror models a frame are still
   walked in-car, because only models with a main-view (boxed) summary are stepped over. A summary

@@ -120,6 +120,9 @@ enum CoreOptionId
     OPT_TEST_MODE,
     OPT_BETWEEN_WARP,
     OPT_HEADLIGHTS,
+    OPT_JIT_FRSWAP,
+    OPT_MODEL_PREFETCH,
+    OPT_SOUND_MIX,
     kCoreOptionCount
 };
 
@@ -295,8 +298,11 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
      PAGE_RECOMPILER_2, 1, 2, {"OFF (LEGACY)", "ON (READ-ONLY)"}, {0, 1}},
     // Models clipped inside the TA's user clip rectangle: the in-car view's
     // rear-view mirror (naomi_elan_cmd.cpp, mirrorModel).
-    {"MIRROR        ", "in-car view: the rear-view mirror draws the scene twice; OFF is faster", PAGE_DEPTH, 1,
-     2, {"ON (LEGACY)", "OFF (FASTER)"}, {1, 0}},
+    // OFF + GAME SKIP: the game does not even build the mirror's view
+    // (naomi_frontend.cpp naomi_MirrorViewSkip), so neither its SH-4 work nor
+    // its ELAN commands are left.
+    {"MIRROR        ", "in-car view: the mirror draws the scene twice; OFF faster, OFF + GAME SKIP fastest",
+     PAGE_DEPTH, 1, 3, {"ON (LEGACY)", "OFF (FASTER)", "OFF + GAME SKIP"}, {1, 0, 2}},
     // SOUND LEVELS (sgc_if.cpp): two sounds recognised by their sample.
     {"MENU SOUND    ", "menu cursor sound (left/right/up/down): 0 = muted, 10 = as the game", PAGE_AUDIO, 5, 11,
      {"0 (MUTED)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10 (AS THE GAME)"},
@@ -361,6 +367,19 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // polygons show in the beam. SMOOTH needs 3D T&L GPU and NIGHT LIGHTS GPU.
     {"HEADLIGHTS    ", "night: ARCADE beam shows the road's polygons; SOFT wider edge (free); SMOOTH per pixel",
      PAGE_DEPTH_2, 0, 3, {"ARCADE (OLD)", "SOFT", "SMOOTH"}, {0, 1, 2}},
+    // FPSCR.FR bank swaps (wii_driver.cpp shop_sync_fpscr): ~2000 a night frame,
+    // each a 16-register spill, a C call and a reload; INLINE swaps in place.
+    {"JIT FR SWAP   ", "float register bank swap done in the recompiled code (~2000 a night frame)",
+     PAGE_RECOMPILER_2, 1, 2, {"C CALL (LEGACY)", "INLINE"}, {0, 1}},
+    // The cache lines of a model's command headers asked for at its call, from
+    // where they were last time (naomi_elan_cmd.cpp prefetchModel). Speed only.
+    {"MODEL PREFETCH", "3D command walk loads a model's commands before reading them (drawn frames)",
+     PAGE_DEPTH_2, 1, 2, {"OFF (LEGACY)", "ON (FASTER?)"}, {0, 1}},
+    // Every other sound sample steps the voices without mixing them and plays
+    // the last one again (sgc_if.cpp AICA_Sample): 22 kHz sound, what the game
+    // and the sound CPU see is unchanged.
+    {"SOUND MIX     ", "HALF: voices mixed every other sample (22 kHz, duller sound, faster)", PAGE_AUDIO, 0, 2,
+     {"FULL (EXACT)", "HALF (FASTER)"}, {0, 1}},
 };
 
 } // namespace idas3

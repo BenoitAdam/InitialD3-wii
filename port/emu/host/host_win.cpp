@@ -137,7 +137,20 @@ bool guestmem_Discard(void* data, u32 size)
 // Silent for now: the samples are produced and dropped.
 void wii_InitAudio() {}
 void wii_TermAudio() {}
-void wii_WriteSample(s16, s16) {}
+// The runner hashes what would be played (SOUND MIX checks: HALF must give the
+// even samples of FULL exactly).
+extern "C" {
+u64 g_host_sound_hash_all = 0xCBF29CE484222325ull, g_host_sound_hash_even = 0xCBF29CE484222325ull;
+u64 g_host_sound_samples = 0;
+}
+void wii_WriteSample(s16 r, s16 l)
+{
+    const u64 v = (u64)(u16)r << 16 | (u16)l;
+    g_host_sound_hash_all = (g_host_sound_hash_all ^ v) * 0x100000001B3ull;
+    if (!(g_host_sound_samples & 1))
+        g_host_sound_hash_even = (g_host_sound_hash_even ^ v) * 0x100000001B3ull;
+    g_host_sound_samples++;
+}
 extern "C" void wii_audio_aica_ready() {}
 
 // ---- Recompiler call-outs (rec_v2 is compiled out: HOST_NO_REC) ----------

@@ -1080,6 +1080,10 @@ void FASTCALL FegStep(ChannelEx* ch) { /* stub */ }
 //   * left/right accumulate in locals and are written back once
 // ---------------------------------------------------------------------------
 extern int g_aica_fast_preset;   // wii/main.cpp; read directly, 44,100x/s
+// Launch option SOUND MIX: 1 = HALF (every other sample held, AICA_Sample).
+extern "C" {
+int g_aica_half_mix_preset = 0;
+}
 
 static INLINE void ChannelStepFast(ChannelEx* ch, bool dsp_on, SampleType& ml, SampleType& mr)
 {
@@ -1130,6 +1134,48 @@ static INLINE void ChannelStepFast(ChannelEx* ch, bool dsp_on, SampleType& ml, S
     }
     ch->StepStream(ch);
     ch->lfo.Step(ch);
+}
+
+// SOUND MIX = HALF (odd samples, DSP off): what ChannelStepFast leaves in the
+// channel, without mixing it. The one thing its mix decides is kept: a voice
+// in decay with D2 level 0 whose output is exactly 0 restarts its attack.
+// So every channel register the ARM or the SH-4 can read steps as at full
+// rate; only the sample sent out is the previous one again.
+static INLINE void ChannelStepState(ChannelEx* ch)
+{
+    if ((ch->AEG.state != EG_Attack) && (ch->AEG.state != EG_Release) && (ch->AEG.Decay2Value == 0))
+    {
+        SampleType sample = ch->InterpolateSample();
+        u32 ofsatt = ch->lfo.alfo + (ch->AEG.GetValue() >> 2);
+        ofsatt = min(ofsatt, 255u);
+        u32 const max_att = ((16 << 4) - 1) - ofsatt;
+        s32* logtable = ofsatt + tl_lut;
+        SampleType oLeft  = FPMul(sample, logtable[min(ch->VolMix.DLAtt, max_att)], 15);
+        SampleType oRight = FPMul(sample, logtable[min(ch->VolMix.DRAtt, max_att)], 15);
+        SampleType oDsp   = FPMul(sample, logtable[min(ch->VolMix.DSPAtt, max_att)], 15);
+        if ((s64)(oLeft + oRight + oDsp) == 0)
+            ch->SetAegState(EG_Attack);
+    }
+
+    switch (ch->AEG.state)
+    {
+    case EG_Attack:  AegStep<0>(ch); break;
+    case EG_Decay1:  AegStep<1>(ch); break;
+    case EG_Decay2:  AegStep<2>(ch); break;
+    case EG_Release: AegStep<3>(ch); break;
+    }
+    ch->StepStream(ch);
+    ch->lfo.Step(ch);
+}
+
+static void StepAllState()
+{
+    u32 voices = 0;
+    for (u32 m = ChannelEx::active_lo; m; m &= m - 1, voices++)
+        ChannelStepState(&ChannelEx::Chans[__builtin_ctz(m)]);
+    for (u32 m = ChannelEx::active_hi; m; m &= m - 1, voices++)
+        ChannelStepState(&ChannelEx::Chans[32 + __builtin_ctz(m)]);
+    AicaVoiceSum += voices;
 }
 
 static void GenerateAllFast(bool dsp_on)
@@ -1301,6 +1347,10 @@ void AICA_Sample()
 {
     const bool fast   = g_aica_fast_preset != 0;
     const bool dsp_on = aica_settings.DSPEnabled != 0;
+    // SOUND MIX = HALF: every other sample steps the channels without mixing
+    // them and sends the last sample out again (22 kHz sound). Not with the
+    // DSP on: its input is the mix of every sample.
+    const bool hold = g_aica_half_mix_preset && fast && !dsp_on && (g_aica_samples_total & 1);
 
     mixl = 0;
     mixr = 0;
@@ -1311,7 +1361,9 @@ void AICA_Sample()
         memset(dsp.MIXS, 0, sizeof(dsp.MIXS));
 
     const u64 t_vox = SGC_PERF_TICKS();
-    if (fast)
+    if (hold)
+        StepAllState();
+    else if (fast)
         GenerateAllFast(dsp_on);
     else
         ChannelEx::GenerateAll();
@@ -1358,6 +1410,11 @@ void AICA_Sample()
     s32 EXTS0L = cdda_sector[cdda_index];
     s32 EXTS0R = cdda_sector[cdda_index + 1];
     cdda_index += 2;
+    if (hold)
+    {
+        wii_WriteSample((s16)pr, (s16)pl);
+        return;
+    }
 
     // CDDA mix. VOLPAN of a zero sample adds zero, so aica_fast skips a
     // silent sector.

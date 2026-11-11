@@ -78,6 +78,7 @@ struct NaomiElanStats
     // its time, and command headers read (a run of TA parameters counts once).
     u64 execNsDropped;
     u32 walkRead, walkReadDropped;
+    u32 modelPrefetches;    // MODEL PREFETCH: models whose remembered headers were asked for ahead
 };
 
 #if !defined(GEKKO)
@@ -146,6 +147,7 @@ extern "C" int g_mirror_preset;
 // Launch option ELAN PREFETCH: 1 = the walk asks for the cache lines ahead of
 // it in the lists outside models (naomi_elan_cmd.cpp), 0 = it does not.
 extern "C" int g_elan_prefetch_preset;
+extern "C" int g_elan_model_prefetch_preset;    // MODEL PREFETCH (naomi_elan_cmd.cpp)
 // Launch option SMALL 3D (GPU T&L with 3D LIST CULL): lists and whole models
 // whose box spans fewer than this many pixels on screen are not drawn; 0 = all
 // drawn (naomi_elan_tnl.cpp, tooSmall).

@@ -619,7 +619,7 @@ void naomi_2pVBlank()
         // One mirror for two cars would show the wrong one half the time,
         // and drawing the scene again is the in-car view's biggest cost.
         s_mirrorSaved = g_mirror_preset;
-        g_mirror_preset = 0;
+        g_mirror_preset = g_mirror_preset == 2 ? 2 : 0;    // OFF, or OFF + GAME SKIP kept
         s_active = true;
         // The views in flight are the player's; the cars start changing at
         // the next STARTRENDER.
