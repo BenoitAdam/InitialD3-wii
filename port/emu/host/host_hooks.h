@@ -41,3 +41,9 @@ u32 host_GuestTakeWritten(const void* base, u32 size, u32* pages, u32 cap);
 void host_SetSnapshots(const char* dir, u32 every);
 // Draws and saves the next render regardless of the period.
 void host_RequestSnapshot();
+
+// Texture cache census (host/texcache_census.cpp, env IDAS3_TEXCACHE): gxRend's
+// cache rules replayed on every textured header of a drawn render.
+void texcCensusBind(u32 pcw, u32 tsp, u32 tcw);
+void texcCensusRender(bool dropped);
+void texcCensusExit();

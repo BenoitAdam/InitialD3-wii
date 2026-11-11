@@ -233,13 +233,19 @@ extern "C" int get_jojo_fix_preset();
 // polygon drawn with TSP.IgnoreTexA displays that colour - so a punch-through
 // texture gains black where it used to show colour. Power Stone 2 is full of
 // punch-through effects, which fits. Not confirmed; it could equally be the
-// endpoint-ordering issue noted above encode_cmpr_block().
+// endpoint-ordering issue of the luma encoder (cmpr_encode.h).
 //
 // The work is parked on branch `vq_cmpr_1555` (encode_cmpr_block_a1() plus the
 // case 0/7 wiring). Do not revive it without a way to tell IgnoreTexA polygons
 // apart, or without first proving the regression is something else.
+//
+// Preset values (launcher VQ AS CMPR): 0 off, 1 ON (OLD) = the luma encoder
+// used until 2026-11-11, 2 ON = the principal-axis encoder that always keeps
+// GX's 4-colour mode (cmpr_encode.h, checked on the game's VQ textures by the
+// Windows runner's IDAS3_TEXCACHE census).
 extern "C" int get_vq_cmpr_preset();
-#define VQ_CMPR() (get_vq_cmpr_preset() == 1)
+#define VQ_CMPR()     (get_vq_cmpr_preset() != 0)
+#define VQ_CMPR_OLD() (get_vq_cmpr_preset() == 1)
 
 // Vertex-color Intensity (Gouraud) (cars in Crazy Taxi 1)
 extern "C" int get_vertex_color_preset();
@@ -258,6 +264,7 @@ extern "C" int get_texture_cache_preset();
 #define CACHE_EXTRA()       (get_texture_cache_preset() == 4) // Perfect Result (to the cost of FPS) — For Debug only
 #define CACHE_EXTRA_DEBUG() (get_texture_cache_preset() == 5) // Pure bump allocation, always re-decode — For Debug only
 #define CACHE_VERY_FAST_PLUS() (get_texture_cache_preset() == 6) // VERY_FAST slots, sized fallback, content-validated
+#define CACHE_PLUS_ARENA()     (get_texture_cache_preset() == 7) // NAOMI 2 VERY FAST+: NORMAL's arena, PLUS's fixes, bind memo
 
 // CACHE_VERY_FAST_PLUS sits between VERY_FAST and FAST.
 //
@@ -318,7 +325,21 @@ extern "C" int get_texture_cache_preset();
 //
 // FAST and NORMAL are deliberately left exactly as they were, so the game
 // presets tuned against them keep the behaviour they were tested with.
-#define CACHE_NORMAL_FAMILY() (CACHE_NORMAL() || CACHE_VERY_FAST_PLUS())
+//
+// NAOMI 2 (2026-11-11): the slot scheme above needs a buffer of 2 x VRAM. The
+// NAOMI 2 build has 16 MB of VRAM and an 8 MB buffer, so skimp_slot() folds
+// every address into the lower 4 MB: textures 2 MB apart in VRAM share a slot,
+// and with no overflow arena on NAOMI 2 (_vmem_reserve never makes one) every
+// texture goes there. Windows census of a Myogi race (IDAS3_TEXCACHE): 56-93
+// decodes a render (NORMAL: ~0.3) and about a quarter of the binds showing
+// pixels or a texture object another decode wrote over. That preset is kept as
+// VERY FAST+ (OLD). CACHE_PLUS_ARENA (VERY FAST+ since) is NORMAL's sized arena,
+// which cannot alias, with PLUS's three fixes (stride slot size, stride surfaces
+// by content, the sentinel where the check reads it) and a per-render bind memo
+// (see tex_memo_* below): a texture already bound in this render is bound again
+// without the map lookup, the descriptor read and the guest VRAM read.
+#define CACHE_PLUS_FIXES()    (CACHE_VERY_FAST_PLUS() || CACHE_PLUS_ARENA())
+#define CACHE_NORMAL_FAMILY() (CACHE_NORMAL() || CACHE_VERY_FAST_PLUS() || CACHE_PLUS_ARENA())
 
 // Per Polygon Z Write
 extern "C" int get_ppz_write_preset();
@@ -2068,11 +2089,37 @@ static u32 s_fast_bump_offset = 0;
 
 static TexMapSlot s_fastmap[FASTMAP_SIZE]; // ~16 KB, lives in BSS
 
+// CACHE_PLUS_ARENA bind memo. A race render binds ~600 textured headers but
+// only ~180 distinct (TCW, size) pairs (Windows census, IDAS3_TEXCACHE), and
+// NORMAL redoes the whole check for each: the map probe, the descriptor's size
+// in the MEM2 arena and the sentinel in guest VRAM, two or three cache misses.
+// The memo remembers the descriptor each pair was bound to in this render.
+// Entries are only trusted under the current serial, which moves at every
+// frame, at every decode (a decode can rewrite a descriptor another pair was
+// bound to, e.g. one address used at two sizes) and at every arena wrap. A game
+// write to a texture during a render is seen at the next one, as with the
+// frame-granular checks of QUALITY. Palette textures sampled through a TLUT
+// (the CI presets) never use it: their TLUT load runs per bind.
+struct TexMemo
+{
+  u32 tcw, tsp6, serial;
+  TextureCacheDesc *desc;
+};
+#define TEX_MEMO_SIZE 256u
+static TexMemo s_tex_memo[TEX_MEMO_SIZE];   // 4 KB, BSS: serial 0 never matches
+static u32 s_tex_memo_serial = 1;
+static INLINE void tex_memo_flush() { s_tex_memo_serial++; }
+static INLINE TexMemo* tex_memo_slot(u32 tcw, u32 tsp6)
+{
+  return &s_tex_memo[((tcw * 0x9E3779B1u) ^ (tsp6 * 0x85EBCA6Bu)) >> 24];
+}
+
 static void fast_cache_reset()
 {
   s_fast_bump_offset   = 0;
   s_fast_drained_frame = false;
   memset(s_fastmap, 0xFF, sizeof(s_fastmap));
+  tex_memo_flush();
 }
 
 // Single linear probe that returns either the slot already holding tex_addr
@@ -2160,6 +2207,7 @@ static TextureCacheDesc* fast_bump_alloc(u32 pixel_bytes, u32 **pixel_out,
     }
     s_fast_bump_offset = 0;
     memset(s_fastmap, 0xFF, sizeof(s_fastmap));
+    tex_memo_flush();     // every descriptor may now be written over
     if (DEBUG_MESSAGE()) g_texc_wraps++;
     g_texc_wraps_frame++; // feeds s_plus_arena_ok — always on, see declaration
     FP_BUMP(n_wrap);      // FRAME_PROF: a wrap re-decodes the whole working set
@@ -2353,6 +2401,9 @@ static void tex_frame_reset()
   // wrap is allowed to spend is available again. (This does NOT reset the arena
   // - it is persistent across frames by design.)
   s_fast_drained_frame = false;
+
+  // CACHE_PLUS_ARENA: the bind memo holds one render's binds.
+  tex_memo_flush();
 
   bump_reset();       // reset arena for new frame
   hash_map_reset();   // clear hash map — O(4 KB memset), fast on PPC
@@ -3845,97 +3896,17 @@ int TexUV(u32 flip, u32 clamp)
 
 
 // -----------------------------------------------------------------
-// CMPR (DXT1) block encoder
+// CMPR (DXT1) block encoders: cmpr_encode.h
 // -----------------------------------------------------------------
-// GX CMPR layout: 8x8 super-tile of four 4x4 DXT1 sub-blocks: [TL][TR][BL][BR]
-// Each 4x4 DXT1 block = 8 bytes:
-//   [0-1] color0 RGB565 big-endian   (must be > color1 for 4-color opaque mode)
-//   [2-3] color1 RGB565 big-endian
-//   [4-7] 16x 2-bit selectors, row-major, MSB-first (pixel0=bits[31:30])
-//         index 0=color0, 1=color1, 2=(2c0+c1)/3, 3=(c0+2c1)/3
-// Strategy: min/max luma anchor selection + nearest-palette assignment per pixel.
-//
-// SUSPECTED BUG, not fixed here, believed independent of everything else: the
-// endpoints are chosen by LUMA, but the mode bit GX reads is the UNSIGNED
-// comparison of the two packed RGB565 words, and those two orders disagree.
-// Pure green (0x07E0) is brighter than pure red (0xF800) but packs far lower,
-// so a block spanning those comes out c0 < c1 - which is CMPR's 3-colour +
-// TRANSPARENT mode, and a quarter of its texels silently vanish. The fix is one
-// line, `if (c0 < c1) swap(c0, c1)` right after the two anchors are picked: the
-// 4-colour palette is symmetric, so the interpolants merely trade places and
-// every texel still picks its nearest entry. Parked on branch `vq_cmpr_1555`
-// alongside the 1555 work, so it has NOT been tested apart from it - if that
-// branch's Power Stone 2 regression turns out to be this rather than the alpha
-// handling, this is where to look. Affects fmv_format=cmpr as well.
-// Exact for x < 768 (171 == floor(512/3) + 1); our callers pass x <= 189.
-static inline u32 __attribute__((always_inline)) div3_u8(u32 x) { return (x * 171) >> 9; }
-static void encode_cmpr_block(const u16 *src, u8 *dst)
-{
-  u32 best_min = 0xFFFFFFFF, best_max = 0;
-  int idx_min = 0, idx_max = 0;
-  for (int i = 0; i < 16; i++)
-  {
-    u16 p  = src[i];
-    u32 r  = (p >> 11) & 0x1F;
-    u32 g  = (p >>  5) & 0x3F;
-    u32 b  = (p      ) & 0x1F;
-    u32 lm = r * 2 + g + b * 2;
-    if (lm < best_min) { best_min = lm; idx_min = i; }
-    if (lm > best_max) { best_max = lm; idx_max = i; }
-  }
-
-  u16 c0 = src[idx_max]; // brightest  -> color0 (must be >= color1)
-  u16 c1 = src[idx_min]; // darkest    -> color1
-
-  // Solid-color block: nudge c0 up so GX stays in 4-color mode (c0 > c1).
-  if (c0 == c1)
-  {
-    u32 r = (c0 >> 11) & 0x1F;
-    u32 g = (c0 >>  5) & 0x3F;
-    u32 b = (c0      ) & 0x1F;
-    if (r < 0x1F) r++; else if (g < 0x3F) g++; else if (b < 0x1F) b++;
-    c0 = (u16)((r << 11) | (g << 5) | b);
-  }
-
-  u32 r0 = (c0 >> 11) & 0x1F, g0 = (c0 >> 5) & 0x3F, b0 = c0 & 0x1F;
-  u32 r1 = (c1 >> 11) & 0x1F, g1 = (c1 >> 5) & 0x3F, b1 = c1 & 0x1F;
-  // Fast unsigned /3 via multiply+shift (exact for inputs < 768, our inputs
-  // top out at ~189): PowerPC's divwu is far slower than a multiply+shift,
-  // and this runs 6x per 4x4 block for every CMPR-encoded FMV frame.
-  u32 r2 = div3_u8(2*r0+r1), g2 = div3_u8(2*g0+g1), b2 = div3_u8(2*b0+b1);
-  u32 r3 = div3_u8(r0+2*r1), g3 = div3_u8(g0+2*g1), b3 = div3_u8(b0+2*b1);
-
-  u32 selectors = 0;
-  for (int i = 0; i < 16; i++)
-  {
-    u16 p   = src[i];
-    s32 pr6 = ((p >> 11) & 0x1F) << 1; // scale R/B to 6-bit for fair distance
-    s32 pg  = (p >>  5) & 0x3F;
-    s32 pb6 = ((p      ) & 0x1F) << 1;
-
-    s32 dr0=pr6-(s32)(r0<<1), dg0=pg-(s32)g0, db0=pb6-(s32)(b0<<1);
-    s32 dr1=pr6-(s32)(r1<<1), dg1=pg-(s32)g1, db1=pb6-(s32)(b1<<1);
-    s32 dr2=pr6-(s32)(r2<<1), dg2=pg-(s32)g2, db2=pb6-(s32)(b2<<1);
-    s32 dr3=pr6-(s32)(r3<<1), dg3=pg-(s32)g3, db3=pb6-(s32)(b3<<1);
-
-    u32 d0=(u32)(dr0*dr0+dg0*dg0+db0*db0);
-    u32 d1=(u32)(dr1*dr1+dg1*dg1+db1*db1);
-    u32 d2=(u32)(dr2*dr2+dg2*dg2+db2*db2);
-    u32 d3=(u32)(dr3*dr3+dg3*dg3+db3*db3);
-
-    u32 best_d=d0, best_idx=0;
-    if (d1<best_d){best_d=d1;best_idx=1;}
-    if (d2<best_d){best_d=d2;best_idx=2;}
-    if (d3<best_d){best_d=d3;best_idx=3;}
-
-    selectors |= (best_idx << (30 - i * 2));
-  }
-
-  dst[0]=(u8)(c0>>8); dst[1]=(u8)(c0&0xFF);
-  dst[2]=(u8)(c1>>8); dst[3]=(u8)(c1&0xFF);
-  dst[4]=(u8)(selectors>>24); dst[5]=(u8)(selectors>>16);
-  dst[6]=(u8)(selectors>> 8); dst[7]=(u8)(selectors    );
-}
+// GX CMPR layout: 8x8 super-tile of four 4x4 DXT1 sub-blocks: [TL][TR][BL][BR].
+// cmpr_encode_block_luma is the encoder used until 2026-11-11: the FMV paths
+// and VQ AS CMPR = ON (OLD) keep it. Its endpoints are picked by luma, but the
+// mode GX reads is the unsigned order of the two packed RGB565 words, so a
+// block whose brighter texel packs lower (bright green under dark red) came
+// out in CMPR's 3-colour + TRANSPARENT mode. cmpr_encode_block_pca (VQ AS
+// CMPR = ON) always keeps the 4-colour mode and follows the block's hue.
+#include "cmpr_encode.h"
+#define encode_cmpr_block cmpr_encode_block_luma
 
 // Real per-row pixel stride for the planar YUV422 source, independent of the
 // destination CMPR block width (which must stay == the declared GX texture
@@ -3979,6 +3950,7 @@ void fastcall texture_VQ_CMPR(u8 *p_in, u32 Width, u32 Height, u8 *vq_codebook)
 {
   u8 *dst = VramWork;
   const u32 divider = PixelConvertor::xpp * PixelConvertor::ypp; // 4 for 2x2
+  const bool old_encoder = VQ_CMPR_OLD();
 
   const u32 *table_x, *table_y;
   get_twiddle_axis_tables(Width, Height, &table_x, &table_y);
@@ -4013,7 +3985,10 @@ void fastcall texture_VQ_CMPR(u8 *p_in, u32 Width, u32 Height, u8 *vq_codebook)
           block[(dy + 1) * 4 + dx + 1] = PixelConvertor::ConvertPixel(s3);
         }
       }
-      encode_cmpr_block(block, super_dst + sub * 8);
+      if (old_encoder)
+        cmpr_encode_block_luma(block, super_dst + sub * 8);
+      else
+        cmpr_encode_block_pca(block, super_dst + sub * 8);
     }
   }
 }
@@ -4784,6 +4759,40 @@ static void SetTextureParams(PolyParam *mod, bool decal_alpha_fix)
   if (!decal_alpha_fix)
     GX_SetTevOp(GX_TEVSTAGE0, GX_MODULATE);
 
+  // CACHE_PLUS_ARENA: a pair already bound in this render is bound again as it
+  // is (see the TexMemo note). Everything the bind below does on a cache hit is
+  // done here too; the TLUT presets, which reload the palette per bind, never
+  // take this path.
+  TexMemo *memo = nullptr;
+  if (CACHE_PLUS_ARENA())
+  {
+    const u32 pf = mod->tcw.NO_PAL.PixelFmt;
+    const bool tlut = (pf == 5) ? (TEXTURE_4BPP_CI4_FAST() || TEXTURE_4BPP_CI4())
+                    : (pf == 6) ? (TEXTURE_8BPP_CI8_FAST() || TEXTURE_8BPP_CI8())
+                    : false;
+    if (!tlut)
+    {
+      const u32 tsp6 = mod->tsp.full & 0x3Fu;
+      memo = tex_memo_slot(mod->tcw.full, tsp6);
+      if (memo->serial == s_tex_memo_serial && memo->tcw == mod->tcw.full && memo->tsp6 == tsp6)
+      {
+        TextureCacheDesc *d = memo->desc;
+        if (DEBUG_MESSAGE()) g_texc_binds++;
+        if (g_tex_clamp_fix_cached)
+          GX_InitTexObjWrapMode(&d->tex, (u8)TexUV(mod->tsp.FlipU, mod->tsp.ClampU),
+                                         (u8)TexUV(mod->tsp.FlipV, mod->tsp.ClampV));
+        GX_LoadTexObj(&d->tex, GX_TEXMAP0);
+        LOGO_NOTE_TEXBIND(mod, &d->tex, 1); // cache HIT
+        s_tex_is_yuv_tev = FMV_FORMAT_TEV() && pf == 3;
+        if (s_tex_is_yuv_tev)
+          yuv_tev_bind_uv(&d->tex);
+        if (SEAM_FIX())
+          SeamFixStashTexSize(&d->tex);
+        return;
+      }
+    }
+  }
+
   u32 tex_addr = (mod->tcw.NO_PAL.TexAddr << 3) & VRAM_MASK;
   const u32 orig_tex_addr = tex_addr;
   u32 *ptex_skmp = (u32 *)&params.vram[tex_addr];
@@ -4838,7 +4847,7 @@ static void SetTextureParams(PolyParam *mod, bool decal_alpha_fix)
     // declared w x h and 512 would only over-reserve. The slot must still be
     // 512-wide for every other mode, where norm_text() does rewrite w.
     u32 eff_w = w;
-    if (CACHE_VERY_FAST_PLUS() && w < 512 && !STRIDE_TEXCTL()
+    if (CACHE_PLUS_FIXES() && w < 512 && !STRIDE_TEXCTL()
         && mod->tcw.NO_PAL.StrideSel && mod->tcw.NO_PAL.ScanOrder
         && mod->tcw.NO_PAL.PixelFmt != 5 && mod->tcw.NO_PAL.PixelFmt != 6)
       eff_w = 512;
@@ -5262,7 +5271,7 @@ static void SetTextureParams(PolyParam *mod, bool decal_alpha_fix)
       // instead and re-decode only when the hash moves. The sentinel is not
       // used (and not written) for these: it sits on the visible top-left
       // pixels of a scan-order surface, and it would poison probe 0 anyway.
-      if (CACHE_VERY_FAST_PLUS() && stride_dyn)
+      if (CACHE_PLUS_FIXES() && stride_dyn)
       {
         cache_valid = (pbuff->addr == tex_addr)
                     && (pbuff->shape_key == shape_key)
@@ -5270,6 +5279,10 @@ static void SetTextureParams(PolyParam *mod, bool decal_alpha_fix)
       }
       else
       {
+        // ptex_skmp is the ORIGINAL address. NORMAL writes its sentinel past
+        // the small mip levels (see the sentinel write), so a mipmapped
+        // non-VQ texture misses every time there; PLUS and PLUS_ARENA write it
+        // here and hit.
         cache_valid = (*ptex_skmp == 0xDEADBEEF) && (pbuff->addr == tex_addr)
                     && (pbuff->shape_key == shape_key);
       }
@@ -5331,6 +5344,9 @@ static void SetTextureParams(PolyParam *mod, bool decal_alpha_fix)
     // or a new opponent faults in a whole working set at once, while the frames
     // either side of it decode nothing at all and look perfectly healthy.
     FP_T0(_fp_tex0);
+    // CACHE_PLUS_ARENA: this decode may rewrite a descriptor another pair was
+    // bound to earlier in the render (one address at two sizes).
+    tex_memo_flush();
     if (DEBUG_MESSAGE())
     {
       g_texc_decodes++; // see tex_frame_reset()
@@ -5365,7 +5381,7 @@ static void SetTextureParams(PolyParam *mod, bool decal_alpha_fix)
       // PLUS: remember what the stride surface looked like, so the next draw
       // can tell whether the game repainted it. h is still the declared
       // height here — the decode switch below is what rewrites w/h.
-      if (CACHE_VERY_FAST_PLUS() && stride_dyn)
+      if (CACHE_PLUS_FIXES() && stride_dyn)
         pbuff->vq_codebook_w0 = stride_fingerprint(orig_tex_addr, h, stride_fp_pitch(mod, w, h, orig_tex_addr));
     }
 
@@ -6324,7 +6340,7 @@ static void SetTextureParams(PolyParam *mod, bool decal_alpha_fix)
     {
       *ptex_skmp = 0xDEADBEEF;
     }
-    else if (CACHE_VERY_FAST_PLUS())
+    else if (CACHE_PLUS_FIXES())
     {
       // Same rule as FAST/NORMAL below for VQ (fingerprint only, no VRAM
       // write), but non-VQ goes through ptex_skmp — the pointer captured from
@@ -6386,6 +6402,15 @@ static void SetTextureParams(PolyParam *mod, bool decal_alpha_fix)
   if (g_tex_clamp_fix_cached)
     GX_InitTexObjWrapMode(&pbuff->tex, (u8)TexUV(mod->tsp.FlipU, mod->tsp.ClampU),
                                        (u8)TexUV(mod->tsp.FlipV, mod->tsp.ClampV));
+  if (memo)
+  {
+    // CACHE_PLUS_ARENA: the next bind of this pair in this render goes straight
+    // to this descriptor (after a decode the serial has already moved on).
+    memo->tcw    = mod->tcw.full;
+    memo->tsp6   = mod->tsp.full & 0x3Fu;
+    memo->serial = s_tex_memo_serial;
+    memo->desc   = pbuff;
+  }
   GX_LoadTexObj(&pbuff->tex, GX_TEXMAP0);
   LOGO_NOTE_TEXBIND(mod, &pbuff->tex, 0); // freshly decoded
   s_tex_is_yuv_tev = yuv_tev;

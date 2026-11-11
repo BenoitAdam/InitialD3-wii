@@ -1851,6 +1851,7 @@ int main(int argc, char** argv)
                (unsigned long long)g_host_sound_samples, (unsigned long long)g_host_sound_hash_all,
                (unsigned long long)g_host_sound_hash_even);
     }
+    texcCensusExit();
     if (g_incar_reflect_preset)
         printf("[run] IN-CAR REFLECT: %u reflection map builds not made in the in-car view\n",
                g_reflection_incar_skips);

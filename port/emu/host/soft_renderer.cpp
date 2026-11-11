@@ -189,6 +189,7 @@ void orderVertex(const Vtx& v)
 
 void newState(u32 pcw, u32 isp, u32 tsp, u32 tcw)
 {
+    texcCensusBind(pcw, tsp, tcw);
     s_frame.states.push_back({pcw, isp, tsp, tcw, s_tileClip});
     s_stripCount = 0;
     orderHeader(s_orderKind, s_list, tcw, 1e9f, -1e9f);
@@ -1249,8 +1250,9 @@ extern "C" void rend_SetTileClipMode(u32 mode)
 // NAOMI 2 GPU T&L stand-in (naomi_elan_gx.cpp, runner --gpu-tnl): nothing is
 // drawn, but the TA list the polygon belongs to is opened like gxRend does,
 // so list ends raise the right interrupts.
-extern "C" bool rend_AddElanItem(u32 pcw, u32, u32, u32, u32, float nearW, float farW)
+extern "C" bool rend_AddElanItem(u32 pcw, u32, u32 tsp, u32 tcw, u32, float nearW, float farW)
 {
+    texcCensusBind(pcw, tsp, tcw);
     if (TileAccel.CurrentList == ListType_None)
         TileAccel.ta_list_start(pcw >> 24 & 7);
     orderHeader('E', pcw >> 24 & 7, 0, farW > 0.f ? 1.f / farW : 0.f, nearW > 0.f ? 1.f / nearW : 0.f);
@@ -1459,7 +1461,9 @@ void StartRender()
                        r.list, r.kind, r.headers, r.vtx, r.x0, r.x1, r.y0, r.y1, r.z0, r.z1, r.tcw);
         }
     }
-    if (takeSkipVerdict())
+    const bool dropped = takeSkipVerdict();
+    texcCensusRender(dropped);
+    if (dropped)
     {
         // Same as gxRend: render-done still fires on schedule, nothing is drawn.
         g_host_render.skipped++;

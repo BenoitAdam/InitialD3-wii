@@ -21,6 +21,23 @@ it exists.
 
 ### Status (2026-11-11)
 
+- **TEXTURE CACHE VERY FAST+ and VQ AS CMPR (built 2026-11-11, awaiting the owner's Wii test)**.
+  Owner: VERY FAST+ with VQ AS CMPR "not very fast", greenish glitches. Runner census (env
+  `IDAS3_TEXCACHE`, boot to a Myogi race): VERY FAST+ aliased on NAOMI 2 (skimp slots fold the 16
+  MB of VRAM into 4 MB of the 8 MB buffer, and NAOMI 2 has no overflow arena): 33.5 decodes a
+  render over the run, 56-93 in the race, against NORMAL's 0.25; ~31% of binds would show pixels
+  or a texture object another decode wrote over (the glitches). **Initial D 3 has no VQ 565
+  texture** (547 textures, one VQ of another format), so VQ AS CMPR does nothing in this game.
+  Built: TEXTURE CACHE VERY FAST+ (preset 7) = NORMAL's sized arena + VERY FAST+'s fixes + a
+  per-render bind memo (a race render binds ~600-750 headers, ~180-210 distinct: ~70% of binds skip
+  the map probe, descriptor read and guest VRAM read); the old one is VERY FAST+ (OLD) (preset 6,
+  last value of the row: autolaunch.txt holds indices). VQ AS CMPR ON = a new encoder
+  (`cmpr_encode.h`: principal colour axis, always GX's 4-colour mode); ON (OLD) = the luma encoder,
+  which the FMV paths keep. On 158 of the game's plain RGB565 textures (185K blocks, as GX
+  decodes them): old 3.15% of blocks in 3-colour + transparent mode, PSNR 30.7 dB; new 0%, 31.2
+  dB, 1.7x the encode time. To test on the Wii: the same race with NORMAL then VERY FAST+, `rend`
+  per drawn frame (expected gain small: 2-3 cache misses a repeated bind, ~0.1-0.4 ms) and no
+  glitch.
 - **HEADLIGHTS (built 2026-11-10)**: the night headlight beam showed the road's polygons; RENDERING
   2, last row: ARCADE (OLD) / SOFT / SMOOTH (projected per-pixel cone). Owner's Wii test: "not much
   better"; the owner thinks the arcade had it too. Kept as options, ARCADE default; the look is dropped.
@@ -432,6 +449,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--model-prefetch 0/1` | MODEL PREFETCH: a cache hint only (no effect on the PC's output or digests) |
 | `--small N` | SMALL 3D with `--gpu-tnl`: lists and whole models under N pixels on screen not drawn; `SMALL 3D per frame` line. Snapshots cannot show it (GPU lists are not drawn in them) |
 | env `IDAS3_FAR_CENSUS=1` | drawn GPU-path vertices and lists by their box's nearest depth and by its size on screen |
+| env `IDAS3_TEXCACHE=N` | texture cache census (`host/texcache_census.cpp`): gxRend's TEXTURE CACHE rules (NORMAL, VERY FAST+ (OLD) slots, VERY FAST+ arena + bind memo, each with and without VQ AS CMPR) replayed on every textured header of a drawn render; a `[texc]` line per policy every N drawn renders (binds, lookups, decodes, KB and texels decoded, binds showing another decode's pixels, decodes over a texture bound earlier in the render, arena wraps), totals and the textures by kind at exit, and both CMPR encoders (`cmpr_encode.h`) checked on the game's VQ 565 and plain RGB565 textures as GX decodes them. Use with `--gpu-tnl` (the ELAN lists' binds) |
 | env `IDAS3_AICA_KEYS=FROM:TO` | a `[keyon]` line per sound channel key-on in those frames: format, loop, address, loop points, pitch, levels and the sample fingerprint SOUND LEVELS matches. The exit line `SOUND LEVELS` counts the key-ons recognised |
 | env `IDAS3_SNAP_FROM=F` | periodic snapshots only from frame F (with `--snap-every`) |
 | `--area1-census` | who writes the 32-bit VRAM interface |

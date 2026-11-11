@@ -922,6 +922,16 @@ badly are skipped (`COMP_MAX_BYTES` 2048). On hardware: DTLB walks 0-1% of cycle
 - VRAM PRESENT = NOT DURING 3D: VRAM framebuffer copies between 3D renders caused the flicker
   and wasted presents.
 - Texture cache modes (owner's choice: NORMAL); 4/8bpp CI paths; TMEM cache.
+- Texture cache census (2026-11-11, runner env `IDAS3_TEXCACHE`, boot to a Myogi race): NORMAL
+  decodes 0.25 textures a render (2 arena wraps in the run, at the race's load), so the texture
+  cache is not a speed lever in steady state. VERY FAST+ as nullDC4Wii built it aliased on NAOMI 2
+  (33.5 decodes a render, 56-93 in the race, ~31% of binds showing another texture's pixels): kept
+  as VERY FAST+ (OLD). VERY FAST+ is now NORMAL plus a per-render bind memo: a race render binds
+  ~600-750 textured headers, only ~180-210 distinct, so ~70% of binds skip the map probe, the
+  descriptor read and the guest VRAM read (gain unmeasured on a Wii: 2-3 cache misses a bind
+  would be ~0.1-0.4 ms a drawn frame). Initial D 3 has no VQ 565 texture: VQ AS CMPR does nothing
+  in this game (its encoder was still fixed: 3.15% of blocks fell in the 3-colour + transparent
+  mode, now none).
 - User tile clip for N2 models (in-car view with its mirror, correctness).
 
 ### Logging overhead
