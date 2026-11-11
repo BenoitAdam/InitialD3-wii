@@ -406,14 +406,14 @@ State Launcher::options()
     }
     for (;;)
     {
-        // Rows of the current page: the CPU choice (-1) heads the first one.
+        // Rows of the current page, in kCoreOptionOrder: the CPU choice (-1) heads CORE.
         int rows[kCoreOptionCount + 1];
         int rowCount = 0;
-        if (optionPage_ == PAGE_GENERAL)
+        if (optionPage_ == PAGE_CORE)
             rows[rowCount++] = -1;
-        for (int i = 0; i < kCoreOptionCount; i++)
-            if (kCoreOptions[i].page == optionPage_)
-                rows[rowCount++] = i;
+        for (int k = 0; k < kCoreOptionCount; k++)
+            if (kCoreOptions[kCoreOptionOrder[k]].page == optionPage_)
+                rows[rowCount++] = kCoreOptionOrder[k];
         if (optionRow_ >= rowCount)
             optionRow_ = rowCount - 1;
 
@@ -441,12 +441,13 @@ State Launcher::options()
             else
                 s.line(UI_RED "[FAIL]" UI_RESET " %s (MAME's naomi.zip works)", biosError_.c_str());
         }
-        if (optionPage_ == PAGE_GENERAL || optionPage_ == PAGE_PLAYERS)
+        if (optionPage_ == PAGE_GENERAL)
             for (const std::string& line :
                  gameControlsHelp(kCoreOptions[OPT_GC_LAYOUT].values[run_.presets[OPT_GC_LAYOUT]]))
                 s.line("%s", line.c_str());
-        s.footer("%s: Option | %s: Change | %s/%s: Page", buttonLabel(BTN_UP | BTN_DOWN),
-                 buttonLabel(BTN_LEFT | BTN_RIGHT), buttonLabel(BTN_1), buttonLabel(BTN_2));
+        s.footer("%s: Option | %s: Change | %s/%s or %s/%s: Page", buttonLabel(BTN_UP | BTN_DOWN),
+                 buttonLabel(BTN_LEFT | BTN_RIGHT), buttonLabel(BTN_1), buttonLabel(BTN_2), buttonLabel(BTN_MINUS),
+                 buttonLabel(BTN_PLUS));
         if (haveBios_)
             s.footer("%s: Launch | %s: Back | %s: Exit", buttonLabel(BTN_A), buttonLabel(BTN_B), buttonLabel(BTN_EXIT));
         else
@@ -457,9 +458,11 @@ State Launcher::options()
         const uint32_t b = pollButtons(30);
         if (b & BTN_EXIT || exitRequested())
             return State::Quit;
-        if (b & (BTN_1 | BTN_2))
+        if (b & (BTN_1 | BTN_2 | BTN_MINUS | BTN_PLUS))
         {
-            optionPage_ = (optionPage_ + ((b & BTN_1) ? kCoreOptionPages - 1 : 1)) % kCoreOptionPages;
+            // 1 and - go back a page, 2 and + forward.
+            const bool back = (b & (BTN_1 | BTN_MINUS)) != 0 && (b & (BTN_2 | BTN_PLUS)) == 0;
+            optionPage_ = (optionPage_ + (back ? kCoreOptionPages - 1 : 1)) % kCoreOptionPages;
             optionRow_ = 0;
         }
         else if (b & BTN_UP)

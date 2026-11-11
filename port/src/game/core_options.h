@@ -6,21 +6,23 @@
 
 namespace idas3 {
 
+// The enum order is the pages' order in the launcher.
 enum CoreOptionPage
 {
-    PAGE_GENERAL,
-    PAGE_DEPTH,
-    PAGE_DEPTH_2,        // RENDERING is full: new rendering rows go here
+    PAGE_GENERAL,        // what a player changes: 2 PLAYERS, mirror, frameskip, pads
+    PAGE_DEPTH,          // RENDERING 1
+    PAGE_DEPTH_2,        // RENDERING 2: textures, 3D T&L, effects (new rendering rows go here)
+    PAGE_AUDIO,
+    PAGE_CORE,           // SH-4 CPU choice (interpreter / recompiler), idle skip, guest memory
     PAGE_RECOMPILER,
     PAGE_RECOMPILER_2,   // the first one is full: new recompiler rows go here
-    PAGE_AUDIO,
     PAGE_FIXES,
-    PAGE_PLAYERS,        // controllers and 2 PLAYERS (one press back from GENERAL)
+    PAGE_LOGS,           // PROFILER, JIT CCALLS, JIT HOTBLOCKS, AUDIO STATS: everything for logs
     kCoreOptionPages
 };
 
 inline constexpr const char* kCoreOptionPageNames[kCoreOptionPages] = {
-    "GENERAL", "RENDERING", "RENDERING 2", "RECOMPILER", "RECOMPILER 2", "AUDIO", "FIXES", "PLAYERS"};
+    "GENERAL", "RENDERING", "RENDERING 2", "AUDIO", "CORE", "RECOMPILER", "RECOMPILER 2", "FIXES", "LOGS"};
 
 enum CoreOptionId
 {
@@ -141,32 +143,32 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // ---- General -----------------------------------------------------------
     {"SPEED LIMITER ", "caps emulation at 100% (the menus otherwise run up to 160%)", PAGE_GENERAL, 0, 2,
      {"OFF (UNCAPPED)", "ON (CAP 100%)"}, {0, 1}},
-    {"IDLE LOOP SKIP", "Initial D's wait-for-frame loop runs 30x fewer times (same timing)", PAGE_GENERAL, 1,
+    {"IDLE LOOP SKIP", "Initial D's wait-for-frame loop runs 30x fewer times (same timing)", PAGE_CORE, 1,
      2, {"OFF", "ON"}, {0, 1}},
-    {"3D T&L        ", "GPU: Wii GPU lights opaque 3D (prototype), CPU: all in software", PAGE_GENERAL, 1,
+    {"3D T&L        ", "GPU: Wii GPU lights opaque 3D (prototype), CPU: all in software", PAGE_DEPTH_2, 1,
      2, {"CPU (SOFTWARE)", "GPU (PROTOTYPE)"}, {0, 1}},
     {"3D VTX FETCH  ", "GPU T&L: the GPU reads 3D models itself (NO PATCHES: CPU feeds strips over gaps)",
-     PAGE_GENERAL, 1, 3, {"OFF (CPU FEEDS)", "ON (GPU READS)", "ON, NO PATCHES"}, {0, 1, 2}},
+     PAGE_DEPTH_2, 1, 3, {"OFF (CPU FEEDS)", "ON (GPU READS)", "ON, NO PATCHES"}, {0, 1, 2}},
     {"FRAMESKIPPING ", "dropped frames also skip their NAOMI 2 3D transform (AUTO: when behind)", PAGE_GENERAL, 0,
      5, {"0 (DEFAULT)", "1 (1 OF 2)", "2 (2 OF 3)", "AUTO", "AUTO MAX"}, {0, 1, 2, 3, 4}},
     {"DROPPED 3D    ", "frames the frameskip drops: SKIP MODELS steps over 3D model lists (faster)",
      PAGE_GENERAL, 1, 2, {"WALK ALL", "SKIP MODELS"}, {0, 1}},
-    {"TEXTURE CACHE ", "can have a huge FPS impact (VERY FAST: skimp algorithm)", PAGE_GENERAL, 3, 5,
+    {"TEXTURE CACHE ", "can have a huge FPS impact (VERY FAST: skimp algorithm)", PAGE_DEPTH_2, 3, 5,
      {"VERY FAST", "VERY FAST+", "FAST", "NORMAL (DEFAULT)", "QUALITY (SLOW)"}, {0, 6, 1, 2, 3}},
-    {"VQ AS CMPR    ", "VQ textures as GX CMPR: fixes VQ glitches on VERY FAST/+", PAGE_GENERAL, 0, 2,
+    {"VQ AS CMPR    ", "VQ textures as GX CMPR: fixes VQ glitches on VERY FAST/+", PAGE_DEPTH_2, 0, 2,
      {"OFF (DEFAULT)", "ON"}, {0, 1}},
-    {"TMEM CACHE    ", "keep the GPU texture cache warm", PAGE_GENERAL, 1, 2, {"OFF (LEGACY)", "ON (FASTER?)"},
+    {"TMEM CACHE    ", "keep the GPU texture cache warm", PAGE_DEPTH_2, 1, 2, {"OFF (LEGACY)", "ON (FASTER?)"},
      {0, 1}},
-    {"4BPP MODE     ", "4-bit palette textures", PAGE_GENERAL, 1, 3, {"I4 STUB", "4BPP OPTIMIZED", "CI4 (FAST)"},
+    {"4BPP MODE     ", "4-bit palette textures", PAGE_DEPTH_2, 1, 3, {"I4 STUB", "4BPP OPTIMIZED", "CI4 (FAST)"},
      {0, 1, 2}},
-    {"8BPP MODE     ", "8-bit palette textures", PAGE_GENERAL, 1, 3, {"I8 STUB", "8BPP OPTIMIZED", "CI8 (FAST)"},
+    {"8BPP MODE     ", "8-bit palette textures", PAGE_DEPTH_2, 1, 3, {"I8 STUB", "8BPP OPTIMIZED", "CI8 (FAST)"},
      {0, 1, 2}},
     {"SPEED OVERLAY ", "on-screen FPS and emulation SPEED %", PAGE_GENERAL, 1, 2, {"OFF", "ON"}, {0, 1}},
-    {"PROFILER      ", "logs where each frame's time goes (sh4/elan/rend/tex...)", PAGE_GENERAL, 0, 2,
+    {"PROFILER      ", "logs where each frame's time goes (sh4/elan/rend/tex...)", PAGE_LOGS, 0, 2,
      {"OFF", "ON"}, {0, 1}},
-    {"JIT CCALLS    ", "with PROFILER: SH-4 code's calls into C per second (cheap)", PAGE_GENERAL, 0, 2,
+    {"JIT CCALLS    ", "with PROFILER: SH-4 code's calls into C per second (cheap)", PAGE_LOGS, 0, 2,
      {"OFF", "ON (CENSUS)"}, {0, 1}},
-    {"JIT HOTBLOCKS ", "with PROFILER: hottest SH-4 blocks and their code (~12% slower)", PAGE_GENERAL, 0, 2,
+    {"JIT HOTBLOCKS ", "with PROFILER: hottest SH-4 blocks and their code (~12% slower)", PAGE_LOGS, 0, 2,
      {"OFF", "ON (DIAGNOSTIC)"}, {0, 1}},
     // ---- Rendering (depth, sort, frame assembly) ---------------------------
     {"FIXED DEPTH   ", "fixed near/far planes (TIGHT: less Z-fighting, extremes clip)", PAGE_DEPTH, 0, 3,
@@ -239,7 +241,7 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
      {"OFF (DEFAULT)", "GENTLE (+-1%)", "NORMAL (+-3%)", "WIDE (+-15%)"}, {0, 1, 2, 3}},
     {"SOUND CLOCK   ", "REAL TIME: music keeps its tempo when the game is slow; EMULATED: exact", PAGE_AUDIO, 1, 2,
      {"EMULATED (EXACT)", "REAL TIME"}, {0, 1}},
-    {"AUDIO STATS   ", "logs [WiiAudio] once a second: blocks played, underruns, waits", PAGE_AUDIO, 0, 2,
+    {"AUDIO STATS   ", "logs [WiiAudio] once a second: blocks played, underruns, waits", PAGE_LOGS, 0, 2,
      {"OFF", "ON"}, {0, 1}},
     // ---- Fixes (nullDC4Wii, from the PS3 port; logs say when they fire) ------
     {"ARM7 STR ALIGN", "sound CPU: unaligned word store writes the aligned word (ChuChu echo fix)",
@@ -289,20 +291,20 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     {"GX FIFO WAKE  ", "FIFO full: the CPU goes on after 32 KB were read, not 112 KB (heavy scenes)", PAGE_DEPTH, 1, 2,
      {"HALF (LEGACY)", "NEAR FULL"}, {0, 1}},
     {"MEM SWEEP     ", "guest memory nearly full: free a little at a time, or 2 MB at once (a 200 ms stall)",
-     PAGE_RECOMPILER_2, 1, 2, {"2 MB (LEGACY)", "SHORT"}, {0, 1}},
+     PAGE_CORE, 1, 2, {"2 MB (LEGACY)", "SHORT"}, {0, 1}},
     {"GX FIFO SIZE  ", "room for what the CPU sends the GPU: heavy scenes wait less for it to catch up", PAGE_DEPTH, 1,
      2, {"256 KB (LEGACY)", "512 KB"}, {0, 1}},
     {"SOFT FLOAT    ", "game's software double maths (divide, multiply) run natively, same results",
      PAGE_RECOMPILER_2, 1, 2, {"EMULATED (LEGACY)", "NATIVE"}, {0, 1}},
     {"PAGE GUARD    ", "unchanged 3D data made read-only: no check each frame, writes still seen",
-     PAGE_RECOMPILER_2, 1, 2, {"OFF (LEGACY)", "ON (READ-ONLY)"}, {0, 1}},
+     PAGE_CORE, 1, 2, {"OFF (LEGACY)", "ON (READ-ONLY)"}, {0, 1}},
     // Models clipped inside the TA's user clip rectangle: the in-car view's
     // rear-view mirror (naomi_elan_cmd.cpp, mirrorModel).
     // OFF + GAME SKIP: the game does not even build the mirror's view
     // (naomi_frontend.cpp naomi_MirrorViewSkip), so neither its SH-4 work nor
     // its ELAN commands are left.
     {"MIRROR        ", "in-car view: the mirror draws the scene twice; OFF faster, OFF + GAME SKIP fastest",
-     PAGE_DEPTH, 1, 3, {"ON (LEGACY)", "OFF (FASTER)", "OFF + GAME SKIP"}, {1, 0, 2}},
+     PAGE_GENERAL, 1, 3, {"ON (LEGACY)", "OFF (FASTER)", "OFF + GAME SKIP"}, {1, 0, 2}},
     // SOUND LEVELS (sgc_if.cpp): two sounds recognised by their sample.
     {"MENU SOUND    ", "menu cursor sound (left/right/up/down): 0 = muted, 10 = as the game", PAGE_AUDIO, 5, 11,
      {"0 (MUTED)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10 (AS THE GAME)"},
@@ -333,19 +335,19 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // view a frame, the cars taking turns, each into its half of the picture;
     // the second pad drives the opponent's car.
     {"2 PLAYERS     ", "split screen races: controller 2 (GC port 2 / Wiimote 2) drives the CPU car",
-     PAGE_PLAYERS, 0, 2, {"OFF", "SIDE BY SIDE"}, {0, 1}},
+     PAGE_GENERAL, 0, 2, {"OFF", "SIDE BY SIDE"}, {0, 1}},
     // GameCube pads (platform_wii.cpp, addPad): the owner's layout, A/B the
     // pedals, and the first one, the analog triggers the pedals.
     {"GC PAD LAYOUT ", "GameCube pads: A/B gas/brake and R/L shift, or R/L gas/brake and A/B shift",
-     PAGE_PLAYERS, 0, 2, {"A/B PEDALS", "R/L PEDALS (OLD)"}, {0, 1}},
+     PAGE_GENERAL, 0, 2, {"A/B PEDALS", "R/L PEDALS (OLD)"}, {0, 1}},
     // 2 PLAYERS (naomi_2p.cpp): the CPU car's own AI body steered by player
     // 2, or the player's physics run a second time a frame for player 2.
     {"P2 CAR        ", "2 PLAYERS: player 2 nudges the CPU car along its line, or drives it with the real physics",
-     PAGE_PLAYERS, 1, 2, {"ON RAILS (OLD)", "FULL PHYSICS"}, {0, 1}},
+     PAGE_GENERAL, 1, 2, {"ON RAILS (OLD)", "FULL PHYSICS"}, {0, 1}},
     // 2 PLAYERS (naomi_2p.cpp): the course drawn around player 1 only (player
     // 2's view goes empty ~800 m away), or around the car each view follows.
     {"P2 SCENERY    ", "2 PLAYERS: course drawn around player 1 only (lighter), or around each player's car",
-     PAGE_PLAYERS, 1, 2, {"AROUND P1 (OLD)", "AROUND EACH CAR"}, {0, 1}},
+     PAGE_DEPTH_2, 1, 2, {"AROUND P1 (OLD)", "AROUND EACH CAR"}, {0, 1}},
     // Smoother races at 30 fps (gxRend.cpp mfx_*, emu/naomi/naomi_motion.cpp):
     // the scenery only, the HUD is left sharp. IN-BETWEEN fills the frames the
     // frameskip drops, in the in-car view; it needs FRAMESKIPPING.
@@ -356,7 +358,7 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // The TEST button (GC pad D-pad left, Wiimote/Classic left): one tap enters
     // the BIOS SYSTEM MENU (game_runner.cpp, pollControls), so it is off unless asked.
     {"TEST MODE     ", "TEST button (D-pad LEFT, every pad): OFF ignored, ON enters the game's test menu",
-     PAGE_PLAYERS, 0, 2, {"OFF", "ON"}, {0, 1}},
+     PAGE_GENERAL, 0, 2, {"OFF", "ON"}, {0, 1}},
     // IN-BETWEEN's picture. Real-Wii logs 2026-11-10: BANDS tears the opponent
     // car, SMOOTH (one pass) tears the scenery too. ROTATION ONLY and NO MOVE
     // are tests to tell the warp's depth guess from the path itself.
@@ -378,8 +380,61 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // Every other sound sample steps the voices without mixing them and plays
     // the last one again (sgc_if.cpp AICA_Sample): 22 kHz sound, what the game
     // and the sound CPU see is unchanged.
-    {"SOUND MIX     ", "HALF: voices mixed every other sample (22 kHz, duller sound, faster)", PAGE_AUDIO, 0, 2,
+    {"SOUND MIX     ", "HALF: voices mixed every other sample (22 kHz, duller); no gain measured on a Wii", PAGE_AUDIO, 0, 2,
      {"FULL (EXACT)", "HALF (FASTER)"}, {0, 1}},
 };
+
+// The order a page shows its rows in (the launcher walks this list and keeps the
+// rows of the page). kCoreOptions itself stays in CoreOptionId order, which
+// autolaunch.txt reads by position; to move a row on screen, move it here.
+inline constexpr CoreOptionId kCoreOptionOrder[kCoreOptionCount] = {
+    // GENERAL
+    OPT_TWO_PLAYER, OPT_MIRROR, OPT_FRAMESKIP, OPT_MODEL_SKIP, OPT_FPS_OVERLAY, OPT_SPEED_LIMIT,
+    OPT_TEST_MODE, OPT_GC_LAYOUT, OPT_P2_CAR,
+    // RENDERING
+    OPT_FIXED_DEPTH, OPT_DEPTH_CLIP, OPT_HUD_PASS, OPT_ISP_DEPTH_FUNC, OPT_TRANS_SORT, OPT_PUNCH_THROUGH,
+    OPT_AUTOSORT, OPT_SPLIT_SCREEN, OPT_VRAM_PRESENT, OPT_ELAN_POINT, OPT_ISP_CULL, OPT_ELAN_BOX,
+    OPT_REFLECTIONS, OPT_DEPTH_MEASURE, OPT_FIFO_WAKE, OPT_FIFO_SIZE, OPT_SMALL_CULL, OPT_INCAR_REFLECT,
+    OPT_DISPLAY_LISTS,
+    // RENDERING 2
+    OPT_P2_SCENERY, OPT_4BPP, OPT_8BPP, OPT_ELAN_GX, OPT_ELAN_FETCH, OPT_TEX_CACHE, OPT_VQ_CMPR,
+    OPT_TMEM_CACHE, OPT_COLOUR_FETCH, OPT_ELAN_PREFETCH, OPT_MODEL_PREFETCH, OPT_HEADLIGHTS,
+    OPT_MOTION_FX, OPT_MOTION_LEVEL, OPT_BETWEEN_WARP,
+    // AUDIO
+    OPT_AUDIO_SYNC, OPT_AUDIO_BLOCK, OPT_AUDIO_DRC, OPT_SOUND_CLOCK, OPT_DIMM_AHEAD, OPT_SOUND_MIX,
+    OPT_SFX_MENU, OPT_SFX_TIRE,
+    // CORE (the SH-4 CPU choice heads this page, the launcher adds it)
+    OPT_IDLE_SKIP, OPT_MEM_SWEEP, OPT_PAGE_GUARD,
+    // RECOMPILER
+    OPT_JIT_SBP, OPT_JIT_ICI, OPT_FASTMEM, OPT_BCACHE, OPT_DYN_IC, OPT_FPU_PIN, OPT_JIT_ALIGN,
+    OPT_IFB_FLUSH, OPT_JIT_NEWOPS, OPT_JIT_TFWD, OPT_JIT_FMOV, OPT_JIT_CARRY, OPT_JIT_MAC, OPT_JIT_FSCHG,
+    OPT_JIT_CR0, OPT_BLOCKCOPY, OPT_JIT_FSQRT, OPT_JIT_FIPR, OPT_VRAM32_FAST, OPT_SQ_FAST,
+    // RECOMPILER 2
+    OPT_JIT_COLD_ENTRY, OPT_SOFT_FLOAT, OPT_JIT_FRSWAP,
+    // FIXES
+    OPT_ARM7_STR_ALIGN, OPT_ADPCM_LOOP, OPT_ARM7_RESET_FIX, OPT_AICA_RACE, OPT_AICA_CA_CLAMP,
+    OPT_JIT_LINK_GUARD, OPT_DIV32_FIX, OPT_INTERP_FIX, OPT_SPG_FIX, OPT_TA_GUARD, OPT_INF_VTX,
+    // LOGS
+    OPT_PROFILER, OPT_JIT_CCALLS, OPT_JIT_HOTBLOCKS, OPT_AUDIO_STATS,
+};
+
+// Every option appears once in the order above, and the pages come in that order.
+constexpr bool coreOptionOrderValid()
+{
+    bool seen[kCoreOptionCount] = {};
+    int lastPage = 0;
+    for (int i = 0; i < kCoreOptionCount; i++)
+    {
+        const int id = kCoreOptionOrder[i];
+        if (id < 0 || id >= kCoreOptionCount || seen[id])
+            return false;
+        seen[id] = true;
+        if (kCoreOptions[id].page < lastPage)
+            return false;
+        lastPage = kCoreOptions[id].page;
+    }
+    return true;
+}
+static_assert(coreOptionOrderValid(), "kCoreOptionOrder must list every option once, page by page");
 
 } // namespace idas3

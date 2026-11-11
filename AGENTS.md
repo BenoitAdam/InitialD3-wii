@@ -19,7 +19,7 @@ it exists.
   (MSVC: launcher, headless runner and tests, used for bring-up, censuses and A/B checks).
 - GitHub: `BenoitAdam/Initial-D-3-wii`, branch `main`. The owner commits often themselves.
 
-### Status (2026-11-10)
+### Status (2026-11-11)
 
 - **HEADLIGHTS (built 2026-11-10)**: the night headlight beam showed the road's polygons; RENDERING
   2, last row: ARCADE (OLD) / SOFT / SMOOTH (projected per-pixel cone). Owner's Wii test: "not much
@@ -51,22 +51,36 @@ it exists.
   `sh4` at most; its walk (~170 model calls and matrices, ~65 models walked without drawing) maybe
   ~0.5 ms. Skipping it would need the game's mirror routine found and stepped over (not done).
   Summaries for mirror-only models were retried and dropped again (OPTIMIZATION.md, Tried and dropped).
-- **Built after log 26 (2026-11-11), awaiting log 27**, four speed items, each behind a launcher
-  row with the old behaviour kept (OPTIMIZATION.md, "Done 2026-11-11: four items"):
-  MIRROR gains OFF + GAME SKIP (value 2, not the default): the game's per-view draw 0C024100 returns
-  at once for the mirror's view (word +138 = 2), so the game builds no mirror at all (runner, frames
-  9300-9900 in-car: 2572 ELAN commands a frame instead of 4098, 931 lists instead of 1562, 106K
-  vertices instead of 147K; the player's state block identical at frame 9900; CPU-path snapshots of
-  in-car frames 9500/9700/9900 pixel-identical to MIRROR OFF). JIT FR SWAP
-  (RECOMPILER 2, default INLINE): the FPSCR.FR bank swap in the recompiled code, three instructions
-  a register with FPU PIN, no C call (Wii only, untestable on the runner). MODEL PREFETCH
-  (RENDERING 2, default ON): a model's command headers, remembered from its last walk, asked for
-  at its call, and the next model's from the top-level list. SOUND MIX (AUDIO, default FULL): HALF
-  steps the voices without mixing them every other sample and plays the last sample again; the
-  game and the sound CPU see the same registers (runner: even-sample hash and record digests
-  identical to FULL). To read in log 27: `sh4`/`elan` in-car with OFF + GAME SKIP, `[prof] MIRROR
-  GAME SKIP`, `[CC] sync_fpscr` (call-outs should nearly vanish with JIT CCALLS on), `[prof] MODEL
-  PREFETCH` and the walk's ns a command, `aica`/`vox` with SOUND MIX HALF.
+- **Four speed items built after log 26 (2026-11-11)**, each behind a launcher row with the old
+  behaviour kept (OPTIMIZATION.md, "Done 2026-11-11: four items"): MIRROR gains OFF + GAME SKIP
+  (value 2, not the default): the game's per-view draw 0C024100 returns at once for the mirror's
+  view (word +138 = 2), so the game builds no mirror at all (runner in-car: 2572 ELAN commands a
+  frame instead of 4098; snapshots pixel-identical to MIRROR OFF, player state identical). JIT FR
+  SWAP (RECOMPILER 2, default INLINE): the FPSCR.FR bank swap in the recompiled code, no C call
+  (Wii only). MODEL PREFETCH (RENDERING 2, default ON): a model's command headers, remembered from
+  its last walk, asked for at its call. SOUND MIX (AUDIO, default FULL): HALF mixes every other
+  sample (exact registers); **no gain on the Wii, keep FULL** (log 27).
+- **Log 27** (2026-11-11, `idas3wii_log_27`, one player, a night race in-car all race,
+  FRAMESKIPPING 0, MIRROR OFF + GAME SKIP, JIT FR SWAP INLINE, MODEL PREFETCH ON, SOUND MIX HALF,
+  JIT CCALLS off). Owner: "FPS improved". **52-61 emulated fps, mostly 59-60** (log 26: 48-57,
+  mostly 52-54), p50 14.4-17.6 ms (17.9-19.3). On a matching stretch (log 26 frames 8400 / log 27
+  8640: 343/364 lists drawn, 29/32K vertices, T&L 1.92/1.91 ms for 463/455 boxes) the typical
+  frame is ~13.9 ms against ~17.6: `sh4` 9.50 -> 7.09, `elan` 4.05 -> 3.26 (walk 2.63 -> 1.80 ms,
+  3229 -> 1937 commands, 813 -> 928 ns a command: the mirror's commands were the cheap re-walks),
+  `arm` 1.52 -> 1.11, `rend` 1.27 -> 1.19, `aica` 1.07 -> 1.09. Log 26 had JIT CCALLS on, whose
+  census costs `arm` ~0.4 (block-entry counts and timers in the ARM7 JIT) and `sh4` perhaps ~0.2:
+  so the items gave ~3 ms. The `sh4` drop (~2.2 ms) is GAME SKIP + FR SWAP together, not separated
+  (the runner put the game's mirror pass at <= ~0.45 ms, so FR SWAP may be most of it, far above
+  the ~0.2 ms once estimated; a run with JIT FR SWAP = C CALL would tell). `[prof] MIRROR GAME
+  SKIP` 120 of 120 frames all race; light commands decoded a frame 111 -> 54. MODEL PREFETCH:
+  170-310 models a frame; its effect is not separable (an OFF run would tell). SOUND MIX HALF gave
+  nothing: `vox` per voice per emulated frame is log 26's (~0.015% of a second), because a held voice
+  (in decay with D2 level 0: engines, held notes) still reads its sample every sample for the
+  attack-restart check, and stepping it (envelope, stream, LFO) is most of a voice's cost.
+  Heaviest stretch (frames 9600-10400: 560-620 lists drawn, 58-67K vertices, 650-765 boxes): p50
+  17.4-17.6, 55-58 fps (`sh4` 7.4-7.6, `elan` 4.4-4.8, `rend` 1.7-2.1, sound 2.25). Harmless:
+  "Write to Boot ROM addr=40/50" lines in the attract demo (~frame 3360, also in 2P log 2), the
+  game writing through a null pointer; the four `addr=74-77` ones are older still.
 - **MOTION FX (built 2026-11-10, untested on a Wii; owner to test)**: smoothing a race shown at
   30 fps, launcher RENDERING 2 page, last two rows: MOTION FX (OFF default / SPEED BLUR / FRAME
   BLEND / IN-BETWEEN / BLUR + IN-BETWEEN) and MOTION LEVEL (LOW / MEDIUM default / HIGH). Drawn by
@@ -125,8 +139,8 @@ it exists.
   the default (BETWEEN WARP first value). In 2 PLAYERS only SPEED BLUR is wired (`mfx_after_render`: FRAME
   BLEND and IN-BETWEEN need the whole picture, `s_mfx.half < 0`); SPEED BLUR in 2P is untested.
 - **2 PLAYERS (branch `two-player-splitscreen`), works on a real Wii** (owner, 2P log 1,
-  2026-11-07: "amazing it works"). Launcher page PLAYERS (last page, one press back from
-  GENERAL): 2 PLAYERS (OFF / SIDE BY SIDE), GC PAD LAYOUT (A/B PEDALS default, R/L PEDALS
+  2026-11-07: "amazing it works"). Launcher rows (the PLAYERS page was folded into GENERAL on 2026-11-11, P2 SCENERY went to RENDERING 2):
+  2 PLAYERS (OFF / SIDE BY SIDE), GC PAD LAYOUT (A/B PEDALS default, R/L PEDALS
   (OLD)), P2 CAR (ON RAILS (OLD) / FULL PHYSICS default), P2 SCENERY (AROUND P1 (OLD) / AROUND
   EACH CAR default). The game still draws one view a frame; the cars take turns being the one
   its in-car camera follows (the rig's target car, `naomi_2p.cpp`), and the renderer squeezes
@@ -188,13 +202,16 @@ it exists.
 - Menus/attract/car select: 100% speed. Race, every frame drawn (FRAMESKIPPING 0, MIRROR OFF,
   SMALL 3D 4 px): the day course of logs 21/23 at **100% in the in-car view** (log 25: 59.4-60.1
   fps the whole race, p50 15.5-16.3 ms) and 52-56 fps from the chase camera (log 23, before COLOUR
-  LISTS); night Akina 49-54 fps (p50 18-20). FRAMESKIP AUTO settles on d = (16.7 - S) / (D - S)
-  drawn (S a dropped frame, ~13.4 ms at night: `sh4` 9.5, sound ~2.3, ELAN walk ~1.2; D a drawn
-  one, ~19-20 at night). The owner wants 100% at ~45 fps shown: by day it holds (in-car every frame
-  drawn), at night log 25 gives 100% with ~36 shown (29-46); 45 needs ~1.3 ms off both S and D, or
-  ~1.7 off D alone (OPTIMIZATION.md, "The target").
-- Latest real-Wii logs: log 26 and 2P log 3 (2026-11-11, entries above; log 26's walk, 750-810 ns a
-  command on drawn frames with ELAN PREFETCH ON, matches 2P log 1's: the OFF A/B is still to do).
+  LISTS); night, in-car: 49-54 fps before log 27, **52-61, mostly 59-60** with MIRROR OFF + GAME
+  SKIP and JIT FR SWAP (log 27, p50 14.4-17.6). FRAMESKIP AUTO settles on d = (16.7 - S) / (D - S)
+  drawn (S a dropped frame, D a drawn one). Night in-car before log 27: S ~13.4 ms (`sh4` 9.5, sound
+  ~2.3, ELAN walk ~1.2), D ~19-20, so AUTO showed ~36 (log 25). After it (estimate, AUTO not run
+  yet): S ~11, D ~15.5-17.6, so AUTO should hold 100% with nearly every frame drawn. The owner's
+  target (100% at ~45 shown) is met by day and, per log 27, at night in-car; the night chase view
+  (no mirror to skip) is not measured since log 23.
+- Latest real-Wii log: **log 27** (2026-11-11, entry above). Before it, log 26 and 2P log 3
+  (2026-11-11, entries above; log 26's walk, 750-810 ns a command on drawn frames with ELAN PREFETCH
+  ON, matches 2P log 1's: the OFF A/B is still to do).
   Before them, **log 25** (2026-11-05, two runs). Day course, every frame drawn,
   in-car all race: 59.4-60.1 emulated fps, p50 15.5-16.3 (log 23: 57.5-60.9, 16.5-16.8); COLOUR
   LISTS took the 1.1-1.6K CPU-fed colour vertices a render to 0, "the rest" of the draw 2.9-4.3 ->
@@ -320,7 +337,7 @@ current work:
 
 | File | Role |
 | --- | --- |
-| `port/src/game/core_options.h` | Launcher option table (8 pages: GENERAL, RENDERING, RENDERING 2, RECOMPILER, RECOMPILER 2, AUDIO, FIXES, PLAYERS (controllers and 2 PLAYERS); a page that fills up gets a second one, ~20 rows fit) |
+| `port/src/game/core_options.h` | Launcher option table (9 pages, reorganised 2026-11-11: GENERAL (2 PLAYERS, MIRROR, FRAMESKIPPING, pads, TEST MODE), RENDERING, RENDERING 2 (textures, 3D T&L, effects), AUDIO, CORE (SH-4 CPU choice, idle skip, guest memory), RECOMPILER, RECOMPILER 2, FIXES, LOGS (PROFILER, JIT CCALLS, JIT HOTBLOCKS, AUDIO STATS); a page that fills up gets a second one, ~20 rows fit). A page's row order is `kCoreOptionOrder` (the table stays in `CoreOptionId` order for autolaunch); launcher pages: 1/2 or -/+ |
 | `port/src/game/game_runner.cpp` | Runs the core on the Wii: options -> `g_*_preset` globals (array in `CoreOptionId` order, static_assert), pads -> JVS, `[prof]` blocks, async log |
 | `port/src/ui/launcher.cpp` | Menus; `options.txt` saved as `LABEL=VALUE`, matched by label |
 | `port/src/core/log.cpp` | Log file, async ring mode (`log::setAsync`) |

@@ -408,6 +408,8 @@ const char* buttonLabel(uint32_t button)
     case BTN_B: return "Backspace";
     case BTN_1: return "1";
     case BTN_2: return "2";
+    case BTN_MINUS: return "-";
+    case BTN_PLUS: return "+";
     case BTN_EXIT: return "Q";
     case BTN_LEFT | BTN_RIGHT: return "Left/Right";
     case BTN_UP | BTN_DOWN: return "Up/Down";

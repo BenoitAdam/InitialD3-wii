@@ -487,7 +487,7 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
-### Done 2026-11-11: four items behind presets (awaiting log 27)
+### Done 2026-11-11: four items behind presets (log 27: ~3 ms off a drawn night in-car frame)
 
 1. **MIRROR = OFF + GAME SKIP** (value 2). The game draws a frame view by view: 0C024100 (r4 =
    the view) calls 0C1FB320 with the view's word +138 (user clip mode: 0, 2 inside the mirror's
@@ -521,6 +521,43 @@ From the `[CC]` and `[HOT]` censuses of a race:
    triggers, which depends on the mix), and plays the last sample again; not with the DSP on.
    Runner: 7.29M samples, the even-sample hash and the 109 record digests identical to FULL.
    Expected: the mixing part of `vox` on half the samples (~0.1-0.2 ms); sound at 22 kHz.
+   **Log 27: no gain** (see below). Keep FULL.
+
+Log 27 (2026-11-11, one player, night, in-car all race, every frame drawn, all four on, JIT
+CCALLS off; log 26 had it on): 52-61 emulated fps, mostly 59-60, against 48-57, mostly 52-54.
+Matching stretches (log 26 frames 8400-8520 against log 27 8640-8760: 343/364 lists drawn, 29/32K
+vertices, T&L 1.92/1.91 ms for 463/455 boxes), typical frame:
+
+| Bucket | log 26 | log 27 | |
+| --- | --- | --- | --- |
+| sh4 | 9.50 | 7.09 | GAME SKIP + FR SWAP (+ ~0.2 census) |
+| elan | 4.05 | 3.26 | walk 2.63 -> 1.80 ms: 3229 -> 1937 commands, 813 -> 928 ns each |
+| rend | 1.27 | 1.19 | |
+| arm | 1.52 | 1.11 | JIT CCALLS off: the ARM7 JIT's census (block-entry counts, timers) |
+| aica | 1.07 | 1.09 | SOUND MIX HALF: nothing |
+| p50 | 18.2 | 14.6 | |
+
+- The items gave ~3 ms (the census ~0.6 of the ~3.6). `sh4` -2.2 ms is GAME SKIP and FR SWAP
+  together; the runner puts the game's mirror pass at <= ~0.45 ms of instructions, so either it
+  costs more on a Wii than its instruction count says (scene walk, 48 KB of commands written to
+  ELAN RAM a frame) or FR SWAP is worth far more than the ~0.2 ms estimated (~2000 swaps: the old
+  path spilled and reloaded 16 pinned registers around a C call). One run with JIT FR SWAP = C
+  CALL separates them. If it is FR SWAP, it is also the likely cause of night `sh4` being ~1.3 ms
+  over day's in every log (the night's FPU code bank-switches; menus swap ~62 times a frame).
+- The walk: the mirror's commands were the cheap ones (its models walked again, already cached),
+  so the walk lost 40% of its commands and ~30% of its time. MODEL PREFETCH (170-310 models a
+  frame) cannot be told apart from that: an OFF run would.
+- Light commands decoded a frame 111 -> 54 (the mirror view's light setup gone), point-lit picks
+  as before. `MIRROR GAME SKIP` 120 of 120 frames over the whole race (in-car).
+- SOUND MIX HALF: `vox` per voice per emulated frame is log 26's (~0.015% of a second in both).
+  A held voice (in decay with D2 level 0: engines, sustained notes) still reads its sample every
+  sample for the attack-restart check, and the stepping (envelope, stream, LFO), which HALF keeps,
+  is most of a voice's cost. "Tried and dropped".
+- Heaviest stretch (frames 9600-10400, 560-620 lists drawn, 58-67K vertices, 650-765 boxes): p50
+  17.4-17.6, 55-58 fps: `sh4` 7.4-7.6, `elan` 4.4-4.8 (walk 2.0-2.4, T&L 2.5-3.2), `rend` 1.7-2.1,
+  sound 2.25. ~1 ms short of 60 there with every frame drawn.
+- Guest memory as in log 26 (636 KB free at frame 2070, 2-28 compressions a second in the race,
+  `mem` 1.2-3.2 ms in the tail of some windows): hitches, not the average.
 
 ### Mirror audit and log 26 (2026-11-11)
 
@@ -911,7 +948,12 @@ there; the push runs free in that mode since (Done after log 24).
 - BAT-mapping hot guest RAM: DTLB walks were 0-1% on hardware.
 - Real-time sound clock: broke the streamed music on 2026-10-17; OK in the log 15 build (see Sound).
 - Inlining the FR bank swap in `sync_fpscr` (~1.5K real swaps a frame): ~0.2 ms, not worth it
-  yet. Done after log 26 (JIT FR SWAP), when the margin left made it worth it.
+  yet. Done after log 26 (JIT FR SWAP), when the margin left made it worth it; log 27 suggests
+  the estimate was far too low (see "Done 2026-11-11: four items").
+- SOUND MIX = HALF (2026-11-11, kept as an option, default FULL): no gain in log 27. Mixing is a
+  small part of a voice; the envelope, stream and LFO steps it keeps are the rest, and held voices
+  still read their sample for the attack-restart check. Halving the sound work would need the
+  voice state stepped at half rate, which the sound CPU can see (envelope levels): not exact.
 - Trusting Dolphin's numbers for anything cache-related.
 - MIRROR OFF summaries for mirror-only models (after log 23): ~65 mirror models a frame are still
   walked in-car, because only models with a main-view (boxed) summary are stepped over. A summary
@@ -925,6 +967,14 @@ there; the push runs free in that mode since (Done after log 24).
   ~7169), estimated ~0.1 ms on a Wii. Reverted again: check this list first.
 
 ## What is left, best first
+
+After log 27: night in-car runs 59-60 fps with every frame drawn for most of the race (MIRROR
+OFF + GAME SKIP, JIT FR SWAP); its heaviest stretch is ~17.6 ms (55-58 fps). Under AUTO (not run
+since) S ~11 and D ~15.5-17.6 should hold 100% with nearly every frame drawn, so the owner's
+target (100% at ~45 shown) looks met at night in-car. Not measured since: the chase view at night
+(no mirror to skip; FR SWAP applies), 2 PLAYERS at night (GAME SKIP stays on in 2P). Left on a
+drawn night frame: `sh4` ~7.3, `elan` 3.1-4.8 (walk 1.6-2.4 ms at ~900 ns a command, T&L 1.3-3.2
+at 3.1-4.1 us a box), `rend` 1.1-2.1, sound ~2.2 (HALF dropped). Below: the state after log 25.
 
 After log 25: the owner's target is 100% speed with ~45 fps shown under FRAMESKIP AUTO. The day
 course runs its in-car view at 100% with every frame drawn (log 25, COLOUR LISTS); night Akina
