@@ -487,6 +487,37 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
+### Mirror audit and log 26 (2026-11-11)
+
+Log 26 (one player, night, in-car, every frame drawn, MIRROR OFF, JIT CCALLS on): p50 17.9-19.3
+ms, `sh4` 9.5, `elan` 3.9-4.6 (walk 2.3-3.0), `rend` 1.1-1.5, sound 2.6. ~2 ms off a drawn frame
+is what 60 fps needs. What the mirror still costs with MIRROR OFF, measured on the runner's day
+route (in-car 9500-9900 against chase 10050-10300, PC histograms without the wait loop): the game
+runs ~43K more SH-4 instructions a frame in the routines that run more in-car (~5% of 864K;
+the chase view's own extra work elsewhere brings the net to +16K). So skipping the game's mirror
+pass is worth at most ~0.45 ms of `sh4`, plus the walk of what it emits (~170 model calls with
+their matrices, ~65 models a frame walked without drawing: perhaps ~0.5 ms). It needs the routine
+found (IDAS3_WRITEVAL on a mirror model call, its backtrace) and a JIT hook stepping over it,
+behind a new MIRROR value. Next on a night frame, besides that: `sync_fpscr` (1850-2070 call-outs
+a frame in the race, the FR bank swap; ~0.2 ms estimated, "Tried and dropped" as not worth it
+yet), the walk (item 1's compiled models), sound (item 8).
+
+### Done 2026-11-11: 2 PLAYERS state swaps as block copies (2P log 3: 0.41 -> 0.09 ms)
+
+2P log 2 (a night race, every frame drawn, FULL PHYSICS) gives player 2's physics 0.32-0.36 ms
+a run and **0.41 ms of state swaps** a frame around it: ~29 KB moved a frame (the player's
+block, the state kept outside it, the collision probes, the render states) one
+`ReadMem32`/`WriteMem32` call a word, ~3.7K reads and ~3.7K writes that `[CC]` counts as C
+call-outs to guest RAM. Guest RAM is host memory in host word order (`_vmem`'s direct path is a
+plain load or store), so `naomi_2p.cpp`'s `readWords`/`writeWords` now take
+`_vmem_GetBlockPtr` and memcpy, with the word loop kept for a range it has no pointer for.
+Runner, 2P route (`--two-player 1 --p2-car 1 --gpu-tnl --list-cull 3`, player 2 driving to 140
+km/h and steering): all 131 record digests and the `[2P]` lines identical to the old code, swaps
+0.027 -> 0.006 ms a frame on the PC. Expected ~0.35 ms off every 2 PLAYERS FULL PHYSICS frame (read the
+`[2P]   player 2's physics: ... ms of state swaps` line, and `[CC]` writemem/readmem `a3:RAM`
+`from:other` should drop by ~3.7K a frame each). The night lighting counters in the same log
+match the runner's (see the section below); its time needs a one-player night log.
+
 ### Done 2026-11-10: night lighting on the recording side (awaiting a night log)
 
 The owner gave up on the headlight beam's look (HEADLIGHTS SOFT / SMOOTH kept as options, ARCADE
@@ -853,7 +884,10 @@ there; the push runs free in that mode since (Done after log 24).
   runner, but those summaries evicted main-view ones from the 2048-slot model table (record digests
   split from render ~7169); allowed only into free slots, the gain fell to ~3 models a frame (~0.05
   ms) and digests still split later (render ~9089, cause not found). Reverted; the runner's check of
-  every skipped model now also compares its list and vertex counts.
+  every skipped model now also compares its list and vertex counts. Retried by mistake on
+  2026-11-11 (a box-less summary not replacing a boxed one of the same model): 99 -> 116-117 of 168
+  on the day route in-car, digests identical up to render ~7078 only (before the known split at
+  ~7169), estimated ~0.1 ms on a Wii. Reverted again: check this list first.
 
 ## What is left, best first
 

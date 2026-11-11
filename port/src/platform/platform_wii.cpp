@@ -492,15 +492,20 @@ static void addPad(int i, GameControls& c)
 
 static uint32_t s_controllers = 0;
 
-// PAD_ScanPads' connected mask and the Wiimotes answering, for controllersSeen().
+// PAD_ScanPads' connected mask and the Wiimotes connected, for controllersSeen().
+// A Wiimote is asked with WPAD_Probe (connected and its handshake done): its
+// WPADData.err is no test, as libogc never writes the data of a channel with no
+// Wiimote, which stays zeroed (err = WPAD_ERR_NONE), so the 2P night log listed
+// Wiimotes 2 3 4 with one Wiimote in use.
 static void scanControllers()
 {
     WPAD_ScanPads();
     uint32_t seen = PAD_ScanPads() & 0xF;
     for (int i = 0; i < 4; i++)
     {
+        u32 type;
         WPADData* w = WPAD_Data(i);
-        if (!w || w->err != WPAD_ERR_NONE)
+        if (!w || WPAD_Probe(i, &type) != WPAD_ERR_NONE)
             continue;
         seen |= 1u << (4 + i);
         const uint32_t exp = w->exp.type == WPAD_EXP_NONE ? 0 : w->exp.type == WPAD_EXP_NUNCHUK ? 1

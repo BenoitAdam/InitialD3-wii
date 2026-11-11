@@ -30,6 +30,27 @@ it exists.
   the renderer, a quick reach test before each light's box test. Runner: sets built 13-67 -> 8-18 a
   frame, set compares 120-244 -> 45-90 a render, 55-67% of light tests settled cheaply; day-route
   digests identical. Expected ~0.3 ms off a drawn night frame. OPTIMIZATION.md, "Done 2026-11-10".
+  2P log 2 (a night race in 2 PLAYERS) shows the counts the runner gave: 111 light commands a
+  frame, 63 skipped; 14-21 sets built, 160-230 reused; the quick test settles 54-66% of 1.2-1.7K
+  tests. Its time is not comparable to logs 23/24 (2 PLAYERS, JIT CCALLS on): T&L 1.7-1.8 ms for
+  ~520 lists with a box, ~3.3 us a list. Log 26 (one player, night, in-car, every frame drawn,
+  JIT CCALLS on): 3.1-4.1 us a list with a box (T&L 1.3-2.6 ms for 390-730 lists) against log 23's
+  2.85-3.6, so no gain shows; the course and view may differ (not known).
+- **Log 26** (2026-11-11, `idas3wii_log_26`, one player, a night race in-car, FRAMESKIPPING 0,
+  MIRROR OFF, SMALL 3D 4 px, JIT CCALLS on): 51-57 emulated fps, p50 17.9-19.3 ms: `sh4` 9.5,
+  `elan` 3.9-4.6 (walk 2.3-3.0 ms, 3100-3700 commands at 750-810 ns; T&L 1.3-2.6), `rend` 1.1-1.5,
+  `arm` 1.52, `aica` 1.05-1.1. `[CC]`: `sync_fpscr` 1850-2070 call-outs a frame (30% of them; ~62
+  in menus). MIRROR OFF per frame: 176-182 models not drawn (~110 from their summary), 600-690
+  lists, 43-53K vertices. Mirror audit (owner: "no FPS boost, still calculated behind?"): MIRROR
+  OFF takes the mirror's lists out of the recording and the draw (~620 lists: at ~3.4 us recorded
+  and ~2.3 us drawn a list, ~3.5 ms a drawn in-car frame; logs 20/21: ~31 against ~25 shown fps
+  under AUTO). Left: the game's own mirror pass on the SH-4 and the walk of its commands. Runner
+  (day route, PC histograms, wait loop left out): in-car 864K SH-4 instructions a frame, chase
+  848K; the routines that run more in-car add ~43K (~5%: 0C207C00-0C2083FF +15%, 0C1FC000-0C1FC7FF
+  +45-50%, 0C1D3800-0C1D3FFF +40%, 0C1D8000 +8%...), so the game's mirror pass is ~0.45 ms of a Wii
+  `sh4` at most; its walk (~170 model calls and matrices, ~65 models walked without drawing) maybe
+  ~0.5 ms. Skipping it would need the game's mirror routine found and stepped over (not done).
+  Summaries for mirror-only models were retried and dropped again (OPTIMIZATION.md, Tried and dropped).
 - **MOTION FX (built 2026-11-10, untested on a Wii; owner to test)**: smoothing a race shown at
   30 fps, launcher RENDERING 2 page, last two rows: MOTION FX (OFF default / SPEED BLUR / FRAME
   BLEND / IN-BETWEEN / BLUR + IN-BETWEEN) and MOTION LEVEL (LOW / MEDIUM default / HIGH). Drawn by
@@ -119,13 +140,27 @@ it exists.
   Left and right views equal every 10 s; 600 physics runs per 10 s (every frame); the course
   placed around player 2 for all its views. Against log 25's single-player day race (p50
   15.5-16.3, `sh4` 7.7-8.3) 2 PLAYERS costs ~1 ms a frame, mostly `sh4`, if the course is
-  comparable (not known). Built after it, **awaiting 2P log 2**: a `[2P]   player 2's physics:`
+  comparable (not known). Built after it (2P log 2 read them): a `[2P]   player 2's physics:`
   line every 10 s (ms a run on average and the shortest, + the state swaps; the average can
   take in sound/timer work serviced in between), and the `[game] controllers` line fixed (it
   never printed, most likely because a GameCube pad read twice in one SI poll answers a
   transfer error, which PAD_ScanPads leaves out of its connected mask while keeping the
   buttons, so the mask never held steady; now a device counts if it answered in any of the
-  last 60 reads). Still open:
+  last 60 reads).
+  2P log 2 (2026-11-10, `idas3wii_log_nightrace2p`: a night race, in-car, FRAMESKIPPING 0,
+  HEADLIGHTS ARCADE, JIT CCALLS on; player 2's pad never moved, its car sat at 0-4 km/h): every
+  frame drawn, 50-54 emulated fps, p50 19.0-19.2 ms (`sh4` 10.1, `elan` 4.2-4.3 = walk 2.4-2.6 +
+  T&L 1.7-1.8, `rend` 1.4, `arm` 1.6, `aica` 1.05). Player 2's physics 0.32-0.36 ms a run
+  (shortest 0.22-0.31) + **0.41 ms of state swaps** a frame; `[CC]` shows the swaps as ~3.7K
+  reads and ~3.7K writes of guest RAM from C a frame (13.5K call-outs a frame in all). The
+  controllers line printed `GameCube ports 2; Wiimotes 1 + Nunchuk 2 3 4`: Wiimotes 2-4 were
+  false (libogc never writes the data of a channel with no Wiimote, which stays zeroed, so its
+  `err` read WPAD_ERR_NONE). Built after it (2P log 3 confirmed): the swaps are block copies
+  (`_vmem_GetBlockPtr` + memcpy, the word loop kept as a fallback; runner 2P route: digests and
+  `[2P]` lines identical), and the controllers line asks `WPAD_Probe` for the Wiimotes.
+  2P log 3 (2026-11-11, `idas3wii_log_2P_26`, night, PROFILER and JIT CCALLS off, so no speed
+  lines): swaps **0.087-0.096 ms** a frame (was 0.41 with CCALLS on), physics 0.28-0.33 ms a run;
+  controllers line `GameCube ports 2; Wiimotes 1 + Nunchuk`; pad 2 still never moved. Still open:
   a GameCube pad on port 2 (did not answer in the first test, never retested with the log
   line); which controller drove player 2 in 2P log 1 is not known. Known limits: no manual
   shifting for player 2 (a manual gearbox stays in its gear), gear and ADVANTAGE in player 2's
@@ -142,7 +177,9 @@ it exists.
   one, ~19-20 at night). The owner wants 100% at ~45 fps shown: by day it holds (in-car every frame
   drawn), at night log 25 gives 100% with ~36 shown (29-46); 45 needs ~1.3 ms off both S and D, or
   ~1.7 off D alone (OPTIMIZATION.md, "The target").
-- Last real-Wii log analysed: **log 25** (2026-11-05, two runs). Day course, every frame drawn,
+- Latest real-Wii logs: log 26 and 2P log 3 (2026-11-11, entries above; log 26's walk, 750-810 ns a
+  command on drawn frames with ELAN PREFETCH ON, matches 2P log 1's: the OFF A/B is still to do).
+  Before them, **log 25** (2026-11-05, two runs). Day course, every frame drawn,
   in-car all race: 59.4-60.1 emulated fps, p50 15.5-16.3 (log 23: 57.5-60.9, 16.5-16.8); COLOUR
   LISTS took the 1.1-1.6K CPU-fed colour vertices a render to 0, "the rest" of the draw 2.9-4.3 ->
   2.0-2.1 us a list, a render's CPU -0.35 to -0.42 ms at equal lists; owner: no colour problem.

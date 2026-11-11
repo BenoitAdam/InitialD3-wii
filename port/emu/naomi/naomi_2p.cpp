@@ -355,18 +355,50 @@ u32 s_p2SavedRender[kRenderWords];   // player 2's last render state with four w
 u32 s_probes[kProbeWords];
 u32 s_slots[2 * kSlotWords];         // both render states before player 2's run
 
+// The swaps move ~29 KB a frame (~7,300 words): one ReadMem32/WriteMem32 call
+// a word cost ~0.4 ms a frame on a Wii (2P night log, 2026-11-10). Guest RAM is
+// host memory in host word order (_vmem's direct path is a plain load or
+// store), so a block copy does the same; the word loop stays for a range _vmem
+// has no pointer for. The runner's access hooks (IDAS3_ACCESS, IDAS3_PHYSW,
+// IDAS3_TIMELINE) no longer see the swaps, which are not the game's accesses.
+void readWords(u32 a, u32* w, u32 n)
+{
+    if (const u8* p = _vmem_GetBlockPtr(a, 4 * n))
+    {
+        memcpy(w, p, 4 * n);
+        return;
+    }
+    for (u32 i = 0; i < n; i++)
+        w[i] = ReadMem32(a + 4 * i);
+}
+
+void writeWords(u32 a, const u32* w, u32 n)
+{
+    if (u8* p = _vmem_GetBlockPtr(a, 4 * n))
+    {
+        memcpy(p, w, 4 * n);
+        return;
+    }
+    for (u32 i = 0; i < n; i++)
+        WriteMem32(a + 4 * i, w[i]);
+}
+
 void readOutside(u32* w)
 {
     for (const Range& rg : kOutside)
-        for (u32 i = 0; i < rg.words; i++)
-            *w++ = ReadMem32(rg.lo + 4 * i);
+    {
+        readWords(rg.lo, w, rg.words);
+        w += rg.words;
+    }
 }
 
 void writeOutside(const u32* w)
 {
     for (const Range& rg : kOutside)
-        for (u32 i = 0; i < rg.words; i++)
-            WriteMem32(rg.lo + 4 * i, *w++);
+    {
+        writeWords(rg.lo, w, rg.words);
+        w += rg.words;
+    }
 }
 bool s_p2Ready = false;    // s_p2 holds player 2's car
 bool s_raceRunning = false;
@@ -377,18 +409,6 @@ u32 s_p2Runs = 0;          // for the [2P] line
 // take in the sound and timers serviced in between (or a vblank's work, on a
 // late frame), so the line gives the shortest run with the average.
 u64 s_p2T0 = 0, s_p2Code = 0, s_p2Swaps = 0, s_p2Best = ~0ull;
-
-void readWords(u32 a, u32* w, u32 n)
-{
-    for (u32 i = 0; i < n; i++)
-        w[i] = ReadMem32(a + 4 * i);
-}
-
-void writeWords(u32 a, const u32* w, u32 n)
-{
-    for (u32 i = 0; i < n; i++)
-        WriteMem32(a + 4 * i, w[i]);
-}
 
 float wordFloat(u32 w)
 {
