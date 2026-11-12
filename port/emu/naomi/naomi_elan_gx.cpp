@@ -1835,8 +1835,15 @@ void allocateFetch()
     // larger for it.
     if (g_elan_dl_preset)
     {
-        s_dl = (u8*)memalign(32, kElanDlRingBytes);
-        s_dlBytes = s_dl ? kElanDlRingBytes : 0;
+        // A smaller ring when the full one does not fit (diagnostics such as JIT
+        // HOTBLOCKS take ~450 KB of heap): a night render's entries take ~350-380
+        // KB, so 768 KB still keeps them across renders; 512 KB rebuilds more.
+        static const u32 kTry[] = {kElanDlRingBytes, 768u << 10, 512u << 10};
+        for (u32 k = 0; k < sizeof(kTry) / sizeof(kTry[0]) && !s_dl; k++)
+        {
+            s_dl = (u8*)memalign(32, kTry[k]);
+            s_dlBytes = s_dl ? kTry[k] : 0;
+        }
     }
     struct mallinfo mi = mallinfo();
     printf("[elan] GPU vertex fetch: on%s (%u KB of tables, %u KB of them for programs; heap %u KB free inside "
@@ -1847,7 +1854,7 @@ void allocateFetch()
            (u32)((u8*)SYS_GetArena2Hi() - (u8*)SYS_GetArena2Lo()) >> 10);
     if (g_elan_dl_preset)
         printf("[elan] GX display lists: %s (%u KB ring)\n", s_dl ? "on" : "no memory, cached lists send their indices",
-               kElanDlRingBytes >> 10);
+               (s_dl ? s_dlBytes : kElanDlRingBytes) >> 10);
 }
 
 void setArrays(const Item& it, u32 pa, u32 fmtKey)

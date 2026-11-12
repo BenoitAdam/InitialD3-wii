@@ -38,12 +38,33 @@ static void fp_out(const char* fmt, ...)
 #if HOST_OS == OS_WII
 #include <ogc/video.h>
 #include <ogc/gx.h>
+#include <stdint.h>
+#include <tuxedo/ppc/exception.h>   // PC SAMPLER: the performance monitor interrupt
 #endif
 
 // The preset lives here rather than in wii/main.cpp so that plugs/ and dc/ can
 // reference it without pulling in a symbol from wii/ - same arrangement as
 // g_ta_profile_preset in Renderer_if.cpp.
 extern "C" { int g_frame_prof_preset = 0; }
+// PC SAMPLER (LOGS page): see the sampler section below.
+extern "C" { int g_pc_sampler_preset = 0; }
+
+// The sampler's tables (Wii only, allocated when it starts): counts by 256-byte
+// span of code from the start of .init (libogc_common.ld puts .init then .text
+// at 0x80003F00), the JIT samples waiting for their SH-4 block, the blocks.
+static const u32 kPcsTextLo = 0x80003F00u;
+static const u32 kPcsSpanShift = 8;
+static const u32 kPcsSpans = 8192;     // 2 MB of code (.text is ~1.4 MB)
+static const u32 kPcsRing = 4096;      // power of two
+static const u32 kPcsBlocks = 2048;    // power of two
+static const u32 kPcsBytes = kPcsSpans * 4 + kPcsRing * 4 + kPcsBlocks * 8;
+
+// Heap the sampler takes when it is on: _vmem.cpp leaves it out of the guest
+// page pool.
+u32 frame_prof_heap_bytes()
+{
+  return g_frame_prof_preset && g_pc_sampler_preset ? kPcsBytes : 0u;
+}
 
 // No initializer on purpose: static storage zero-initializes, and a field list
 // here would silently fall out of step the next time a bucket is added.
@@ -191,8 +212,10 @@ u32 g_fp_elan_dlwraps = 0;
 u32 g_fp_elan_dlwaittb = 0;
 
 #if HOST_OS == OS_WII
-// Event set being counted (index into kPmcSel), -1 = counters not programmed.
+// Event set being counted (index into kPmcSel), -1 = counters not programmed
+// (or taken by the PC SAMPLER). s_hw_on: the [HW] spans are being measured.
 static int s_pmc_set = -1;
+static bool s_hw_on = false;
 
 struct FpPmc { u32 c[4]; };
 
@@ -285,7 +308,7 @@ static void fp_gp_poll()
 
 void frame_prof_render_begin()
 {
-  if (!FRAME_PROF_ON() || s_pmc_set < 0)
+  if (!FRAME_PROF_ON() || !s_hw_on)
     return;
   fp_gp_poll();
   s_gp_waiting = false;   // a previous reading that never came is dropped
@@ -377,9 +400,310 @@ static double fp_ratio(u64 a, u64 b)
   return b ? (double)a / (double)b : 0.0;
 }
 
+// ---------------------------------------------------------------------------
+// PC SAMPLER (LOGS page, with PROFILER on). PMC1 counts cycles and the
+// performance monitor interrupts when it goes negative (MMCR0 ENINT +
+// PMC1INTCONTROL), every kPcsPeriod cycles; the handler counts the interrupted
+// PC. C code by 256-byte span of .init/.text, SH-4 JIT code by the block it
+// lies in (found from the block's prologue, outside the interrupt), the ARM7
+// JIT, the fastmem trampolines and the rest as totals. Time-weighted, stalls
+// included: where the Wii's cycles go, which the counters above cannot say.
+// It takes PMC1, so the [HW] counter lines stop (the render probe lines stay).
+// The interrupt is masked while MSR[EE] is 0 (IRQ handlers, IRQ_Disable
+// sections): their time lands on the instruction after them.
+// ---------------------------------------------------------------------------
+extern "C" const u8* g_arm7_code_lo;
+extern "C" const u8* g_arm7_code_hi;
+
+static const u32 kPcsPeriod = 72900;   // 10,000 samples a second at 729 MHz
+// MMCR0: ENINT (bit 5) and PMC1INTCONTROL (bit 16), PMC1SELECT = 1 (cycles).
+static const u32 kPcsMmcr0 = 0x04000000u | 0x00008000u | (1u << 6);
+static const int kPcsReportEvery = 4;  // [HW] dumps (~2 s each) between reports
+
+struct PcsBlock { u32 pc, n; };
+static u32* s_pcs_span = 0;
+static u32* s_pcs_ring = 0;
+static PcsBlock* s_pcs_blk = 0;
+static volatile u32 s_pcs_head = 0;     // written by the interrupt
+static u32 s_pcs_tail = 0;              // by the frame loop
+static volatile u32 s_pcs_on = 0;
+static bool s_pcs_failed = false;
+static u32 s_pcs_total = 0, s_pcs_jit = 0, s_pcs_arm = 0, s_pcs_tramp = 0, s_pcs_other = 0, s_pcs_lost = 0;
+static u32 s_pcs_unfound = 0, s_pcs_full = 0, s_pcs_t0 = 0;
+static int s_pcs_dumps = 0;
+
+// The interrupt's C half: integer only (the FPU is off in exception handlers).
+extern "C" void fp_pcs_sample(u32 pc)
+{
+  if (!s_pcs_on)
+  {
+    asm volatile("mtspr 952,%0" : : "r"(0u));   // stopped: no interrupt, PMC1 back to positive
+    asm volatile("mtspr 953,%0" : : "r"(0u));
+    return;
+  }
+  asm volatile("mtspr 953,%0" : : "r"(0x80000000u - kPcsPeriod));
+  asm volatile("mtspr 952,%0" : : "r"(kPcsMmcr0));   // ENINT is cleared when the interrupt is taken
+  s_pcs_total++;
+  // JIT, ARM7 and trampoline buffers first: they sit in .bss, inside the span range.
+  if (pc - (u32)g_ccall_cc_lo < (u32)(g_ccall_cc_hi - g_ccall_cc_lo))
+  {
+    s_pcs_jit++;
+    const u32 h = s_pcs_head;
+    if (h - s_pcs_tail < kPcsRing)
+    {
+      s_pcs_ring[h & (kPcsRing - 1)] = pc;
+      s_pcs_head = h + 1;
+    }
+    else
+      s_pcs_lost++;
+    return;
+  }
+  if (pc - (u32)g_arm7_code_lo < (u32)(g_arm7_code_hi - g_arm7_code_lo))
+  {
+    s_pcs_arm++;
+    return;
+  }
+  if (pc - (u32)g_ccall_tramp_lo < (u32)(g_ccall_tramp_hi - g_ccall_tramp_lo))
+  {
+    s_pcs_tramp++;
+    return;
+  }
+  const u32 t = pc - kPcsTextLo;
+  if (t < (kPcsSpans << kPcsSpanShift))
+    s_pcs_span[t >> kPcsSpanShift]++;
+  else
+    s_pcs_other++;
+}
+
+// The interrupt's entry, from libogc's general exception stub (see the DSI
+// handler in wii_fastmem.cpp for its contract): save what C clobbers, count,
+// restore, resume where the program was.
+extern "C" void __fp_pcs_handler(void);
+asm(R"(
+    .text
+    .align  2
+    .globl  __fp_pcs_handler
+    .type   __fp_pcs_handler, %function
+__fp_pcs_handler:
+    stwu    1, -96(1)
+    stw     0,  16(1)
+    stw     3,  20(1)
+    stw     4,  24(1)
+    stw     5,  28(1)
+    stw     6,  32(1)
+    stw     7,  36(1)
+    stw     8,  40(1)
+    stw     9,  44(1)
+    stw     10, 48(1)
+    mflr    0
+    stw     0,  52(1)
+    mfctr   0
+    stw     0,  56(1)
+    mfxer   0
+    stw     0,  60(1)
+    lis     3, __ppc_excpt_buf@ha
+    lwz     3, __ppc_excpt_buf@l(3)         # r3 = interrupted PC (saved SRR0)
+    bl      fp_pcs_sample
+    lwz     0,  60(1)
+    mtxer   0
+    lwz     0,  56(1)
+    mtctr   0
+    lwz     0,  52(1)
+    mtlr    0
+    lwz     10, 48(1)
+    lwz     9,  44(1)
+    lwz     8,  40(1)
+    lwz     7,  36(1)
+    lwz     6,  32(1)
+    lwz     5,  28(1)
+    lwz     4,  24(1)
+    lwz     3,  20(1)
+    lwz     0,  16(1)
+    addi    1, 1, 96
+    lis     12, __ppc_excpt_buf@ha
+    la      12, __ppc_excpt_buf@l(12)
+    lwz     11, 0(12)
+    mtsrr0  11                              # resume the interrupted instruction
+    lwz     11, 4(12)
+    mtsrr1  11
+    lwz     11, 8(12)
+    mtcr    11
+    mfsprg  11, 0
+    mfsprg  12, 1
+    rfi
+    .size   __fp_pcs_handler, . - __fp_pcs_handler
+    .previous
+)");
+
+static void fp_pcs_stop()
+{
+  s_pcs_on = 0;
+  asm volatile("mtspr 952,%0" : : "r"(0u));
+  asm volatile("mtspr 953,%0" : : "r"(0u));
+  asm volatile("isync" ::: "memory");
+}
+
+static void fp_pcs_start()
+{
+  s_pcs_span = (u32*)calloc(kPcsSpans, sizeof(u32));
+  s_pcs_ring = (u32*)malloc(kPcsRing * sizeof(u32));
+  s_pcs_blk = (PcsBlock*)calloc(kPcsBlocks, sizeof(PcsBlock));
+  if (!s_pcs_span || !s_pcs_ring || !s_pcs_blk)
+  {
+    free(s_pcs_span);
+    free(s_pcs_ring);
+    free(s_pcs_blk);
+    s_pcs_span = 0;
+    s_pcs_ring = 0;
+    s_pcs_blk = 0;
+    s_pcs_failed = true;
+    fp_out("[PCS] no memory for the sampler's tables, PC SAMPLER off\n");
+    return;
+  }
+  PPCExcptSetHandler(PPC_EXCPT_PM, __fp_pcs_handler);
+  asm volatile("sync" ::: "memory");   // the table store before any interrupt (see wii_fastmem.cpp)
+  s_pcs_t0 = FP_TICKS32();
+  s_pcs_on = 1;
+  asm volatile("mtspr 956,%0" : : "r"(0u));   // MMCR1: PMC3/PMC4 count nothing
+  asm volatile("mtspr 953,%0" : : "r"(0x80000000u - kPcsPeriod));
+  asm volatile("mtspr 952,%0" : : "r"(kPcsMmcr0));
+  atexit(fp_pcs_stop);   // off before the loader takes the machine back
+}
+
+// The SH-4 block a JIT address lies in. Blocks start with `addic. r29,r29,
+// -cycles` and a branch to (JIT COLD ENTRY: blt) or over (bge) the timeslice
+// exit, which loads the block's SH-4 address with ppc_li (lis [+ ori], or li).
+// Walking back to the nearest such prologue is a heuristic: 0 when none is found
+// (the dispatcher and stubs at the start of the cache).
+static u32 fp_pcs_block_of(u32 host)
+{
+  const u32 lo = (u32)g_ccall_cc_lo, size = (u32)(g_ccall_cc_hi - g_ccall_cc_lo);
+  u32 p = host & ~3u;
+  for (u32 i = 0; i < 4096 && p >= lo + 4; i++, p -= 4)
+  {
+    const u32 w = *(const u32*)p;
+    if ((w >> 16) != 0x37BDu)
+      continue;
+    const u32 b = *(const u32*)(p + 4);
+    u32 stub;
+    if ((b & 0xFFFF0003u) == 0x41800000u)
+      stub = p + 4 + (u32)(s32)(s16)(u16)(b & 0xFFFCu);
+    else if ((b & 0xFFFF0003u) == 0x40800000u)
+      stub = p + 8;
+    else
+      continue;
+    if (stub - lo >= size - 8)
+      return 0;
+    const u32 w0 = *(const u32*)stub, w1 = *(const u32*)(stub + 4);
+    if ((w0 & 0xFC1F0000u) == 0x3C000000u)   // lis rD,hi
+      return (w0 << 16) | ((w1 >> 26) == 24 ? (w1 & 0xFFFFu) : 0u);
+    if ((w0 & 0xFC1F0000u) == 0x38000000u)   // li rD,imm
+      return (u32)(s32)(s16)(u16)(w0 & 0xFFFFu);
+    return 0;
+  }
+  return 0;
+}
+
+static void fp_pcs_drain()
+{
+  const u32 h = s_pcs_head;
+  asm volatile("" ::: "memory");   // the ring's entries after the head that covers them
+  while (s_pcs_tail != h)
+  {
+    const u32 pc = fp_pcs_block_of(s_pcs_ring[s_pcs_tail & (kPcsRing - 1)]);
+    s_pcs_tail++;
+    if (!pc)
+    {
+      s_pcs_unfound++;
+      continue;
+    }
+    u32 i = (pc * 2654435761u) >> 21;   // 11 bits: kPcsBlocks = 2048
+    u32 k = 0;
+    for (; k < 64; k++, i = (i + 1) & (kPcsBlocks - 1))
+    {
+      if (s_pcs_blk[i].pc == pc && s_pcs_blk[i].n)
+      {
+        s_pcs_blk[i].n++;
+        break;
+      }
+      if (!s_pcs_blk[i].n)
+      {
+        s_pcs_blk[i].pc = pc;
+        s_pcs_blk[i].n = 1;
+        break;
+      }
+    }
+    if (k == 64)
+      s_pcs_full++;
+  }
+}
+
+// One "[PCS]" line per 8 entries: address and % of all samples, highest first
+// (taken out of the table as they are printed).
+static void fp_pcs_top(const char* title, u32* counts, u32 stride, u32 n, u32 shown, u32 total,
+                       u32 (*addr)(u32 index))
+{
+  fp_out("[PCS] %s:", title);
+  u32 printed = 0;
+  for (; printed < shown; printed++)
+  {
+    u32 best = 0, at = 0;
+    for (u32 i = 0; i < n; i++)
+      if (counts[i * stride] > best)
+      {
+        best = counts[i * stride];
+        at = i;
+      }
+    if (!best)
+      break;
+    if (printed && printed % 8 == 0)
+      fp_out("\n[PCS]   ");
+    fp_out(" %08X %.2f", addr(at), 100.0 * best / total);
+    counts[at * stride] = 0;
+  }
+  fp_out("\n");
+}
+
+static u32 fp_pcs_span_addr(u32 i) { return kPcsTextLo + (i << kPcsSpanShift); }
+static u32 fp_pcs_blk_addr(u32 i) { return s_pcs_blk[i].pc; }
+
+static void fp_pcs_report()
+{
+  if (++s_pcs_dumps < kPcsReportEvery)
+    return;
+  s_pcs_dumps = 0;
+  fp_pcs_drain();
+  const u32 now = FP_TICKS32();
+  const double secs = fp_tb_ms(now - s_pcs_t0) / 1000.0;
+  s_pcs_t0 = now;
+  const u32 total = s_pcs_total;
+  if (!total)
+    fp_out("[PCS] no samples in %.1f s: the performance monitor interrupt never came (an emulator?)\n", secs);
+  else
+  {
+    const u32 jit = s_pcs_jit, arm = s_pcs_arm, tramp = s_pcs_tramp, other = s_pcs_other;
+    const u32 code = total - jit - arm - tramp - other;
+    const double pct = 100.0 / total;
+    // frame_prof_dump's address ties the spans to the boot.elf they came from.
+    fp_out("[PCS] %.1f s, %u samples (%.1f kHz, frame_prof_dump at %08X): C code %.1f%%, SH-4 JIT %.1f%%"
+           " (blocks not found %.1f%%, lost %u), ARM7 JIT %.1f%%, trampolines %.1f%%, other %.1f%%"
+           " | blocks over the table %u\n",
+           secs, total, secs > 0 ? total / secs / 1000.0 : 0.0, (u32)(uintptr_t)&frame_prof_dump, code * pct,
+           jit * pct, s_pcs_unfound * pct, s_pcs_lost, arm * pct, tramp * pct, other * pct, s_pcs_full);
+    fp_pcs_top("C code by 256-byte span (% of all samples)", s_pcs_span, 1, kPcsSpans, 40, total,
+               fp_pcs_span_addr);
+    fp_pcs_top("SH-4 blocks by time (% of all samples)", &s_pcs_blk[0].n, 2, kPcsBlocks, 32, total,
+               fp_pcs_blk_addr);
+  }
+  memset(s_pcs_span, 0, kPcsSpans * sizeof(u32));
+  memset(s_pcs_blk, 0, kPcsBlocks * sizeof(PcsBlock));
+  s_pcs_total = s_pcs_jit = s_pcs_arm = s_pcs_tramp = s_pcs_other = s_pcs_lost = 0;
+  s_pcs_unfound = s_pcs_full = 0;
+}
+
 static void fp_hw_dump()
 {
-  if (s_pmc_set < 0)
+  if (!s_hw_on)
     return;
   const FpHwWin &w = s_hw;
   if (w.renders)
@@ -470,6 +794,7 @@ static void fp_hw_dump()
   const u64 restTb = w.frameTb > w.rendTb ? w.frameTb - w.rendTb : 0;
   const u64 gameTb = restTb > w.elanRunTb ? restTb - w.elanRunTb : 0;
 
+  // (-1: the PC SAMPLER has the counters.)
   if (s_pmc_set == 0)
   {
     // Cycles per second over the measured spans: ~729 M on a Wii when the
@@ -498,7 +823,7 @@ static void fp_hw_dump()
              fp_ratio(game[1], game[0]), 100.0 * fp_ratio(game[2], game[0]),
              100.0 * fp_ratio(game[3], game[0]));
   }
-  else
+  else if (s_pmc_set > 0)
   {
     // Per millisecond of each span, from the time base (PMC1 counts L2 hits here).
     const double rms = fp_tb_ms(w.rendTb), xms = fp_tb_ms(restTb);
@@ -524,7 +849,10 @@ static void fp_hw_dump()
   // Next window counts the other set. Called between vblank and resume, so
   // no frame or render span is open.
   memset(&s_hw, 0, sizeof(s_hw));
-  fp_pmc_program(s_pmc_set ^ 1);
+  if (s_pmc_set >= 0)
+    fp_pmc_program(s_pmc_set ^ 1);
+  if (s_pcs_on)
+    fp_pcs_report();
 }
 #else
 void frame_prof_render_begin() {}
@@ -689,8 +1017,16 @@ void frame_prof_resume()
   s_resume      = FP_TICKS32();
   s_have_resume = true;
 #if HOST_OS == OS_WII
-  if (s_pmc_set < 0)
-    fp_pmc_program(0);
+  if (!s_hw_on)
+  {
+    s_hw_on = true;
+    if (g_pc_sampler_preset)
+      fp_pcs_start();   // takes the counters: no [HW] counter lines
+    else
+      fp_pmc_program(0);
+  }
+  if (s_pcs_on)
+    fp_pcs_drain();     // JIT samples to their SH-4 blocks, once a frame
   fp_pmc_read(s_pmc_frame0);
   s_frame_open = true;
 #endif

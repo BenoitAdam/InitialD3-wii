@@ -395,7 +395,8 @@ render. Menus, attract mode and car select run at 100%.
 | 11-05 | Audio push never waits with SOUND CLOCK REAL TIME | log 25 (night, AUTO): `snd` 25% -> 0, 0 drops; 100% speed with ~36 renders shown a second (29-46) |
 | 11-05 | ELAN PREFETCH (run-ahead dcbt in the lists outside models), walk split by dropped/drawn frames | 2P log 1 (2 PLAYERS, day, ON only): dropped-frame walk 460-510 ns a header (~700 estimated before), drawn 760-810; an OFF run still to come |
 | 11-12 | LIST MATHS, 3D DECODE, DRAW MEMO (newlib's `sqrtf` loop and the divisions out of the recording, decode and draw), SOUND STEP, SH-4 TIMESLICE 3584 | log 30 (night Akina, every frame drawn, MIRROR OFF + GAME SKIP): **in-car 59.3-60.8 fps nearly all race**, p50 15.0-15.5, walk ~800 ns a command (928), timeslice call-outs halved; chase view 45-54 |
-| 11-12 | CACHE HINTS (`dcbz` on the per-render tables, prefetches in the draw, the walk and gxRend's strip loop), PMC split of the ELAN phase | awaiting log 31 |
+| 11-12 | CACHE HINTS (`dcbz` on the per-render tables, prefetches in the draw, the walk and gxRend's strip loop), PMC split of the ELAN phase | log 31 (HOTBLOCKS run, DISPLAY LISTS starved of heap): split read, CACHE HINTS not judged; awaiting log 32 |
+| 11-12 | PC SAMPLER (performance monitor interrupt, 10 kHz PC profile), diagnostics' heap headroom, DISPLAY LISTS ring fallback | awaiting log 32 |
 | 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
@@ -488,6 +489,58 @@ From the `[CC]` and `[HOT]` censuses of a race:
 - All 18 nullDC4Wii JIT presets on (block cache, dynamic IC, FPU pin, fmov direct, T-forward,
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
+
+### Log 31 (2026-11-12): night Akina uphill with JIT HOTBLOCKS (a diagnostics run)
+
+PROFILER, JIT CCALLS and JIT HOTBLOCKS on, CACHE HINTS on; in-car, chase ~7380-8130, in-car. Not a
+speed reference: HOTBLOCKS costs ~12%, and its 448 KB block table took the heap the DISPLAY LISTS
+ring needed (`no memory`), so `cached programs` took 0.7-1.35 ms a render (log 30: 0.23).
+
+- ELAN phase (walk + recording, the new split): in-car 3.4-3.65 ms a frame, chase 4.0-4.75; IPC
+  0.60-0.66, 32-38% of cycles in L1 load misses; per ms ~2000-2250 L2 data misses (~120 cycles
+  each: ~1/3 of the phase), ~600-720 L2 hits, ~1000 L1 instruction misses, 5100-6800 mispredicted
+  branches (a few % at the 750's short penalty). So ~2/3 of it is instructions: ~1.5M PPC
+  instructions a frame for ~2100-2700 commands and ~550-800 lists, ~350 a command for the walk.
+  Prefetching can only take the stall third; the instruction count is the larger lever, and a
+  per-function profile is needed to know where it goes (the PC SAMPLER below).
+- Game, sound and the rest: IPC 0.47-0.53, load-miss 12-15%, ~1.2-1.5K L2 data misses/ms, but
+  ~10-11.5K L1 instruction misses/ms (one per ~35 instructions). Log 30, without HOTBLOCKS, had
+  ~7.3K/ms over the whole rest of the frame (the ELAN phase included). The JIT'd game code does not
+  fit the 32 KB L1I, and whether those misses hit the L2 is unknown (the 750CL has an "L2
+  instruction misses" event, not counted yet). If they mostly do not, code layout (hot paths
+  together, smaller block prologues/epilogues) becomes a lever on `sh4`.
+- HOTBLOCKS (block entries, not time; the 16384-entry table overflowed by 5559 blocks, so blocks
+  compiled late are missing): in-car the wait loop 0C20C854-0C211880 is ~13-20% of entries, the
+  VRAM32 copy loop 0C20A2A0 ~7.7%; chase runs 0C20A2A0 ~1.6x more (400-450K entries/s, ~7000
+  iterations a frame against ~4400) and the SQ copy loop 0C1D4F4C (`pref`, 32 bytes to ELAN RAM)
+  ~50-75K entries/s, which in-car barely runs: the chase view's extra `sh4` is the game writing more
+  (display lists, VRAM), as expected with more objects in view.
+- [CC] in the race: timeslice 933, writemem ~700-800 (G2 DMA suspend registers 0x5F781C-7C ~17-25
+  each, AICA wave RAM 70-140, ELAN FIFO 72), getcode 250-420, sync_sr ~260, interrupt ~255, readmem
+  ~400 a frame: ~3000 call-outs, not the lever.
+
+### Done 2026-11-12 (3): PC SAMPLER and the diagnostics' heap (awaiting log 32)
+
+- **Heap headroom for the diagnostics**: `_vmem.cpp` keeps `hotblocks_heap_bytes()` (448 KB with
+  HOTBLOCKS on) and `frame_prof_heap_bytes()` (64 KB with the sampler on) out of the guest page pool,
+  and the DISPLAY LISTS ring falls back to 768 then 512 KB when 1 MB cannot be had (a night render's
+  entries take ~350-380 KB on the runner). Windows, the day route to 13500 with
+  `IDAS3_DL_RING_KB=768` (and the five items + CACHE HINTS): all 166 record digests and the sound
+  hash identical, 0 MISMATCHES, 0 HAZARDS; 4274 entries written against 3340 with 1 MB, 5 ring passes
+  against 3, 31 GPU waits against 16. A fallback, not a choice.
+- **PC SAMPLER** (LOGS, last row, default OFF; with PROFILER): a hardware PC profile. PMC1 counts
+  cycles and the performance monitor interrupt (MMCR0 ENINT + PMC1INTCONTROL, vector 0xF00, which
+  libogc's PPCExcptInit fills with its general stub like every vector from 0x100 to 0x1300) fires every
+  72,900 cycles (10 kHz). The handler (`__fp_pcs_handler`, the DSI handler's pattern) re-arms PMC1,
+  counts the interrupted PC: C code into 256-byte spans from 0x80003F00 (.init + .text, 2 MB), SH-4 JIT
+  code into a ring that the frame loop resolves to SH-4 blocks (walk back to `addic. r29,r29,-n` and
+  its blt/bge, read the SH-4 address from the timeslice exit's lis/ori), ARM7 JIT, trampolines, other.
+  Every ~8 s: `[PCS]` header (shares, sample rate, `frame_prof_dump`'s address to match the boot.elf),
+  the 40 hottest C spans and the 32 hottest SH-4 blocks, in % of all samples. Time-weighted with
+  stalls, unlike HOTBLOCKS (entries) and the counters (rates). It takes the PMCs (no `[HW] CPU
+  counters` lines; the render probe lines stay). Interrupt handlers' time (EE off) lands on the
+  instruction they return to. Resolve spans with `powerpc-eabi-addr2line -f -C -e boot.elf`; a copy of
+  each shipped boot.elf must be kept.
 
 ### Log 30 (2026-11-12): night Akina with the five items
 
@@ -1125,6 +1178,14 @@ there; the push runs free in that mode since (Done after log 24).
   ~7169), estimated ~0.1 ms on a Wii. Reverted again: check this list first.
 
 ## What is left, best first
+
+After log 31: the next step is measurement, not a guess. Log 32 with the PC SAMPLER (night Akina,
+in-car then chase) says which C functions take the ELAN phase's ~1.5M instructions a frame and the
+render's time, and which SH-4 blocks take the most time (not entries) in each view; the CACHE HINTS
+A/B against log 30 comes with it (the render probe lines stay on). Candidates to check against it:
+the walk's per-command cost (~350 instructions), the recording per list (~1400), the JIT'd game's
+instruction fetch (~10K L1I misses/ms: block prologue/epilogue size, hot/cold layout), the VRAM32
+copy loop 0C20A2A0 and the SQ copy loop 0C1D4F4C in the chase view.
 
 After log 30: night in-car is ~100% with every frame drawn except its heaviest stretch (53.6-58
 fps, ~17.5 ms); the night chase view is 45-54 (p50 ~19-20 ms), ~2.5-3 ms short, of which `sh4`

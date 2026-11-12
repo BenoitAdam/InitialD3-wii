@@ -2002,6 +2002,12 @@ struct HotBlock
 // Descriptors 16384 * 20 B = 320 KB + counters 64 KB, allocated only when the
 // preset is on.
 #define HOT_MAX 16384
+// What the table takes when the preset is on (~448 KB): _vmem.cpp leaves it out
+// of the guest page pool, so a HOTBLOCKS run keeps DISPLAY LISTS' ring.
+extern "C" u32 hotblocks_heap_bytes()
+{
+	return get_hotblocks_preset() ? (u32)((sizeof(HotBlock) + sizeof(u32)) * HOT_MAX) : 0u;
+}
 static HotBlock* s_hb = 0;
 static u32* s_hb_hits = 0;	// dense counter array, indexed in step with s_hb
 static u32 s_hb_n = 0;

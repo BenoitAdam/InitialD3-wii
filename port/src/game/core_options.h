@@ -17,7 +17,7 @@ enum CoreOptionPage
     PAGE_RECOMPILER,
     PAGE_RECOMPILER_2,   // the first one is full: new recompiler rows go here
     PAGE_FIXES,
-    PAGE_LOGS,           // PROFILER, JIT CCALLS, JIT HOTBLOCKS, AUDIO STATS: everything for logs
+    PAGE_LOGS,           // PROFILER, JIT CCALLS, JIT HOTBLOCKS, AUDIO STATS, PC SAMPLER: everything for logs
     kCoreOptionPages
 };
 
@@ -131,6 +131,7 @@ enum CoreOptionId
     OPT_SOUND_STEP,
     OPT_SH4_SLICE,
     OPT_CACHE_HINTS,
+    OPT_PC_SAMPLER,
     kCoreOptionCount
 };
 
@@ -418,6 +419,11 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // tables' next lines zeroed in the cache instead of read (naomi_elan_gx.h).
     {"CACHE HINTS   ", "3D tables loaded ahead and written without reading them first (same picture)",
      PAGE_DEPTH_2, 1, 2, {"OFF (OLD)", "ON"}, {0, 1}},
+    // Broadway's performance monitor interrupts 10,000 times a second and the
+    // interrupted PC is counted (frame_prof.cpp, [PCS] lines): where the Wii's
+    // cycles go, by C function and by SH-4 block. Takes the [HW] counters.
+    {"PC SAMPLER    ", "with PROFILER: where the CPU time goes, by function and SH-4 block (~1% slower)",
+     PAGE_LOGS, 0, 2, {"OFF", "ON"}, {0, 1}},
 };
 
 // The order a page shows its rows in (the launcher walks this list and keeps the
@@ -452,7 +458,7 @@ inline constexpr CoreOptionId kCoreOptionOrder[kCoreOptionCount] = {
     OPT_ARM7_STR_ALIGN, OPT_ADPCM_LOOP, OPT_ARM7_RESET_FIX, OPT_AICA_RACE, OPT_AICA_CA_CLAMP,
     OPT_JIT_LINK_GUARD, OPT_DIV32_FIX, OPT_INTERP_FIX, OPT_SPG_FIX, OPT_TA_GUARD, OPT_INF_VTX,
     // LOGS
-    OPT_PROFILER, OPT_JIT_CCALLS, OPT_JIT_HOTBLOCKS, OPT_AUDIO_STATS,
+    OPT_PROFILER, OPT_JIT_CCALLS, OPT_JIT_HOTBLOCKS, OPT_AUDIO_STATS, OPT_PC_SAMPLER,
 };
 
 // Every option appears once in the order above, and the pages come in that order.

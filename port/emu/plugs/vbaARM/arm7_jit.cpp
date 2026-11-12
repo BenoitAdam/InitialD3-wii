@@ -102,6 +102,9 @@ static const u32 COLD_FLUSH_INSNS = 16;     // keeps every bc displacement tiny
 static const u32 MAX_BLOCK_WORDS = 16384;   // free space demanded before compiling
 
 // ── JIT state ────────────────────────────────────────────────────────────────
+// The code buffer's bounds, for the PC SAMPLER (frame_prof.cpp) to tell ARM7
+// code from the rest.
+extern "C" { const u8* g_arm7_code_lo = 0; const u8* g_arm7_code_hi = 0; }
 static u32*   s_code_base;
 static u32    s_code_words;
 static u32*   s_code_blocks;       // first word after the stubs
@@ -1794,6 +1797,8 @@ static bool jit_setup()
 
 	s_code_base  = (u32*)code;
 	s_code_words = code_bytes / 4;
+	g_arm7_code_lo = (const u8*)code;
+	g_arm7_code_hi = (const u8*)code + code_bytes;
 	s_entries    = entries;
 	s_entry_mask = entry_count - 1;
 	s_setup_ok   = true;

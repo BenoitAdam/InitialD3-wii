@@ -509,6 +509,11 @@ extern "C" void wii_boot_log(const char* fmt, ...);
 // Heap left to the C code once the guest page pool takes the rest. Measured
 // on Initial D 3: ~6.8 MB used through the menus (3 MB of it in MEM1).
 #define WII_HEAP_KEEP_MEM2 (4u * 1024u * 1024u)
+// Heap the diagnostics take when they are on (JIT HOTBLOCKS' block table, the
+// PC SAMPLER's counts), kept out of the pool so they cannot crowd out the
+// DISPLAY LISTS ring (log 31: HOTBLOCKS' 448 KB table left no room for it).
+extern "C" u32 hotblocks_heap_bytes();
+u32 frame_prof_heap_bytes();
 #endif
 
 #if HOST_OS != OS_WII
@@ -555,7 +560,8 @@ bool _vmem_reserve()
     // with DISPLAY LISTS on their ring (naomi_elan_gx.cpp, allocateFetch), and
     // with MOTION FX's in-between frames their depth mask (gxRend.cpp).
     if (!WiiGuestMem_Init(WII_HEAP_KEEP_MEM1, WII_HEAP_KEEP_MEM2 + (g_elan_dl_preset ? kElanDlRingBytes : 0u) +
-                                                  (naomi_MotionInBetween() ? kMotionMaskBytes : 0u)))
+                                                  (naomi_MotionInBetween() ? kMotionMaskBytes : 0u) +
+                                                  hotblocks_heap_bytes() + frame_prof_heap_bytes()))
         return false;
 
     aica_ram.size = ARAM_SIZE;

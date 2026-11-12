@@ -184,7 +184,11 @@ void frame_prof_gp_done();         // the GX draw-done interrupt
 // recording of its lists get counters of their own, inside "rest of the frame".
 void frame_prof_elan_begin();
 void frame_prof_elan_end();
-extern u32 g_fp_elan_ticks;        // ELAN GPU lists drawn (time base ticks)
+// PC SAMPLER (LOGS page): the heap its tables take when it is on, which _vmem.cpp
+// keeps out of the guest page pool. Its [PCS] lines come with the [HW] dumps.
+extern "C" int g_pc_sampler_preset;
+u32 frame_prof_heap_bytes();
+extern u32 g_fp_elan_ticks;       // ELAN GPU lists drawn (time base ticks)
 extern u32 g_fp_elan_verts;        // ...and their vertices, of which (naomi_elan_gx.cpp GPU fetch):
 extern u32 g_fp_elan_fetch;        //   read by the GPU from a list's cached program
 extern u32 g_fp_elan_gap;          //     (of those, CPU-fed strips over frames that are not adjacent)

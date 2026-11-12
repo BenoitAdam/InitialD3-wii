@@ -21,6 +21,33 @@ it exists.
 
 ### Status (2026-11-12)
 
+- **Log 31** (2026-11-12, `idas3wii_log31_akina_uphill`: night Akina uphill, PROFILER + JIT CCALLS +
+  **JIT HOTBLOCKS** on, CACHE HINTS on, in-car then chase ~7380-8130 then in-car). A diagnostics run,
+  not a speed reference: HOTBLOCKS' block table (16384 x 28 B = 448 KB, malloc'd at the first compile)
+  left too little heap for the 1 MB DISPLAY LISTS ring (`[elan] GX display lists: no memory`), so
+  `cached programs` took 0.7-1.35 ms a render instead of log 30's 0.23. In-car 59-60 fps, heavy
+  stretch (8760-9000) 46.8-51.8, chase 46.9-53.3. First read of the ELAN-phase counters: the ELAN's
+  own work (walk + recording) is 3.4-3.65 ms a frame in-car, 4.0-4.75 chase, at IPC 0.60-0.66 with
+  32-38% of its cycles in L1 load misses (~2000-2250 L2 data misses/ms, ~120 cycles each): ~1/3
+  memory stall, ~2/3 instructions (~1.5M PPC instructions a frame for ~2100-2700 commands and
+  ~550-800 lists). Game + sound + the rest: IPC 0.47-0.53, load-miss 12-15%, but ~10-11.5K L1
+  instruction misses/ms (one per ~35 instructions; log 30's whole rest-of-frame without HOTBLOCKS:
+  ~7.3K/ms). HOTBLOCKS (entry counts, table overflowed by 5559 blocks): chase runs the VRAM32 copy
+  loop 0C20A2A0 ~1.6x more (400-450K entries/s vs 265K) and an SQ copy loop 0C1D4F4C (pref) that
+  in-car barely runs. CACHE HINTS cannot be judged from it (the draw's rest 1.5-1.8 us a list vs
+  1.6-1.9; walk 813-911 ns a command vs ~800, under HOTBLOCKS' code pressure).
+  Built after it, **awaiting log 32**: (1) heap headroom for the diagnostics (`_vmem.cpp` adds
+  `hotblocks_heap_bytes()` and `frame_prof_heap_bytes()` to the pool's headroom) and a DISPLAY LISTS
+  ring that falls back to 768 then 512 KB; (2) **PC SAMPLER** (LOGS, last row, default OFF, with
+  PROFILER): Broadway's performance monitor interrupt every 72,900 cycles (10 kHz; PMC1 counting
+  cycles, MMCR0 ENINT + PMC1INTCONTROL, handler at PPC_EXCPT_PM through libogc's stub like the DSI
+  handler) counts the interrupted PC: C code by 256-byte span from 0x80003F00, SH-4 JIT samples by
+  block (walked back to the block's `addic. r29` prologue, the SH-4 address read from its timeslice
+  exit's lis/ori), ARM7 JIT, trampolines, other. `[PCS]` lines every ~8 s; it takes the PMCs, so no
+  `[HW] CPU counters` lines while on. Resolve the C spans with `powerpc-eabi-addr2line -f -C -e
+  boot.elf ADDR` on the boot.elf whose `frame_prof_dump` address matches the `[PCS]` header (keep a
+  copy of each shipped boot.elf as `port/wii/build/boot_pcs_<address>.elf`; `make clean` deletes it).
+  Untested on hardware (Dolphin likely gives "no samples").
 - **Log 30** (2026-11-12, two runs of night Akina with the five rows below on, FRAMESKIPPING 0,
   MIRROR OFF + GAME SKIP; `idas3wii_log_30_akina_uphill` JIT CCALLS off, `..._downhill` CCALLS on).
   Owner: "more performance indeed". **In-car: 59.3-60.8 emulated fps nearly all race**, p50
@@ -260,7 +287,8 @@ it exists.
   yet): S ~11, D ~15.5-17.6, so AUTO should hold 100% with nearly every frame drawn. The owner's
   target (100% at ~45 shown) is met by day and, per log 27, at night in-car; the night chase view
   (no mirror to skip) is not measured since log 23.
-- Latest real-Wii log: **log 30** (2026-11-12, entry above). Before it **log 27** (2026-11-11, entry above), log 26 and 2P log 3
+- Latest real-Wii log: **log 31** (2026-11-12, diagnostics run, entry above); latest speed
+  reference: **log 30** (2026-11-12, entry above). Before it **log 27** (2026-11-11, entry above), log 26 and 2P log 3
   (2026-11-11, entries above; log 26's walk, 750-810 ns a command on drawn frames with ELAN PREFETCH
   ON, matches 2P log 1's: the OFF A/B is still to do).
   Before them, **log 25** (2026-11-05, two runs). Day course, every frame drawn,
@@ -388,7 +416,7 @@ current work:
 
 | File | Role |
 | --- | --- |
-| `port/src/game/core_options.h` | Launcher option table (9 pages, reorganised 2026-11-11: GENERAL (2 PLAYERS, MIRROR, FRAMESKIPPING, pads, TEST MODE), RENDERING, RENDERING 2 (textures, 3D T&L, effects), AUDIO, CORE (SH-4 CPU choice, idle skip, guest memory), RECOMPILER, RECOMPILER 2, FIXES, LOGS (PROFILER, JIT CCALLS, JIT HOTBLOCKS, AUDIO STATS); a page that fills up gets a second one, ~20 rows fit). A page's row order is `kCoreOptionOrder` (the table stays in `CoreOptionId` order for autolaunch); launcher pages: 1/2 or -/+ |
+| `port/src/game/core_options.h` | Launcher option table (9 pages, reorganised 2026-11-11: GENERAL (2 PLAYERS, MIRROR, FRAMESKIPPING, pads, TEST MODE), RENDERING, RENDERING 2 (textures, 3D T&L, effects), AUDIO, CORE (SH-4 CPU choice, idle skip, guest memory), RECOMPILER, RECOMPILER 2, FIXES, LOGS (PROFILER, JIT CCALLS, JIT HOTBLOCKS, AUDIO STATS, PC SAMPLER); a page that fills up gets a second one, ~20 rows fit). A page's row order is `kCoreOptionOrder` (the table stays in `CoreOptionId` order for autolaunch); launcher pages: 1/2 or -/+ |
 | `port/src/game/game_runner.cpp` | Runs the core on the Wii: options -> `g_*_preset` globals (array in `CoreOptionId` order, static_assert), pads -> JVS, `[prof]` blocks, async log |
 | `port/src/ui/launcher.cpp` | Menus; `options.txt` saved as `LABEL=VALUE`, matched by label |
 | `port/src/core/log.cpp` | Log file, async ring mode (`log::setAsync`) |
@@ -537,7 +565,8 @@ on NAOMI 2 the `elan` column is the old disc bucket and `rd=` counts ELAN comman
 `[prof]` 120-frame blocks; `[HW]` Broadway PMC lines (IPC, L1 miss cycles, DTLB, L2, render
 probe, ELAN draw split, fetch programs/patches/ring passes, ELAN page checks: count, time, PAGE
 GUARD's read-only pages; since log 30's build the rest of the frame is split into the ELAN's own
-command work and the game + sound + others); `[CC]` JIT call-outs into C
+command work and the game + sound + others); `[PCS]` PC SAMPLER (where the cycles go, by C span
+and SH-4 block; see log 31's entry); `[CC]` JIT call-outs into C
 (JIT CCALLS); `[HOT]` hottest blocks (JIT HOTBLOCKS, ~12% cost); `[mem]` guest page pool;
 `[2P]` split-screen passes.
 
@@ -588,6 +617,10 @@ command work and the game + sound + others); `[CC]` JIT call-outs into C
 - Wii memory: newlib malloc never returns memory, and the guest page pool only takes what is
   above the heap's high-water mark. Never allocate big temporary buffers in the launcher; stream
   files (the BIOS zip is streamed, only 512 KB kept).
+- A diagnostic that takes heap can starve a lazy allocation made later: in log 31 JIT HOTBLOCKS'
+  448 KB table (malloc'd at the first compile) left no room for the DISPLAY LISTS ring (allocated at
+  the first race), and `rend` grew ~0.6-1 ms. Size such tables into `_vmem.cpp`'s heap headroom
+  (`hotblocks_heap_bytes()`, `frame_prof_heap_bytes()`), and read `[elan] GX display lists:` first.
 - Nothing in the core may grow on the heap during the game: a few hundred KB are left beside
   the page pool, and with `-fno-exceptions` a failed `new` is `abort()`. A path that a day race
   never takes can still be hit later: the CPU T&L vectors stayed empty in races (the GPU path
