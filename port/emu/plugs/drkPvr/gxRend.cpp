@@ -10224,8 +10224,22 @@ void DoRender()
     // Z quad, the FMV unwind), which is exactly why each of them already resets
     // last_textured/last_shad_instr. One invalidate here covers all of them.
     texbind_cache_invalidate();
+#if defined(BUILD_NAOMI2)
+    // CACHE HINTS (naomi_elan_gx.h): the strip arrays are read in order, and
+    // Broadway has no hardware prefetch; written when the ELAN recorded its
+    // lists, they are out of the cache by the render (~0.7 lines a strip).
+    const bool strip_hints = g_cache_hints_preset != 0;
+#endif
     for (; drawLST != seg_end; drawLST++)
     {
+#if defined(BUILD_NAOMI2)
+      if (strip_hints)
+      {
+        __builtin_prefetch(drawLST + 16);
+        __builtin_prefetch(drawMod + 4);
+        __builtin_prefetch(&listElanItem[(drawLST - lists) + 32]);
+      }
+#endif
       if (ts_active && ts_idx == ts_count)
       {
         // Sorted TR range fully drawn — resume the sequential walk right

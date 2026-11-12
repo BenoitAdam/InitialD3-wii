@@ -37,6 +37,7 @@ int g_elan_model_skip_preset = 1;
 int g_mirror_preset = 1;
 int g_elan_prefetch_preset = 1;
 int g_elan_model_prefetch_preset = 1;
+int g_cache_hints_preset = 0;        // CACHE HINTS (the launcher's default is ON)
 }
 
 #if HOST_OS != OS_WII
@@ -145,6 +146,7 @@ struct ModelWalk
     u32 lastGmp;        // offset of its last material + 1, 0: none
     u32 indexed;        // lists that took a depth slice (tnl_ListsIndexed)
     u16 heads[8];       // MODEL PREFETCH: its first command headers, 32-byte units
+    u16 slots[8];       // CACHE HINTS: what they are (ModelHeads::slot)
     u32 nHeads;
 };
 
@@ -169,7 +171,17 @@ ModelEntry s_models[kModelSlots];
 // together at the model's call, they arrive while the first is handled. Only
 // a hint: a block that changed is walked as before, from its own words.
 constexpr u32 kModelHeads = 8;
-u16 s_modelHeads[kModelSlots][kModelHeads];
+// CACHE HINTS: with each head, what it is: a polygon list's GPU fetch slot + 1
+// (naomi_elan_fetch.inc: what recording it reads, its table entry, page state
+// and box, can be asked for ahead), kHeadMaterial (a 64-byte material: its
+// second line too), or 0. One line a model, the heads with them.
+constexpr u16 kHeadMaterial = 0xFFFF;
+struct alignas(32) ModelHeads
+{
+    u16 at[kModelHeads];        // 0xFFFF ends the list
+    u16 slot[kModelHeads];
+};
+ModelHeads s_modelHeads[kModelSlots];
 ModelWalk* s_walk = nullptr;        // the innermost model list being walked
 int s_dropLists = 0;                // inside a model MIRROR OFF does not draw
 
@@ -241,9 +253,12 @@ void rememberModel(u32 offset, u32 size, const ModelWalk& w, int typeIn, int typ
     m.typeOut = (s8)typeOut;
     m.pure = pure;
     m.used = 1;
-    u16* const heads = s_modelHeads[&m - s_models];
+    ModelHeads& heads = s_modelHeads[&m - s_models];
     for (u32 i = 0; i < kModelHeads; i++)
-        heads[i] = i < w.nHeads ? w.heads[i] : 0xFFFF;
+    {
+        heads.at[i] = i < w.nHeads ? w.heads[i] : 0xFFFF;
+        heads.slot[i] = i < w.nHeads ? w.slots[i] : 0;
+    }
     m.boxed = pure && w.boxOk && w.ich && w.indexed <= 0xFFFF;
     if (m.boxed)
     {
@@ -636,17 +651,48 @@ u32 ichVertexSize(u32 flags)
 }
 
 // MODEL PREFETCH: the cache lines of a model's remembered command headers.
-void prefetchModel(const u8* list, u32 listSize, u32 offset, u32 size)
+// CACHE HINTS: also a material's second line, and for its polygon lists what
+// recording them reads from the GPU fetch tables: their entries and page states
+// (asked for one model ahead, by prefetchNextModel), then, at the model's own
+// call (`now`, those entries in by then), the boxes after their programs.
+void prefetchModel(const u8* list, u32 listSize, u32 offset, u32 size, bool now)
 {
 #if defined(__GNUC__)
     const ModelEntry& m = modelSlot(offset, size);
     if (!m.used || m.offset != offset || m.size != size)
         return;
-    const u16* const heads = s_modelHeads[&m - s_models];
-    for (u32 i = 0; i < kModelHeads && heads[i] != 0xFFFF; i++)
-        if ((u32)heads[i] << 5 < listSize)
-            __builtin_prefetch(list + ((u32)heads[i] << 5));
-    elan_Stats().modelPrefetches++;
+    const ModelHeads& heads = s_modelHeads[&m - s_models];
+    const bool hints = g_cache_hints_preset != 0;
+    for (u32 i = 0; i < kModelHeads && heads.at[i] != 0xFFFF; i++)
+    {
+        const u32 at = (u32)heads.at[i] << 5;
+        if (at >= listSize)
+            continue;
+        if (g_elan_model_prefetch_preset)
+            __builtin_prefetch(list + at);
+        if (!hints)
+            continue;
+        const u16 slot = heads.slot[i];
+        if (slot == kHeadMaterial)
+        {
+            if (at + 32 < listSize)
+                __builtin_prefetch(list + at + 32);
+        }
+        else if (slot)
+            elan_gx_prefetch_list(slot, offset + at + 32);
+    }
+    if (hints && now)
+        for (u32 i = 0; i < kModelHeads && heads.at[i] != 0xFFFF; i++)
+            if (heads.slot[i] != kHeadMaterial && heads.slot[i])
+                elan_gx_prefetch_box(heads.slot[i]);
+    if (g_elan_model_prefetch_preset)
+        elan_Stats().modelPrefetches++;
+#else
+    (void)list;
+    (void)listSize;
+    (void)offset;
+    (void)size;
+    (void)now;
 #endif
 }
 
@@ -669,7 +715,7 @@ void prefetchNextModel(const u8* data, u32 size)
             u32 listSize = msize;
             const u8* list = elanRamPtr(offset, listSize);
             if (list)
-                prefetchModel(list, listSize, offset, msize);
+                prefetchModel(list, listSize, offset, msize, false);
             return;
         }
         case N2_MATRIX_OR_LIGHT:
@@ -733,11 +779,16 @@ void execute(const u8* data, u32 size, u32 depth)
 
         const u32 pcw = word(data, 0);
         st.walkRead++;
+        int head = -1;                           // this command's place in the model's heads
         if (s_walk && s_walk->base && s_walk->nHeads < kModelHeads)
         {
             const u32 at = (u32)(data - s_walk->base) >> 5;
             if (data >= s_walk->base && at < 0xFFFF)
+            {
+                head = (int)s_walk->nHeads;
+                s_walk->slots[head] = 0;
                 s_walk->heads[s_walk->nHeads++] = (u16)at;
+            }
         }
         if (!isNaomi2(pcw))
         {
@@ -806,6 +857,8 @@ void execute(const u8* data, u32 size, u32 depth)
             {
                 s_walk->states++;
                 s_walk->lastGmp = (u32)(data - s_walk->base) + 1;
+                if (head >= 0)
+                    s_walk->slots[head] = kHeadMaterial;
             }
             used = 64;
             if (used <= size)
@@ -855,7 +908,11 @@ void execute(const u8* data, u32 size, u32 depth)
                 s_ta.listType = tnl_DrawList((const u32*)data, vsize, s_ta.listType);
                 s_ta.vertexSize = 32;
                 if (s_walk)
+                {
                     noteListBox(*s_walk);
+                    if (head >= 0)
+                        s_walk->slots[head] = (u16)tnl_ListFetchSlot();   // <= 4096: never kHeadMaterial
+                }
             }
             break;
         }
@@ -896,9 +953,9 @@ void execute(const u8* data, u32 size, u32 depth)
                 ModelWalk* const outer = s_walk;
                 const int typeIn = s_ta.listType;
                 const u32 indexed = tnl_ListsIndexed();
-                if (g_elan_model_prefetch_preset)
+                if (g_elan_model_prefetch_preset || g_cache_hints_preset)
                 {
-                    prefetchModel(list, listSize, modelOffset, modelSize);
+                    prefetchModel(list, listSize, modelOffset, modelSize, true);
                     if (!outer && size > 32)
                         prefetchNextModel(data + 32, size - 32);
                 }

@@ -257,7 +257,9 @@ static void commandWrite(u32 addr, u32 data)
         FP_T0(t0);                      // FRAME_PROF "elan" bucket (frame_prof.cpp)
         const u32 read0 = s_stats.walkRead;
         ELAN_TIME_BEGIN(tx);
+        frame_prof_elan_begin();        // PROFILER: [HW] counters of the ELAN's own work
         elan_Execute(s_cmd, sizeof(s_cmd));
+        frame_prof_elan_end();
         const u64 spent = elan_NowNs() - tx;
         s_stats.execNs += spent;
         if (rend_FrameKnownSkipped())

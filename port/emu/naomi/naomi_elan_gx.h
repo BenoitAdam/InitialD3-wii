@@ -117,6 +117,16 @@ bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6], u32* s
 // program from the slot found when it was recorded, and its normal matrix's
 // scale without libm's sqrtf.
 extern "C" int g_draw_memo_preset;
+// Launch option CACHE HINTS (g_cache_hints_preset, naomi_elan.h): the ELAN asks
+// for what a model's lists' recording reads from the GPU fetch tables one model
+// ahead (elan_gx_prefetch_list), their boxes at the model's call
+// (elan_gx_prefetch_box) and a material's second line; the Wii's draw asks for
+// matrices and light sets further ahead and gxRend for its strip arrays; the
+// item, matrix and light-set tables get their next lines zeroed in the cache
+// (dcbz) rather than read from memory before being written. Speed only.
+extern "C" int g_cache_hints_preset;
+void elan_gx_prefetch_list(u32 slot, u32 off);   // slot + 1 (elan_gx_list_box), records' ELAN offset
+void elan_gx_prefetch_box(u32 slot);
 // The renderer's canvas (screen coordinates of the ELAN's projection), from
 // its last 3D render; 0 before the first one.
 void elan_gx_canvas(float& width, float& height);

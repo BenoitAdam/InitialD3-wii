@@ -990,6 +990,17 @@ bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6], u32* s
     return true;
 }
 
+// CACHE HINTS: cache hints only (no-ops with MSVC), as on the Wii.
+void elan_gx_prefetch_list(u32 slot, u32 off)
+{
+    prefetchListTables(slot, off);
+}
+
+void elan_gx_prefetch_box(u32 slot)
+{
+    prefetchListBox(slot);
+}
+
 // Built from the records at an earlier render, a box is only good while they
 // are unchanged: every record must still lie inside it.
 void elan_gx_box_check(const u32* vtx, u32 count, u32 vsize, const float box[6])
@@ -1165,6 +1176,7 @@ bool elan_gx_record(const ElanGxRecord& r)
 
 #include <gccore.h>
 #include <malloc.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -1218,6 +1230,41 @@ u32 s_lastXformKey = 0, s_lastXi = 0, s_lastLightKey = 0, s_lastLi = 0;
 // sets' own keys), so a record whose key an earlier entry has is that entry,
 // without comparing ~100 (matrix) or ~600 (light set) bytes.
 u32 s_xformKeys[kMaxXforms], s_lsetKeys[kMaxLightSets];
+// CACHE HINTS: the item, matrix and light-set tables are filled front to back,
+// starting over each render. A store into a line that is not in the cache
+// first reads it from memory, and none of these lines still is (the game's
+// work between two frames is far bigger than the L2): ~1-2K reads a heavy
+// frame. The lines past what this render has written hold nothing it needs,
+// so they are zeroed in the cache instead (dcbz: no read). Each table's
+// front: its first line not zeroed this render. The tables are 32-byte
+// aligned and their sizes multiples of 32 (24 x 6144 or 4096, 108 x 1536 or
+// 1024, 560 x 64 or 48), so the last line zeroed is still theirs.
+static_assert(sizeof(Item) * kMaxItems % 32 == 0 && sizeof(Item) * kMinItems % 32 == 0 &&
+                  sizeof(ElanGxXform) * kMaxXforms % 32 == 0 && sizeof(ElanGxXform) * kMinXforms % 32 == 0 &&
+                  sizeof(ElanGxLightSet) * kMaxLightSets % 32 == 0 && sizeof(ElanGxLightSet) * kMinLightSets % 32 == 0,
+              "CACHE HINTS zeroes whole lines: every table must end on one");
+u8* s_frontItems = nullptr;
+u8* s_frontXforms = nullptr;
+u8* s_frontLsets = nullptr;
+void resetFronts()
+{
+    s_frontItems = (u8*)s_items;
+    s_frontXforms = (u8*)s_xforms;
+    s_frontLsets = (u8*)s_lsets;
+}
+// Zeroes the lines from `front` up to the one holding byte end - 1 (and no
+// further than `limit`, the table's end).
+inline void zeroFront(u8*& front, const void* base, const void* end, const void* limit)
+{
+    if (front < (const u8*)base)                // never set (tables allocated since): start over
+        front = (u8*)base;
+    const u8* const stop = (const u8*)end < (const u8*)limit ? (const u8*)end : (const u8*)limit;
+    while (front < stop)
+    {
+        asm volatile("dcbz 0,%0" : : "r"(front) : "memory");
+        front += 32;
+    }
+}
 // GPU fetch (naomi_elan_fetch.inc, renders counted by elan_gx_frame_reset):
 // an ELAN page's frame and whether it was written since (wii_fastmem.cpp),
 // the program ring's physical addresses.
@@ -1259,6 +1306,7 @@ bool allocateArenas(u32 items, u32 xforms, u32 lsets)
         s_capItems = items;
         s_capXforms = xforms;
         s_capLsets = lsets;
+        resetFronts();
         return true;
     }
     free(s_items);
@@ -1452,6 +1500,7 @@ void elan_gx_frame_reset()
     dlRenderStart();                            // gxRend waits for the last render's GPU work first
     s_vtxCacheStale = true;
     s_nItems = s_nXforms = s_nLsets = 0;
+    resetFronts();
     s_loadedLights = 0xFFFFFFFFu;
     s_loadedPos = s_loadedNrm = 0xFFFFFFFFu;
     s_lastXformKey = s_lastLightKey = 0;
@@ -1471,11 +1520,14 @@ bool elan_gx_record(const ElanGxRecord& r)
                        : findShared(s_lsets, s_lsetKeys, s_nLsets, r.lights, r.lightKey);
     if ((xr < 0 && s_nXforms >= s_capXforms) || (lr < 0 && s_nLsets >= s_capLsets))
         return false;
+    const bool hints = g_cache_hints_preset != 0;
     u32 xi, li;
     if (xr >= 0)
         xi = (u32)xr;
     else
     {
+        if (hints)
+            zeroFront(s_frontXforms, s_xforms, &s_xforms[s_nXforms + 1], &s_xforms[s_capXforms]);
         s_xforms[s_nXforms] = r.xform;
         xi = s_nXforms++;
     }
@@ -1483,6 +1535,8 @@ bool elan_gx_record(const ElanGxRecord& r)
         li = (u32)lr;
     else
     {
+        if (hints)
+            zeroFront(s_frontLsets, s_lsets, &s_lsets[s_nLsets + 1], &s_lsets[s_capLsets]);
         s_lsets[s_nLsets] = r.lights;
         li = s_nLsets++;
     }
@@ -1494,6 +1548,8 @@ bool elan_gx_record(const ElanGxRecord& r)
     s_lastLi = li;
     if (!rend_AddElanItem(r.pcw, r.isp, r.tsp, r.tcw, s_nItems, r.nearW, r.farW))
         return false;
+    if (hints)
+        zeroFront(s_frontItems, s_items, &s_items[s_nItems + 1], &s_items[s_capItems]);
     Item& it = s_items[s_nItems++];
     it.vtx = r.vtx;
     it.count = (u16)r.count;
@@ -2015,6 +2071,18 @@ bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6], u32* s
     return s_fetchOn && cachedBox((u32)vtx - WII_GUEST_ELAN_EA, count, vsize, box, slot);
 }
 
+void elan_gx_prefetch_list(u32 slot, u32 off)
+{
+    if (s_fetchOn)
+        prefetchListTables(slot, off);
+}
+
+void elan_gx_prefetch_box(u32 slot)
+{
+    if (s_fetchOn)
+        prefetchListBox(slot);
+}
+
 void elan_gx_canvas(float& width, float& height)
 {
     width = s_canvasW;
@@ -2083,6 +2151,47 @@ bool elan_gx_draw(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
 static void prefetchAhead(u32 index)
 {
 #if defined(__GNUC__)
+    // CACHE HINTS: items one line further, and an item's matrix and light set
+    // (when they change) two items ahead rather than one: a heavy render takes
+    // ~5000 L2 misses, ~8 a list, and one item ahead was too close for them.
+    // The light set's lights (up to 15 lines) when the next item loads another set.
+    if (g_cache_hints_preset)
+    {
+        if (index + 5 < s_nItems)
+            __builtin_prefetch(&s_items[index + 5]);
+        if (index + 2 < s_nItems)
+        {
+            const Item& n1 = s_items[index + 1];
+            const Item& n2 = s_items[index + 2];
+            if (n2.xform != n1.xform)
+            {
+                const u8* x = (const u8*)&s_xforms[n2.xform];
+                __builtin_prefetch(x);
+                __builtin_prefetch(x + 32);
+                __builtin_prefetch(x + 64);
+                __builtin_prefetch(x + 96);
+            }
+            if (n2.lights != n1.lights)
+                __builtin_prefetch(&s_lsets[n2.lights]);
+        }
+        if (index + 1 < s_nItems && s_items[index + 1].lights != s_items[index].lights)
+        {
+            const ElanGxLightSet& ls = s_lsets[s_items[index + 1].lights];
+            if (ls.lit)
+            {
+                const u8* const p = (const u8*)&ls;
+                const u32 bytes = (u32)offsetof(ElanGxLightSet, lights) + ls.count * sizeof(ElanGxLight);
+                for (u32 b = 32; b < bytes; b += 32)
+                    __builtin_prefetch(p + b);
+                __builtin_prefetch(p + bytes - 1);     // sets are not line-aligned (560 bytes)
+                if (ls.beam)
+                {
+                    __builtin_prefetch(&ls.beamLight);
+                    __builtin_prefetch((const u8*)&ls.beamLight + sizeof(ElanGxBeam) - 1);
+                }
+            }
+        }
+    }
     if (index + 3 < s_nItems)
         __builtin_prefetch(&s_items[index + 3]);
     if (index + 2 < s_nItems && s_fetchOn)

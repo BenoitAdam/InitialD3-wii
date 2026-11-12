@@ -21,7 +21,27 @@ it exists.
 
 ### Status (2026-11-12)
 
-- **FIVE SPEED ROWS (built 2026-11-12, awaiting log 28)**. Owner: "90% in night race, need 10%
+- **Log 30** (2026-11-12, two runs of night Akina with the five rows below on, FRAMESKIPPING 0,
+  MIRROR OFF + GAME SKIP; `idas3wii_log_30_akina_uphill` JIT CCALLS off, `..._downhill` CCALLS on).
+  Owner: "more performance indeed". **In-car: 59.3-60.8 emulated fps nearly all race**, p50
+  15.0-15.5 ms (typical frame: `sh4` 6.95, `elan` 3.5 = walk 1.68 ms at ~796 ns a command + T&L 2.06,
+  `rend` 1.44, `arm` 1.16, `aica` 1.16); its heaviest stretch (uphill frames 9000-9360, ~74K
+  vertices, 744-764 boxes) 53.6-58. Against log 27: walk 928 -> ~800 ns a command, the draw's rest
+  1.6-1.9 us a list, timeslice call-outs ~1870 -> 933 a frame (SH-4 TIMESLICE: nothing broke).
+  **Chase view at night (downhill frames ~8520-9360): 45-54 fps**, p50 18.9-19.8: `sh4` +2 ms over
+  in-car (9.0-9.2 with CCALLS on: the game's own work, more objects in view), `elan` ~4.5 (+1.3),
+  `rend` 1.8-2.0 (+0.6). Renders: IPC 0.60, load-miss 36-42% of cycles, L2 hits ~230/ms against
+  ~2500 L2 data misses/ms: next to nothing survives in the 256 KB L2 between the ELAN recording and
+  the render (~8 misses a list). FPROF tails there are `snd` (the pacing wait at 100%), not work.
+  Built after it, **awaiting log 31**: CACHE HINTS (RENDERING 2, last row, default ON; exact, hints
+  only): the renderer's per-render tables (items, matrices, light sets) are zeroed a line ahead with
+  `dcbz` instead of read before being written, the draw prefetches items, matrices and light sets
+  ahead, the walk asks for a model's lists' fetch-table entries, page states and boxes at its call
+  (the fetch slot each head found is kept with MODEL PREFETCH's headers), gxRend's strip loop reads
+  ahead. And the PMC split of the ELAN phase: `[HW] CPU counters A/B, the rest: ELAN commands ... |
+  game, sound and the others` (IPC, load-miss, L2 per ms of the ELAN's own work vs the rest).
+  OPTIMIZATION.md "Done 2026-11-12 (2)".
+- **FIVE SPEED ROWS (built 2026-11-12, log 30: in-car night ~100%)**. Owner: "90% in night race, need 10%
   more" (no log: view and course not known). Found: Broadway has no square root instruction and
   devkitPPC's `sqrtf` is newlib's 25-step bit loop (~300 cycles); a night point-lit list paid 2-3 of
   them, each lit matrix change at draw 3 more, and each material 4 divisions + 2 `ldexpf`. New rows,
@@ -233,13 +253,14 @@ it exists.
   SMALL 3D 4 px): the day course of logs 21/23 at **100% in the in-car view** (log 25: 59.4-60.1
   fps the whole race, p50 15.5-16.3 ms) and 52-56 fps from the chase camera (log 23, before COLOUR
   LISTS); night, in-car: 49-54 fps before log 27, **52-61, mostly 59-60** with MIRROR OFF + GAME
-  SKIP and JIT FR SWAP (log 27, p50 14.4-17.6). FRAMESKIP AUTO settles on d = (16.7 - S) / (D - S)
+  SKIP and JIT FR SWAP (log 27, p50 14.4-17.6), 59.3-60.8 nearly all race with the five rows of
+  2026-11-12 (log 30, p50 15.0-15.5; heaviest stretch 53.6-58); night chase view 45-54 (log 30). FRAMESKIP AUTO settles on d = (16.7 - S) / (D - S)
   drawn (S a dropped frame, D a drawn one). Night in-car before log 27: S ~13.4 ms (`sh4` 9.5, sound
   ~2.3, ELAN walk ~1.2), D ~19-20, so AUTO showed ~36 (log 25). After it (estimate, AUTO not run
   yet): S ~11, D ~15.5-17.6, so AUTO should hold 100% with nearly every frame drawn. The owner's
   target (100% at ~45 shown) is met by day and, per log 27, at night in-car; the night chase view
   (no mirror to skip) is not measured since log 23.
-- Latest real-Wii log: **log 27** (2026-11-11, entry above). Before it, log 26 and 2P log 3
+- Latest real-Wii log: **log 30** (2026-11-12, entry above). Before it **log 27** (2026-11-11, entry above), log 26 and 2P log 3
   (2026-11-11, entries above; log 26's walk, 750-810 ns a command on drawn frames with ELAN PREFETCH
   ON, matches 2P log 1's: the OFF A/B is still to do).
   Before them, **log 25** (2026-11-05, two runs). Day course, every frame drawn,
@@ -464,6 +485,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--draw-memo 0/1` | DRAW MEMO with `--gpu-tnl`: `DRAW MEMO per drawn render` line, every program taken from the recorded slot checked against the full lookup (WRONG must stay 0) |
 | `--sound-step 0/1` | SOUND STEP: the exit line's sound hash must be the one without it |
 | `--sh4-slice 0/1` | SH-4 TIMESLICE: 1 = 3584 cycles (the interpreter takes the same preset): changes timing, so digests and the sound hash change; the route must still reach and drive the race |
+| `--cache-hints 0/1` | CACHE HINTS: prefetches are no-ops under MSVC and `dcbz` is Wii-only, so on Windows this checks the bookkeeping (the fetch slot kept per model head): record digests and the sound hash must be the ones without it |
 | `--small N` | SMALL 3D with `--gpu-tnl`: lists and whole models under N pixels on screen not drawn; `SMALL 3D per frame` line. Snapshots cannot show it (GPU lists are not drawn in them) |
 | env `IDAS3_FAR_CENSUS=1` | drawn GPU-path vertices and lists by their box's nearest depth and by its size on screen |
 | env `IDAS3_TEXCACHE=N` | texture cache census (`host/texcache_census.cpp`): gxRend's TEXTURE CACHE rules (NORMAL, VERY FAST+ (OLD) slots, VERY FAST+ arena + bind memo, each with and without VQ AS CMPR) replayed on every textured header of a drawn render; a `[texc]` line per policy every N drawn renders (binds, lookups, decodes, KB and texels decoded, binds showing another decode's pixels, decodes over a texture bound earlier in the render, arena wraps), totals and the textures by kind at exit, and both CMPR encoders (`cmpr_encode.h`) checked on the game's VQ 565 and plain RGB565 textures as GX decodes them. Use with `--gpu-tnl` (the ELAN lists' binds) |
@@ -514,7 +536,8 @@ Reading the log: `FPROF` per-frame buckets (`sh4`, `rend`, `elan`, `arm`, `aica`
 on NAOMI 2 the `elan` column is the old disc bucket and `rd=` counts ELAN command executions);
 `[prof]` 120-frame blocks; `[HW]` Broadway PMC lines (IPC, L1 miss cycles, DTLB, L2, render
 probe, ELAN draw split, fetch programs/patches/ring passes, ELAN page checks: count, time, PAGE
-GUARD's read-only pages); `[CC]` JIT call-outs into C
+GUARD's read-only pages; since log 30's build the rest of the frame is split into the ELAN's own
+command work and the game + sound + others); `[CC]` JIT call-outs into C
 (JIT CCALLS); `[HOT]` hottest blocks (JIT HOTBLOCKS, ~12% cost); `[mem]` guest page pool;
 `[2P]` split-screen passes.
 

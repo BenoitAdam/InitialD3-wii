@@ -1819,6 +1819,8 @@ inline bool quickFar(const ModelBoxDistance& d, const Light& l)
 // The list being drawn, for its model's box (naomi_elan_cmd.cpp).
 float s_listBox[6];
 int s_listBoxState = kListNoBox;
+// CACHE HINTS: the GPU fetch slot (+ 1) its box came from, 0: none.
+u32 s_listFetchSlot = 0;
 
 inline bool listIsLit()
 {
@@ -2059,6 +2061,7 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     r.fetchSlot = 0;
     const bool boxed = g_elan_box_preset && (elan_gx_list_box(r.vtx, count, vertexSize, mbox, &r.fetchSlot) ||
                                              droppedBox(r.vtx, count, vertexSize, mbox));
+    s_listFetchSlot = boxed ? r.fetchSlot : 0;
     bool measure = pointLit || !pinned || due;
     ModelBoxDistance lightDistance;                  // point-lit, not measured: lights against the box
     if (boxed)
@@ -2523,6 +2526,11 @@ int tnl_ListBox(float* box)
     return s_listBoxState;
 }
 
+u32 tnl_ListFetchSlot()
+{
+    return s_listFetchSlot;
+}
+
 void tnl_ResetState()
 {
     s_xformGen++;
@@ -2641,6 +2649,7 @@ int tnl_DrawList(const u32* w, u32 vertexSize, int listType)
     if (s_deferredMaterial)
         tnl_SetMaterial(s_deferredMaterial);
     s_listBoxState = kListNoBox;
+    s_listFetchSlot = 0;
     const u32 pcw = w[0];
     const u32 layout = w[6];
     const u32 count = w[7];

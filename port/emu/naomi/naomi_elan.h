@@ -148,6 +148,10 @@ extern "C" int g_mirror_preset;
 // it in the lists outside models (naomi_elan_cmd.cpp), 0 = it does not.
 extern "C" int g_elan_prefetch_preset;
 extern "C" int g_elan_model_prefetch_preset;    // MODEL PREFETCH (naomi_elan_cmd.cpp)
+// Launch option CACHE HINTS (naomi_elan_cmd.cpp; naomi_elan_gx.h tells what it
+// does): 1 = more cache lines asked for ahead, and the Wii's per-render tables
+// filled without reading their lines first. Speed only.
+extern "C" int g_cache_hints_preset;
 // Launch option SMALL 3D (GPU T&L with 3D LIST CULL): lists and whole models
 // whose box spans fewer than this many pixels on screen are not drawn; 0 = all
 // drawn (naomi_elan_tnl.cpp, tooSmall).
@@ -189,6 +193,8 @@ u32 tnl_ListsIndexed();
 // What tnl_DrawList knew of its list's box: copied to box[6] when kListBoxed.
 enum { kListNoBox, kListBoxed, kListNotDrawn };
 int tnl_ListBox(float* box);
+// ...and the GPU fetch slot (+ 1) that box came from, 0: none (CACHE HINTS).
+u32 tnl_ListFetchSlot();
 // Transforms one polygon list and feeds the result to the TA. `listType` is
 // the TA's open list (-1 if none); returns the list type now open.
 int tnl_DrawList(const u32* w, u32 vertexSize, int listType);

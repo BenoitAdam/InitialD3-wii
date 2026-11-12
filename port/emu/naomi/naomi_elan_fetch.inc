@@ -177,6 +177,42 @@ inline u32 progSpan(const FetchList& e)
     return boxPos(e.prog, e.len) + kBoxWords - e.prog;
 }
 
+// CACHE HINTS: the lines cachedBox will read for a list known ahead of its
+// recording (a model's remembered lists: slot + 1, ELAN offset of its records):
+// its table entry (40 bytes, up to two lines) and its first page's state. On a
+// Wii none of these tables stays in the cache from one frame to the next (the
+// game's own work in between is far bigger than the 256 KB L2). Hints only.
+inline void prefetchListTables(u32 slot, u32 off)
+{
+#if defined(__GNUC__)
+    if (!s_lists || !slot || slot > kFetchSlots)
+        return;
+    const u8* const e = (const u8*)&s_lists[slot - 1];
+    __builtin_prefetch(e);
+    __builtin_prefetch(e + sizeof(FetchList) - 1);
+    if (s_pages && off < kElanBytes)
+        __builtin_prefetch(&s_pages[off >> 12]);
+#else
+    (void)slot;
+    (void)off;
+#endif
+}
+
+// ...and, its entry in by then, the box after its program.
+inline void prefetchListBox(u32 slot)
+{
+#if defined(__GNUC__)
+    if (!s_lists || !s_prog || !slot || slot > kFetchSlots)
+        return;
+    const FetchList& e = s_lists[slot - 1];
+    const u32 at = boxPos(e.prog, e.len);
+    if (e.key && at < s_progWords)
+        __builtin_prefetch(s_prog + at);
+#else
+    (void)slot;
+#endif
+}
+
 // One list's program, written at the ring's head.
 struct ProgramBuilder
 {

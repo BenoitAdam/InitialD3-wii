@@ -1762,6 +1762,8 @@ int main(int argc, char** argv)
         g_sound_step_preset = atoi(v);         // SOUND STEP: the sound output hash must not change
     if (const char* v = argValue(argc, argv, "--sh4-slice"))
         g_sh4_wide_slice_preset = atoi(v);     // SH-4 TIMESLICE: 1 = 3584 cycles
+    if (const char* v = argValue(argc, argv, "--cache-hints"))
+        g_cache_hints_preset = atoi(v);        // CACHE HINTS: hints only on the PC, digests must not change
     if (const char* cu = argValue(argc, argv, "--cull"))
     {
         // BACKFACE CULL: 2 = the polygons' own cull modes (the launcher's ON),

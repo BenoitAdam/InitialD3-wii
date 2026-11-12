@@ -234,6 +234,7 @@ struct FpHwWin
 {
   u64 frame[4], rend[4];   // counter deltas: whole frames, displayed 3D renders
   u64 frameTb, rendTb;     // the same spans in time base ticks
+  u64 elan[4], elanRunTb;  // NAOMI 2 ELAN command runs (outside renders)
   u32 frames, renders;
   u64 elanTb, elanVerts;   // ELAN GPU lists drawn inside those renders
   u64 elanFetch, elanBuild, elanWrote;   // ...their vertices by GPU fetch outcome
@@ -245,8 +246,9 @@ struct FpHwWin
   u64 gpBacklogTb;         // ...and how long after the CPU it came
 };
 static FpHwWin s_hw;
-static FpPmc s_pmc_frame0, s_pmc_rend0;
-static bool s_frame_open = false, s_rend_open = false;
+static FpPmc s_pmc_frame0, s_pmc_rend0, s_pmc_elan0;
+static bool s_frame_open = false, s_rend_open = false, s_elan_open = false;
+static u32 s_elan_run_t0 = 0;
 static u32 s_rend_t0 = 0, s_ovf0 = 0, s_elan_t0 = 0, s_elan_v0 = 0;
 static u32 s_elan_f0 = 0, s_elan_b0 = 0, s_elan_w0 = 0, s_elan_g0 = 0, s_elan_p0 = 0, s_elan_resets0 = 0;
 static u32 s_elan_progs0 = 0, s_elan_patches0 = 0, s_elan_wraps0 = 0, s_elan_bounds0 = 0, s_elan_gaps0 = 0;
@@ -339,6 +341,30 @@ void frame_prof_render_end()
     s_gp_cpu_end = t;
     s_gp_n_at_end = n0;
   }
+}
+
+// ELAN command runs: inside a frame span, never inside a render (the SH-4
+// starts them by a register write; renders run at STARTRENDER).
+void frame_prof_elan_begin()
+{
+  if (!FRAME_PROF_ON() || s_pmc_set < 0 || !s_frame_open || s_rend_open || s_elan_open)
+    return;
+  s_elan_run_t0 = FP_TICKS32();
+  fp_pmc_read(s_pmc_elan0);
+  s_elan_open = true;
+}
+
+void frame_prof_elan_end()
+{
+  if (!s_elan_open)
+    return;
+  s_elan_open = false;
+  FpPmc p;
+  fp_pmc_read(p);
+  const u32 t = FP_TICKS32();
+  for (int k = 0; k < 4; k++)
+    s_hw.elan[k] += p.c[k] - s_pmc_elan0.c[k];
+  s_hw.elanRunTb += t - s_elan_run_t0;
 }
 
 static double fp_tb_ms(u64 t)
@@ -435,10 +461,14 @@ static void fp_hw_dump()
   else
     fp_out("[HW] 3D renders shown: 0 in %u frames\n", w.frames);
 
-  u64 rest[4];
+  u64 rest[4], game[4];
   for (int k = 0; k < 4; k++)
+  {
     rest[k] = w.frame[k] > w.rend[k] ? w.frame[k] - w.rend[k] : 0;
+    game[k] = rest[k] > w.elan[k] ? rest[k] - w.elan[k] : 0;
+  }
   const u64 restTb = w.frameTb > w.rendTb ? w.frameTb - w.rendTb : 0;
+  const u64 gameTb = restTb > w.elanRunTb ? restTb - w.elanRunTb : 0;
 
   if (s_pmc_set == 0)
   {
@@ -455,6 +485,18 @@ static void fp_hw_dump()
            100.0 * fp_ratio(w.rend[3], w.rend[0]),
            fp_ratio(rest[1], rest[0]), 100.0 * fp_ratio(rest[2], rest[0]),
            100.0 * fp_ratio(rest[3], rest[0]));
+    // The rest split in two: the ELAN's command runs (its walk and the
+    // recording of its lists: `elan` in FPROF) and everything else (the game's
+    // code, sound, devices).
+    if (w.elanRunTb)
+      fp_out("[HW] CPU counters A, the rest: ELAN commands %.2f ms a frame, IPC %.2f, load-miss %.0f%%, DTLB %.0f%%"
+             " | game, sound and the others %.2f ms a frame, IPC %.2f, load-miss %.0f%%, DTLB %.0f%%\n",
+             w.frames ? fp_tb_ms(w.elanRunTb) / w.frames : 0.0,
+             fp_ratio(w.elan[1], w.elan[0]), 100.0 * fp_ratio(w.elan[2], w.elan[0]),
+             100.0 * fp_ratio(w.elan[3], w.elan[0]),
+             w.frames ? fp_tb_ms(gameTb) / w.frames : 0.0,
+             fp_ratio(game[1], game[0]), 100.0 * fp_ratio(game[2], game[0]),
+             100.0 * fp_ratio(game[3], game[0]));
   }
   else
   {
@@ -469,6 +511,14 @@ static void fp_hw_dump()
            rms > 0 ? w.rend[0] / rms : 0.0, rms > 0 ? w.rend[2] / rms : 0.0,
            fp_ratio(w.rend[2], w.elanVerts),
            rms > 0 ? w.rend[1] / rms : 0.0, rms > 0 ? w.rend[3] / rms : 0.0);
+    const double ems = fp_tb_ms(w.elanRunTb), gms = fp_tb_ms(gameTb);
+    if (ems > 0)
+      fp_out("[HW] CPU counters B, the rest, per ms: ELAN commands: L2 hits %.0f, L2 data misses %.0f,"
+             " L1 instruction misses %.0f, mispredicted branches %.0f | game, sound and the others: L2 hits %.0f,"
+             " L2 data misses %.0f, L1 instruction misses %.0f, mispredicted branches %.0f\n",
+             w.elan[0] / ems, w.elan[2] / ems, w.elan[1] / ems, w.elan[3] / ems,
+             gms > 0 ? game[0] / gms : 0.0, gms > 0 ? game[2] / gms : 0.0,
+             gms > 0 ? game[1] / gms : 0.0, gms > 0 ? game[3] / gms : 0.0);
   }
 
   // Next window counts the other set. Called between vblank and resume, so
@@ -480,6 +530,8 @@ static void fp_hw_dump()
 void frame_prof_render_begin() {}
 void frame_prof_render_end() {}
 void frame_prof_gp_done() {}
+void frame_prof_elan_begin() {}
+void frame_prof_elan_end() {}
 #endif
 
 static bool fp_alloc()

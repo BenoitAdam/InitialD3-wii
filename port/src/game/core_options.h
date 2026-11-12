@@ -130,6 +130,7 @@ enum CoreOptionId
     OPT_DRAW_MEMO,
     OPT_SOUND_STEP,
     OPT_SH4_SLICE,
+    OPT_CACHE_HINTS,
     kCoreOptionCount
 };
 
@@ -412,6 +413,11 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // cadence in cycles, interrupts are seen up to 18 us later.
     {"SH-4 TIMESLICE", "SH-4 runs longer between device updates: half the C calls (devices keep their pace)",
      PAGE_CORE, 1, 2, {"1792 (OLD)", "3584 (WIDER)"}, {0, 1}},
+    // More cache lines asked for ahead (a model's lists' fetch tables and boxes,
+    // the draw's matrices and light sets, gxRend's strip arrays), and the 3D
+    // tables' next lines zeroed in the cache instead of read (naomi_elan_gx.h).
+    {"CACHE HINTS   ", "3D tables loaded ahead and written without reading them first (same picture)",
+     PAGE_DEPTH_2, 1, 2, {"OFF (OLD)", "ON"}, {0, 1}},
 };
 
 // The order a page shows its rows in (the launcher walks this list and keeps the
@@ -430,6 +436,7 @@ inline constexpr CoreOptionId kCoreOptionOrder[kCoreOptionCount] = {
     OPT_P2_SCENERY, OPT_4BPP, OPT_8BPP, OPT_ELAN_GX, OPT_ELAN_FETCH, OPT_TEX_CACHE, OPT_VQ_CMPR,
     OPT_TMEM_CACHE, OPT_COLOUR_FETCH, OPT_ELAN_PREFETCH, OPT_MODEL_PREFETCH, OPT_HEADLIGHTS,
     OPT_MOTION_FX, OPT_MOTION_LEVEL, OPT_BETWEEN_WARP, OPT_LIST_MATHS, OPT_WALK_DECODE, OPT_DRAW_MEMO,
+    OPT_CACHE_HINTS,
     // AUDIO
     OPT_AUDIO_SYNC, OPT_AUDIO_BLOCK, OPT_AUDIO_DRC, OPT_SOUND_CLOCK, OPT_DIMM_AHEAD, OPT_SOUND_MIX,
     OPT_SFX_MENU, OPT_SFX_TIRE, OPT_SOUND_STEP,

@@ -180,6 +180,10 @@ void frame_prof_dump(double secs); // no-op unless the preset is on
 void frame_prof_render_begin();    // around the displayed-frame DoRender()
 void frame_prof_render_end();
 void frame_prof_gp_done();         // the GX draw-done interrupt
+// Around each NAOMI 2 ELAN command run (naomi_elan.cpp): the walk and the
+// recording of its lists get counters of their own, inside "rest of the frame".
+void frame_prof_elan_begin();
+void frame_prof_elan_end();
 extern u32 g_fp_elan_ticks;        // ELAN GPU lists drawn (time base ticks)
 extern u32 g_fp_elan_verts;        // ...and their vertices, of which (naomi_elan_gx.cpp GPU fetch):
 extern u32 g_fp_elan_fetch;        //   read by the GPU from a list's cached program

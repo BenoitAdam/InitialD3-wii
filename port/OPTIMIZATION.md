@@ -394,6 +394,8 @@ render. Menus, attract mode and car select run at 100%.
 | 11-05 | COLOUR LISTS (colour lists through the GPU fetch as RGB8) | log 25 (day course, in-car, every frame drawn): colour vertices 1.1-1.6K -> 0, render CPU -0.35 to -0.42 ms, **100% the whole race** (59.4-60.1 fps, p50 15.5-16.3) |
 | 11-05 | Audio push never waits with SOUND CLOCK REAL TIME | log 25 (night, AUTO): `snd` 25% -> 0, 0 drops; 100% speed with ~36 renders shown a second (29-46) |
 | 11-05 | ELAN PREFETCH (run-ahead dcbt in the lists outside models), walk split by dropped/drawn frames | 2P log 1 (2 PLAYERS, day, ON only): dropped-frame walk 460-510 ns a header (~700 estimated before), drawn 760-810; an OFF run still to come |
+| 11-12 | LIST MATHS, 3D DECODE, DRAW MEMO (newlib's `sqrtf` loop and the divisions out of the recording, decode and draw), SOUND STEP, SH-4 TIMESLICE 3584 | log 30 (night Akina, every frame drawn, MIRROR OFF + GAME SKIP): **in-car 59.3-60.8 fps nearly all race**, p50 15.0-15.5, walk ~800 ns a command (928), timeslice call-outs halved; chase view 45-54 |
+| 11-12 | CACHE HINTS (`dcbz` on the per-render tables, prefetches in the draw, the walk and gxRend's strip loop), PMC split of the ELAN phase | awaiting log 31 |
 | 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
@@ -487,7 +489,79 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
-### Done 2026-11-12: five items behind presets (awaiting log 28)
+### Log 30 (2026-11-12): night Akina with the five items
+
+Two runs, FRAMESKIPPING 0, MIRROR OFF + GAME SKIP, the five items below on (owner: "more
+performance indeed"): uphill with JIT CCALLS off, downhill with it on (its census costs `arm` ~0.4
+and `sh4` some).
+
+- **In-car: 59.3-60.8 emulated fps for nearly all of the race**, p50 15.0-15.5 ms. Typical frame
+  (uphill 8400-8520, 477 lists drawn, 44K vertices, 567 boxes): `sh4` 6.95, `elan` 3.50 (walk 1.68
+  ms, 2113 commands at 796 ns; T&L 2.06), `rend` 1.44 (CPU 1.67 ms a render, of it the draw 1.01:
+  cached programs 0.23 + the rest 0.78 = 1.6 us a list), `arm` 1.16, `aica` 1.16. Heaviest stretch
+  (uphill 9000-9360: ~74K vertices in, 744-764 boxes, ELAN 4.6 ms): 53.6-58 fps.
+- Against log 27 (same course and view, items not separable): the walk 928 -> ~800 ns a command,
+  the draw's rest 1.6-1.9 us a list (log 25: 2.0-2.1), T&L 3.2-3.8 us a box (log 27 up to 4.2), the
+  timeslice call-outs ~1870 -> 933 a frame. Nothing broke with the 3584-cycle timeslice (music,
+  input, races).
+- **Chase view at night (downhill ~8520-9360): 45-54 fps**, p50 18.9-19.8. Against in-car: `sh4`
+  +2 ms (9.0-9.2 with CCALLS on: the game's own work, more objects in view; the rest-of-frame IPC is
+  higher there, so it is more instructions, not more stalls), `elan` ~4.5 (+1.3: walk 2.1-2.3 ms at
+  750-790 ns, T&L 2.6-3.0 at ~3.5 us a box), `rend` 1.8-2.0 (+0.6). FRAMESKIPPING AUTO is the
+  answer there for now (S ~12, D ~19: ~70% of frames drawn).
+- Memory behaviour: renders run at IPC ~0.60 with 36-42% of their cycles in L1 load misses; set B
+  gives ~230 L2 hits against ~2400-2600 L2 data misses a ms. Next to nothing the ELAN recording
+  touches is still in the 256 KB L2 when the render reads it (~5000 misses a render, ~8 a list):
+  the tables are walked once each way, so only ordering and hints help (no reuse to keep).
+  Rest of the frame: IPC 0.45, load-miss 16%.
+- FPROF tails in these runs are `snd` (+20 ms in the p95 frames): the pacing wait at 100% speed,
+  not work. `mem` tails of 2-4 ms are page compressions; one-off texture decode bursts of 40-67 ms.
+
+### Done 2026-11-12 (2): CACHE HINTS and the ELAN phase's counters (awaiting log 31)
+
+**CACHE HINTS** (RENDERING 2, last row, default ON; OFF (OLD) keeps the old code). Exact: hints and
+line zeroing only, the picture cannot change. Broadway has no hardware prefetcher, and every
+write to a line not in the cache first reads it from memory (write-allocate).
+
+- The Wii's per-render tables (`s_items` 24 B, `s_xforms` 108 B, `s_lsets` 560 B entries, all
+  `memalign(32)`, filled front to back from 0 each render) are zeroed one line at a time with `dcbz`
+  just before the recording first writes into a line (`zeroFront`: a front pointer per table,
+  reset with the tables; a static_assert keeps every table a whole number of lines). Each line is
+  then written without being read from memory first: ~500 items, ~250 matrices, ~15-20 sets a
+  night render, ~2.4K lines.
+- The draw (`prefetchAhead`): the item 5 ahead, the matrix (4 lines) and light set of the item 2
+  ahead when they differ from the one before, the whole light set (its lit lights and beam) of the
+  next item, ahead of the fetch-table prefetches it already did.
+- The walk: MODEL PREFETCH's 8 remembered headers per model now also keep the fetch slot the list
+  found when it was last recorded (`ModelHeads`, 32 KB of bss), or mark a material header. At the
+  model's call, before its commands are read, the fetch-table entry and page state of each list
+  (`prefetchListTables`) and the material's body are asked for, then each list's box in the program
+  ring (`prefetchListBox`: needs the entry, so asked for second). With MODEL PREFETCH OFF, CACHE
+  HINTS still prefetches the tables; the headers only with MODEL PREFETCH.
+- gxRend's strip loop: the vertex list 16 entries ahead, the poly param 4 ahead and the ELAN item
+  index 32 ahead.
+
+Expected: ~0.3-1 ms in heavy scenes (render load-miss 36-42% of ~1.7 ms, the walk ~800 ns a
+command), unmeasured. To read in log 31: `rend` and "ELAN draw a render: the rest us a list",
+the walk's ns a command, `elan` T&L us a box, and the new counters.
+
+**PMC split of the ELAN phase** (PROFILER): `frame_prof_elan_begin/end` around each ELAN command
+execution (`naomi_elan.cpp`), outside renders. The `[HW] CPU counters` lines gain "the rest: ELAN
+commands X ms a frame, IPC, load-miss, DTLB | game, sound and the others ..." (set A) and per ms:
+L2 hits, L2 data misses, L1 instruction misses, mispredicted branches for both (set B). They tell
+whether the walk and recording are stall-bound (low IPC, high load-miss: hints and layout) or
+instruction-bound (code to cut).
+
+Windows checks (2026-11-12): `--cache-hints 1` with the five items on, on the day driving route to
+frame 13500 (`--mirror 2`, same flags as the five items' check below). The prefetches compile to
+nothing under MSVC and `dcbz` is Wii-only, so this checks the slot bookkeeping. Results: all 166
+record digests and the sound hash (76C69E74C0595C38) identical to the run without it, DRAW MEMO
+0 WRONG, 0 STALE boxes. Unit tests pass. The Wii build compiles; boot.elf has the three `dcbz`
+loops in `elan_gx_record`. Every Item field is written by the recording, and matrices and light
+sets are whole-struct copies, so a zeroed line hides nothing. The front pointers are only reset
+with the counts (allocation, `elan_gx_frame_reset`).
+
+### Done 2026-11-12: five items behind presets (log 30: in-car night ~100%)
 
 The owner reported 90% in a night race (no log yet: view and course not known; log 27's heaviest
 in-car stretch was 55-58 fps, ~17.6 ms). Found on the way, the lever behind items 1-3: **Broadway
@@ -1052,7 +1126,16 @@ there; the push runs free in that mode since (Done after log 24).
 
 ## What is left, best first
 
-After the five items of 2026-11-12 (awaiting log 28): first read what they gave (`elan` T&L us a
+After log 30: night in-car is ~100% with every frame drawn except its heaviest stretch (53.6-58
+fps, ~17.5 ms); the night chase view is 45-54 (p50 ~19-20 ms), ~2.5-3 ms short, of which `sh4`
+is +2 ms of the game's own work. CACHE HINTS (awaiting log 31) aims at the render's and the walk's
+memory stalls. Next, by what log 31's counters say: if the ELAN phase is stall-bound, the layout of
+what the recording writes and the render reads (one pass, a smaller Item, light sets by index);
+if instruction-bound, its code. For the chase view: a JIT HOTBLOCKS run there (which game routines
+grow against in-car; the mirror pass was found that way). Under FRAMESKIPPING AUTO the chase view
+should already hold 100% with ~70% of frames drawn.
+
+After the five items of 2026-11-12 (log 30 read them above): first read what they gave (`elan` T&L us a
 list with a box, the walk's ns a command, `rend`, `sh4`), and the night view/course that showed 90%.
 Left after them: the walk's memory stalls (a compiled form of models only if a log shows the
 headers inside models still stall, see item 2 above), per-list GX state in gxRend's draw loop for
