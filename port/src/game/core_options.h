@@ -125,6 +125,11 @@ enum CoreOptionId
     OPT_JIT_FRSWAP,
     OPT_MODEL_PREFETCH,
     OPT_SOUND_MIX,
+    OPT_LIST_MATHS,
+    OPT_WALK_DECODE,
+    OPT_DRAW_MEMO,
+    OPT_SOUND_STEP,
+    OPT_SH4_SLICE,
     kCoreOptionCount
 };
 
@@ -385,6 +390,28 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // and the sound CPU see is unchanged.
     {"SOUND MIX     ", "HALF: voices mixed every other sample (22 kHz, duller); no gain measured on a Wii", PAGE_AUDIO, 0, 2,
      {"FULL (EXACT)", "HALF (FASTER)"}, {0, 1}},
+    // The Wii has no square root instruction: libm's sqrtf is a 25-step loop
+    // (~300 cycles), and a night list took 2-3 of them (naomi_elan_tnl.cpp,
+    // sqrtUp): its box's size, its sphere (now only for HEADLIGHTS SOFT/SMOOTH).
+    {"LIST MATHS    ", "3D lists' light and cull bounds without the Wii's slow software square root (night)",
+     PAGE_DEPTH_2, 1, 2, {"LIBM (OLD)", "FAST"}, {0, 1}},
+    // Materials and lights decoded with tables instead of divisions and ldexpf,
+    // the box test's matrix scale without sqrtf (naomi_elan_tnl.cpp). Exact.
+    {"3D DECODE     ", "3D materials, lights and box tests decoded without libm calls (same results)",
+     PAGE_DEPTH_2, 1, 2, {"LIBM (OLD)", "TABLES"}, {0, 1}},
+    // The draw takes each list's GPU program from the slot found when the ELAN
+    // recorded it, and the normal matrix's scale without sqrtf (naomi_elan_gx.cpp).
+    {"DRAW MEMO     ", "3D draw reuses what recording found (program slot); matrix scale without libm",
+     PAGE_DEPTH_2, 1, 2, {"OFF (OLD)", "ON"}, {0, 1}},
+    // AICA timers and interrupt lines only updated when a sample can change them,
+    // a voice's stream stepped only when it moves (aica.cpp, sgc_if.cpp). Exact.
+    {"SOUND STEP    ", "sound chip timers and interrupts updated only when they change (same sound)", PAGE_AUDIO, 1, 2,
+     {"PER SAMPLE (OLD)", "LAZY"}, {0, 1}},
+    // SH-4 cycles between two peripheral updates (sh4_interpreter.cpp): 3584
+    // halves the ~1870 C calls a frame; sound, DMA and the rest keep their
+    // cadence in cycles, interrupts are seen up to 18 us later.
+    {"SH-4 TIMESLICE", "SH-4 runs longer between device updates: half the C calls (devices keep their pace)",
+     PAGE_CORE, 1, 2, {"1792 (OLD)", "3584 (WIDER)"}, {0, 1}},
 };
 
 // The order a page shows its rows in (the launcher walks this list and keeps the
@@ -402,12 +429,12 @@ inline constexpr CoreOptionId kCoreOptionOrder[kCoreOptionCount] = {
     // RENDERING 2
     OPT_P2_SCENERY, OPT_4BPP, OPT_8BPP, OPT_ELAN_GX, OPT_ELAN_FETCH, OPT_TEX_CACHE, OPT_VQ_CMPR,
     OPT_TMEM_CACHE, OPT_COLOUR_FETCH, OPT_ELAN_PREFETCH, OPT_MODEL_PREFETCH, OPT_HEADLIGHTS,
-    OPT_MOTION_FX, OPT_MOTION_LEVEL, OPT_BETWEEN_WARP,
+    OPT_MOTION_FX, OPT_MOTION_LEVEL, OPT_BETWEEN_WARP, OPT_LIST_MATHS, OPT_WALK_DECODE, OPT_DRAW_MEMO,
     // AUDIO
     OPT_AUDIO_SYNC, OPT_AUDIO_BLOCK, OPT_AUDIO_DRC, OPT_SOUND_CLOCK, OPT_DIMM_AHEAD, OPT_SOUND_MIX,
-    OPT_SFX_MENU, OPT_SFX_TIRE,
+    OPT_SFX_MENU, OPT_SFX_TIRE, OPT_SOUND_STEP,
     // CORE (the SH-4 CPU choice heads this page, the launcher adds it)
-    OPT_IDLE_SKIP, OPT_MEM_SWEEP, OPT_PAGE_GUARD,
+    OPT_IDLE_SKIP, OPT_MEM_SWEEP, OPT_PAGE_GUARD, OPT_SH4_SLICE,
     // RECOMPILER
     OPT_JIT_SBP, OPT_JIT_ICI, OPT_FASTMEM, OPT_BCACHE, OPT_DYN_IC, OPT_FPU_PIN, OPT_JIT_ALIGN,
     OPT_IFB_FLUSH, OPT_JIT_NEWOPS, OPT_JIT_TFWD, OPT_JIT_FMOV, OPT_JIT_CARRY, OPT_JIT_MAC, OPT_JIT_FSCHG,

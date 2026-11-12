@@ -74,6 +74,12 @@ f32 sin_table[0x10000 + 0x4000];
 // -------------------------------------------------------------------------
 // Active timing parameters — set at the top of Sh4_int_Run() from preset
 // -------------------------------------------------------------------------
+// SH-4 TIMESLICE (launch page): 1 = with the FAST preset, twice its timeslice
+// and the tiers half as many slices apart (see ApplyAccuracyPreset).
+extern "C" {
+int g_sh4_wide_slice_preset = 0;
+}
+
 static s32 s_timeslice     = SH4_TIMESLICE_ACCURATE;
 static s32 s_cpu_ratio     = SH4_CPU_RATIO_ACCURATE;
 static u32 s_medium_period = SH4_MEDIUM_ACCURATE;
@@ -93,6 +99,18 @@ static void ApplyAccuracyPreset()
 		s_medium_period = SH4_MEDIUM_FAST;
 		s_slow_period   = SH4_SLOW_FAST;
 		s_vslow_period  = SH4_VSLOW_FAST;
+		// SH-4 TIMESLICE = 3584: half the UpdateSystem calls (~1870 a frame,
+		// each a C call from the recompiled code and a dispatch after it). The
+		// tiers come half as many slices apart, so sound, DMA, the drive and
+		// Maple keep their cadence in cycles (7168 / 14336 / 28672); TMU, the
+		// SPG and pending interrupts are seen every 3584 cycles (18 us).
+		if (g_sh4_wide_slice_preset)
+		{
+			s_timeslice     = SH4_TIMESLICE_FAST * 2;
+			s_medium_period = SH4_MEDIUM_FAST / 2;
+			s_slow_period   = SH4_SLOW_FAST / 2;
+			s_vslow_period  = SH4_VSLOW_FAST / 2;
+		}
 		printf("Sh4: accuracy preset = FAST (timeslice %d)\n", s_timeslice);
 	}
 	else if (preset == 1)  // Balanced

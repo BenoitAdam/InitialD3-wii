@@ -8,6 +8,8 @@
 extern u64 AicaVoxTicks;
 extern u32 AicaVoiceSum;
 extern u32 AicaSampleCount;
+extern "C" int g_sound_step_preset;   // SOUND STEP (aica.cpp)
+extern "C" int g_frame_prof_preset;   // PROFILER (plugs/drkPvr/frame_prof.cpp)
 
 #if HOST_OS == OS_WII
 // config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc defines them.
@@ -1132,7 +1134,20 @@ static INLINE void ChannelStepFast(ChannelEx* ch, bool dsp_on, SampleType& ml, S
     case EG_Decay2:  AegStep<2>(ch); break;
     case EG_Release: AegStep<3>(ch); break;
     }
-    ch->StepStream(ch);
+    if (g_sound_step_preset)
+    {
+        // SOUND STEP: a voice that does not reach its next sample this time only
+        // moves its fraction, which is all StreamStep (every StepStream is one)
+        // would do before returning: no indirect call for it.
+        fp_22_10 sp = ch->step;
+        sp.full += ch->update_rate;
+        if (sp.ip == 0)
+            ch->step = sp;
+        else
+            ch->StepStream(ch);
+    }
+    else
+        ch->StepStream(ch);
     ch->lfo.Step(ch);
 }
 
@@ -1360,14 +1375,18 @@ void AICA_Sample()
     if (!fast || dsp_on)
         memset(dsp.MIXS, 0, sizeof(dsp.MIXS));
 
-    const u64 t_vox = SGC_PERF_TICKS();
+    // The voices' time, for the PROFILER's per-second line only: SOUND STEP
+    // leaves its two clock reads a sample out when nobody prints it.
+    const bool timeVox = !g_sound_step_preset || g_frame_prof_preset;
+    const u64 t_vox = timeVox ? SGC_PERF_TICKS() : 0;
     if (hold)
         StepAllState();
     else if (fast)
         GenerateAllFast(dsp_on);
     else
         ChannelEx::GenerateAll();
-    AicaVoxTicks += SGC_PERF_TICKS() - t_vox;
+    if (timeVox)
+        AicaVoxTicks += SGC_PERF_TICKS() - t_vox;
     AicaSampleCount++;
     g_aica_samples_total++;
 

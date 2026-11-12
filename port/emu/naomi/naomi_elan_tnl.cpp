@@ -26,6 +26,8 @@
 int g_depth_plane_preset = 0;     // DEPTH MEASURE, 1 = RACE PLANE (launch page)
 extern "C" {
 int g_small_cull_preset = 0;      // SMALL 3D, in pixels (launch page)
+int g_list_maths_preset = 0;      // LIST MATHS, 1 = bounds without libm's sqrtf (launch page)
+int g_walk_decode_preset = 0;     // 3D DECODE, 1 = materials, lights, box test without libm (launch page)
 }
 extern int g_trans_sort_preset;   // renderer presets (launch page)
 extern int g_autosort_preset;
@@ -93,6 +95,27 @@ inline Vec3 normalize(Vec3 v)
     return l2 > 0.f ? v * rsqrt(l2) : v;
 }
 
+// LIST MATHS: libm's sqrtf on the Wii is a 25-step bit loop (~300 cycles), and a
+// night list paid 2-3 of them for bounds. These are upper bounds of sqrt(x)
+// and 1 / sqrt(x) (x >= 0): rsqrt's Newton steps land below the root (at most
+// ~4e-6 short), the factor puts them above it. A test that only needs a bound
+// (a quick "out of reach", a sphere around a box) keeps its verdict or makes a
+// more careful one, which the exact test after it settles.
+constexpr float kRootUp = 1.0000153f;            // 1 + 2^-16
+inline float sqrtUp(float x)
+{
+    return x > 0.f ? x * rsqrt(x) * kRootUp : 0.f;
+}
+inline float rsqrtUp(float x)
+{
+    return rsqrt(x) * kRootUp;
+}
+// The same root to ~4e-6, no bound (cone angles).
+inline float sqrtFast(float x)
+{
+    return x > 0.f ? x * rsqrt(x) : 0.f;
+}
+
 // x^g for x in (0, 1], g > 0, through 2-term log2 / exp2 approximations
 // (~0.5% error: invisible on a specular highlight, ~10x cheaper than pow).
 inline float fastPow(float x, float g)
@@ -113,8 +136,30 @@ inline float fastPow(float x, float g)
     return asFloat(asWord(p) + ((u32)k << 23));
 }
 
+// 3D DECODE: n / 255 for each byte, filled with the same division (so the same
+// floats) once at start-up: a division is ~18 cycles on the Wii, not pipelined,
+// and a material or light decodes 3-16 of them.
+struct By255
+{
+    float v[256];
+    By255()
+    {
+        for (int i = 0; i < 256; i++)
+            v[i] = (float)i / 255.f;
+    }
+};
+const By255 s_by255;
+
 void unpackColor(u32 argb, float* out)
 {
+    if (g_walk_decode_preset)
+    {
+        out[0] = s_by255.v[(argb >> 16) & 0xFF];
+        out[1] = s_by255.v[(argb >> 8) & 0xFF];
+        out[2] = s_by255.v[argb & 0xFF];
+        out[3] = s_by255.v[argb >> 24];
+        return;
+    }
     out[0] = ((argb >> 16) & 0xFF) / 255.f;
     out[1] = ((argb >> 8) & 0xFF) / 255.f;
     out[2] = (argb & 0xFF) / 255.f;
@@ -977,8 +1022,17 @@ Sphere boxSphere(const Box& b)
 {
     const Vec3 lo = {b.mn[0], b.mn[1], b.mn[2]}, hi = {b.mx[0], b.mx[1], b.mx[2]};
     const Vec3 d = hi - lo;
-    return {{(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f}, std::sqrt(dot(d, d)) * 0.5f};
+    const float r = (g_list_maths_preset ? sqrtUp(dot(d, d)) : std::sqrt(dot(d, d))) * 0.5f;
+    return {{(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f}, r};
 }
+
+// LIST MATHS: only HEADLIGHTS SOFT and SMOOTH look at a list's sphere
+// (pickLights): with ARCADE it is not worked out at all.
+inline bool sphereNeeded()
+{
+    return !g_list_maths_preset || g_headlight_preset;
+}
+constexpr Sphere kNoSphere = {{0.f, 0.f, 0.f}, -1.f};
 
 // A model-space box (min x y z, max x y z) under the instance matrix: its
 // centre, and half its diagonal times the matrix's Frobenius norm (an upper
@@ -993,7 +1047,8 @@ Sphere modelBoxSphere(const float* b, const float* tm)
     for (int k = 0; k < 9; k++)
         f2 += tm[k] * tm[k];
     const float dx = b[3] - b[0], dy = b[4] - b[1], dz = b[5] - b[2];
-    return {{-X, Y, -Z}, std::sqrt(f2 * (dx * dx + dy * dy + dz * dz)) * 0.5f};
+    const float r2 = f2 * (dx * dx + dy * dy + dz * dz);
+    return {{-X, Y, -Z}, (g_list_maths_preset ? sqrtUp(r2) : std::sqrt(r2)) * 0.5f};
 }
 
 // Where a list's sphere lies against a headlight's cone: wholly outside its
@@ -1026,8 +1081,9 @@ ConeSide coneSide(const Light& l, const Sphere& sp)
     // The ELAN's direction points back at the lamp: the axis is its opposite.
     const float cosC = -dot(d, l.dirN) * inv;    // the centre's angle C to the axis
     const float sinD = sp.r * inv;               // the sphere's half angle D seen from the lamp
-    const float cosD = std::sqrt(std::fmax(0.f, 1.f - sinD * sinD));
-    const float sinC = std::sqrt(std::fmax(0.f, 1.f - cosC * cosC));
+    const float cosD2 = std::fmax(0.f, 1.f - sinD * sinD), sinC2 = std::fmax(0.f, 1.f - cosC * cosC);
+    const float cosD = g_list_maths_preset ? sqrtFast(cosD2) : std::sqrt(cosD2);
+    const float sinC = g_list_maths_preset ? sqrtFast(sinC2) : std::sqrt(sinC2);
     if (cosC <= cosD && cosC * cosD + sinC * sinD <= l.coneCos0)
         return kConeOut;                         // C - D >= the edge's angle
     if (cosC * cosD - sinC * sinD >= l.coneCos1)
@@ -1542,7 +1598,7 @@ struct BoxView
     float width, height;
     BoxRow z, edge[4];
     bool edges;
-    float scale;            // pixels per unit at depth 1: the projection's x scale times the matrix's
+    float scaleSq;          // (pixels per unit at depth 1: the projection's x scale times the matrix's)^2
 };
 BoxView s_boxView = {};
 
@@ -1570,7 +1626,14 @@ const BoxView& boxView()
             const float n = t[3 * c] * t[3 * c] + t[3 * c + 1] * t[3 * c + 1] + t[3 * c + 2] * t[3 * c + 2];
             m = n > m ? n : m;
         }
-        v.scale = std::fabs(fx) * std::sqrt(m);
+        // tooSmall only needs its square (3D DECODE: no sqrtf, once a matrix).
+        if (g_walk_decode_preset)
+            v.scaleSq = fx * fx * m;
+        else
+        {
+            const float scale = std::fabs(fx) * std::sqrt(m);
+            v.scaleSq = scale * scale;
+        }
     }
     const struct
     {
@@ -1602,7 +1665,7 @@ inline bool tooSmall(const BoxView& v, const float* box, float zlo)
         return false;
     const float dx = box[3] - box[0], dy = box[4] - box[1], dz = box[5] - box[2];
     const float lim = (float)g_small_cull_preset * zlo;
-    return v.scale * v.scale * (dx * dx + dy * dy + dz * dz) < lim * lim;
+    return v.scaleSq * (dx * dx + dy * dy + dz * dz) < lim * lim;
 }
 
 // Point lights against the model-space box: the light taken into model
@@ -1664,7 +1727,8 @@ struct ModelBoxDistance
             centre = {-(tm[0] * x + tm[3] * y + tm[6] * z + tm[9]), tm[1] * x + tm[4] * y + tm[7] * z + tm[10],
                       -(tm[2] * x + tm[5] * y + tm[8] * z + tm[11])};
             const float dx = b[3] - b[0], dy = b[4] - b[1], dz = b[5] - b[2];
-            half = std::sqrt(dx * dx + dy * dy + dz * dz) * 0.5f;
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            half = (g_list_maths_preset ? sqrtUp(d2) : std::sqrt(d2)) * 0.5f;   // farFrom only needs a bound
         }
         return ok;
     }
@@ -1732,7 +1796,7 @@ struct ModelBoxDistance
         // The largest stretch squared is A^T A's largest eigenvalue, at most its
         // largest row sum (Gershgorin): |column i|^2 + the |dot products|.
         sigma2 = std::fmax(n[0] + off[0], std::fmax(n[1] + off[1], n[2] + off[2])) * 1.001f;
-        invMinScale = 1.f / std::sqrt(minScaleSq);
+        invMinScale = g_list_maths_preset ? rsqrtUp(minScaleSq) : 1.f / std::sqrt(minScaleSq);   // farFrom: a bound
         return true;
     }
 
@@ -1992,7 +2056,8 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
     const bool keepPlane = pinned || (g_depth_plane_preset && nearZ >= kRacePlane);
     const bool due = (index + s_depth.frames) % kDepthWindow == 0;
     float mbox[6];
-    const bool boxed = g_elan_box_preset && (elan_gx_list_box(r.vtx, count, vertexSize, mbox) ||
+    r.fetchSlot = 0;
+    const bool boxed = g_elan_box_preset && (elan_gx_list_box(r.vtx, count, vertexSize, mbox, &r.fetchSlot) ||
                                              droppedBox(r.vtx, count, vertexSize, mbox));
     bool measure = pointLit || !pinned || due;
     ModelBoxDistance lightDistance;                  // point-lit, not measured: lights against the box
@@ -2124,9 +2189,11 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
         // material would have to be a second vertex colour), nor under
         // AUTOSORT (whose peeling owns the TEV stages it would take).
         const bool beamOk = !r.colorFromVertex && !r.envMap && !g_autosort_preset;
+        const bool sphere = sphereNeeded();
         const bool built = measure ? pointLightRecord(r, [&](Vec3 p) { return distanceSq(box, p); },
-                                                      boxSphere(box), beamOk)
-                                   : pointLightRecord(r, lightDistance, modelBoxSphere(mbox, s.matrix.tm), beamOk);
+                                                      sphere ? boxSphere(box) : kNoSphere, beamOk)
+                                   : pointLightRecord(r, lightDistance,
+                                                      sphere ? modelBoxSphere(mbox, s.matrix.tm) : kNoSphere, beamOk);
         if (!built)
             return false;
     }
@@ -2296,9 +2363,18 @@ void tnl_SetLight(const u32* w)
     l = Light();
     l.defined = true;
     memcpy(l.raw, w, sizeof(l.raw));
-    l.color[0] = (w[1] >> 24) / 255.f;
-    l.color[1] = ((w[1] >> 16) & 0xFF) / 255.f;
-    l.color[2] = ((w[1] >> 8) & 0xFF) / 255.f;
+    if (g_walk_decode_preset)
+    {
+        l.color[0] = s_by255.v[w[1] >> 24];
+        l.color[1] = s_by255.v[(w[1] >> 16) & 0xFF];
+        l.color[2] = s_by255.v[(w[1] >> 8) & 0xFF];
+    }
+    else
+    {
+        l.color[0] = (w[1] >> 24) / 255.f;
+        l.color[1] = ((w[1] >> 16) & 0xFF) / 255.f;
+        l.color[2] = ((w[1] >> 8) & 0xFF) / 255.f;
+    }
     // Stored direction points away from the light: negate it.
     l.dir = {-lightDir(w[2] >> 16 & 0xFF, w[0] >> 16 & 15), -lightDir(w[2] >> 8 & 0xFF, w[0] >> 4 & 15),
              -lightDir(w[2] & 0xFF, w[0] & 15)};
@@ -2333,7 +2409,7 @@ void tnl_SetLight(const u32* w)
     else if (l.distAtten && l.distMode && l.distA > 0.f && l.distB < 0.f)
         l.reachSq = (l.distA / l.distB) * (l.distA / l.distB);
     if (l.reachSq < INFINITY)
-        l.reach = std::sqrt(l.reachSq);
+        l.reach = g_list_maths_preset ? sqrtUp(l.reachSq) : std::sqrt(l.reachSq);   // farFrom only needs a bound
     if (isHeadlight(l))
     {
         if (g_headlight_preset == 1)
@@ -2373,10 +2449,14 @@ void tnl_SetMaterial(const u32* w)
     Material& m = s.material;
     m.set = true;
     m.select = w[2];
+    // 3D DECODE: (1 + frac / 32) 2^(exp - 1) is exact in a float either way;
+    // ldexpf is a libm call and frac / 32 a division.
+    static const float kPow2[8] = {0.5f, 1.f, 2.f, 4.f, 8.f, 16.f, 32.f, 64.f};
     for (int vol = 0; vol < 2; vol++)
     {
         const u32 frac = (w[1] >> (vol * 8)) & 31, exp = (w[1] >> (vol * 8 + 5)) & 7;
-        m.gloss[vol] = std::ldexp(1.f + frac / 32.f, (int)exp - 1);
+        m.gloss[vol] = g_walk_decode_preset ? (1.f + (float)frac * (1.f / 32.f)) * kPow2[exp]
+                                            : std::ldexp(1.f + frac / 32.f, (int)exp - 1);
     }
     for (int c = 0; c < 4; c++)
         m.diffuse[0][c] = m.specular[0][c] = m.diffuse[1][c] = m.specular[1][c] = 0.f;

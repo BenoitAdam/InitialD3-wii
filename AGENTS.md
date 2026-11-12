@@ -19,7 +19,20 @@ it exists.
   (MSVC: launcher, headless runner and tests, used for bring-up, censuses and A/B checks).
 - GitHub: `BenoitAdam/Initial-D-3-wii`, branch `main`. The owner commits often themselves.
 
-### Status (2026-11-11)
+### Status (2026-11-12)
+
+- **FIVE SPEED ROWS (built 2026-11-12, awaiting log 28)**. Owner: "90% in night race, need 10%
+  more" (no log: view and course not known). Found: Broadway has no square root instruction and
+  devkitPPC's `sqrtf` is newlib's 25-step bit loop (~300 cycles); a night point-lit list paid 2-3 of
+  them, each lit matrix change at draw 3 more, and each material 4 divisions + 2 `ldexpf`. New rows,
+  all defaulting to the new way, old kept: LIST MATHS (RENDERING 2: frsqrte-based upper bounds,
+  the list's sphere only for HEADLIGHTS SOFT/SMOOTH), 3D DECODE (RENDERING 2: exact tables for
+  colours and gloss, `boxView` scale squared), DRAW MEMO (RENDERING 2: the draw reuses the fetch
+  slot found when recording; normal-matrix scale via frsqrte; ambient not reconverted), SOUND STEP
+  (AUDIO: exact, small), SH-4 TIMESLICE (CORE: 3584 cycles, devices keep their cadence; the only
+  one that changes timing: first suspect). Estimated ~0.8-1.2 ms off a drawn night frame from the
+  first three, ~0.2-0.4 from the timeslice. OPTIMIZATION.md "Done 2026-11-12".
+  "Compiled models" (walk) was not built: MODEL PREFETCH already covers the headers it would save.
 
 - **TEXTURE CACHE VERY FAST+ and VQ AS CMPR (built 2026-11-11, awaiting the owner's Wii test)**.
   Owner: VERY FAST+ with VQ AS CMPR "not very fast", greenish glitches. Runner census (env
@@ -447,6 +460,10 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--mirror 0/1/2` | MIRROR: 0 = models clipped inside the user clip rectangle (the in-car view's rear-view mirror) not drawn; `MIRROR OFF per frame` line. 2 = OFF + GAME SKIP: the game's own mirror view is not drawn (0C024100 returns for the view whose word +138 is 2); exit line `MIRROR OFF + GAME SKIP: N mirror views not drawn`. The race starts in the in-car view (~9350) and each `view` press toggles in-car/chase: with presses at 9950, 10250, 10550 the route is in-car at 9350-9950 and 10300-10550 |
 | `--sound-mix 0/1` | SOUND MIX: 1 = HALF (odd samples step the voices without mixing, the last sample is played again). Exit line `sound output: N samples, hash of all, of the even ones`: HALF must give FULL's even-sample hash exactly (and the same record digests) |
 | `--model-prefetch 0/1` | MODEL PREFETCH: a cache hint only (no effect on the PC's output or digests) |
+| `--list-maths 0/1`, `--walk-decode 0/1` | LIST MATHS, 3D DECODE: record digests must match the run without them (with HEADLIGHTS ARCADE; SOFT/SMOOTH may differ in borderline cone tests), `lights per frame` WRONG must stay 0 |
+| `--draw-memo 0/1` | DRAW MEMO with `--gpu-tnl`: `DRAW MEMO per drawn render` line, every program taken from the recorded slot checked against the full lookup (WRONG must stay 0) |
+| `--sound-step 0/1` | SOUND STEP: the exit line's sound hash must be the one without it |
+| `--sh4-slice 0/1` | SH-4 TIMESLICE: 1 = 3584 cycles (the interpreter takes the same preset): changes timing, so digests and the sound hash change; the route must still reach and drive the race |
 | `--small N` | SMALL 3D with `--gpu-tnl`: lists and whole models under N pixels on screen not drawn; `SMALL 3D per frame` line. Snapshots cannot show it (GPU lists are not drawn in them) |
 | env `IDAS3_FAR_CENSUS=1` | drawn GPU-path vertices and lists by their box's nearest depth and by its size on screen |
 | env `IDAS3_TEXCACHE=N` | texture cache census (`host/texcache_census.cpp`): gxRend's TEXTURE CACHE rules (NORMAL, VERY FAST+ (OLD) slots, VERY FAST+ arena + bind memo, each with and without VQ AS CMPR) replayed on every textured header of a drawn render; a `[texc]` line per policy every N drawn renders (binds, lookups, decodes, KB and texels decoded, binds showing another decode's pixels, decodes over a texture bound earlier in the render, arena wraps), totals and the textures by kind at exit, and both CMPR encoders (`cmpr_encode.h`) checked on the game's VQ 565 and plain RGB565 textures as GX decodes them. Use with `--gpu-tnl` (the ELAN lists' binds) |

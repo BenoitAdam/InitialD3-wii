@@ -97,6 +97,9 @@ struct ElanGxRecord
     // Change counters of the state behind xform / lights (0 = unknown): equal
     // keys mean equal contents, so the copies are shared without comparing.
     u32 xformKey, lightKey;
+    // DRAW MEMO: the list's GPU fetch slot + 1 as found with its box this
+    // render (elan_gx_list_box), 0: none. Not part of what is drawn.
+    u32 fetchSlot;
     ElanGxXform xform;
     ElanGxLightSet lights;
 };
@@ -108,7 +111,12 @@ bool elan_gx_record(const ElanGxRecord& r);
 // The list's bounding box in model space (min x y z, max x y z; empty when
 // min > max), kept with its GPU fetch program while its pages stay unwritten
 // (naomi_elan_fetch.inc). False: none now. Asked when the list is recorded.
-bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6]);
+// *slot: where its program sits (for DRAW MEMO), set only when true.
+bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6], u32* slot);
+// Launch option DRAW MEMO (naomi_elan_gx.cpp): 1 = the draw takes a list's
+// program from the slot found when it was recorded, and its normal matrix's
+// scale without libm's sqrtf.
+extern "C" int g_draw_memo_preset;
 // The renderer's canvas (screen coordinates of the ELAN's projection), from
 // its last 3D render; 0 before the first one.
 void elan_gx_canvas(float& width, float& height);

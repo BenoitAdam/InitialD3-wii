@@ -924,6 +924,11 @@ extern u32 g_ccn_ici_count;   // emu/dc/sh4/ccn.cpp
 extern "C" u32 g_sfx_hits[2];   // plugs/nullAICA/sgc_if.cpp, SOUND LEVELS
 extern "C" u64 g_host_sound_hash_all, g_host_sound_hash_even, g_host_sound_samples;   // host_win.cpp
 extern "C" int g_aica_half_mix_preset;   // SOUND MIX (sgc_if.cpp)
+extern "C" int g_list_maths_preset;      // LIST MATHS (naomi_elan_tnl.cpp)
+extern "C" int g_walk_decode_preset;     // 3D DECODE (naomi_elan_tnl.cpp)
+extern "C" int g_draw_memo_preset;       // DRAW MEMO (naomi_elan_gx.cpp)
+extern "C" int g_sound_step_preset;      // SOUND STEP (aica.cpp)
+extern "C" int g_sh4_wide_slice_preset;  // SH-4 TIMESLICE (sh4_interpreter.cpp)
 
 // --press F:name[,F:name...]: hold a control for 10 frames from frame F
 // (coin, start, view, up, down = shifter, left, right = steering, gas,
@@ -1745,6 +1750,18 @@ int main(int argc, char** argv)
         g_aica_half_mix_preset = atoi(sm);     // SOUND MIX: 1 = HALF
     if (const char* mp = argValue(argc, argv, "--model-prefetch"))
         g_elan_model_prefetch_preset = atoi(mp);   // MODEL PREFETCH (a cache hint: no effect on the PC's output)
+    // The launcher's speed rows of 2026-11-12 (1 = the new way; the runner's
+    // default is the old one, so record digests compare with earlier runs).
+    if (const char* v = argValue(argc, argv, "--list-maths"))
+        g_list_maths_preset = atoi(v);         // LIST MATHS: bounds without libm's sqrtf
+    if (const char* v = argValue(argc, argv, "--walk-decode"))
+        g_walk_decode_preset = atoi(v);        // 3D DECODE: tables instead of divisions, ldexpf, sqrtf
+    if (const char* v = argValue(argc, argv, "--draw-memo"))
+        g_draw_memo_preset = atoi(v);          // DRAW MEMO: `DRAW MEMO per drawn render` line, WRONG must stay 0
+    if (const char* v = argValue(argc, argv, "--sound-step"))
+        g_sound_step_preset = atoi(v);         // SOUND STEP: the sound output hash must not change
+    if (const char* v = argValue(argc, argv, "--sh4-slice"))
+        g_sh4_wide_slice_preset = atoi(v);     // SH-4 TIMESLICE: 1 = 3584 cycles
     if (const char* cu = argValue(argc, argv, "--cull"))
     {
         // BACKFACE CULL: 2 = the polygons' own cull modes (the launcher's ON),

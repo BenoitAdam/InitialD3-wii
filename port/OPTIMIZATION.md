@@ -487,6 +487,80 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
+### Done 2026-11-12: five items behind presets (awaiting log 28)
+
+The owner reported 90% in a night race (no log yet: view and course not known; log 27's heaviest
+in-car stretch was 55-58 fps, ~17.6 ms). Found on the way, the lever behind items 1-3: **Broadway
+has no square root instruction and devkitPPC's `sqrtf` is newlib's bit-by-bit loop**
+(`__ieee754_sqrtf`: 25 iterations with a data-dependent branch, a store/load through the stack,
+plus the errno wrapper: ~300 cycles, ~0.4 us). `powerpc-eabi-objdump` of boot.elf showed it in
+`tnl_DrawList` (4 sites, the inlined recording), `elan_gx_draw` (3), `coneSide` (2), `boxView`
+(1), and `ldexpf` twice in `tnl_SetMaterial`. A night point-lit list paid 2-3 of them (its box's
+half diagonal for the quick light test, its bounding sphere, which only HEADLIGHTS SOFT/SMOOTH
+read, and the matrix's scale once a matrix): an estimated ~0.8-1 us of the ~1.5 us a list night
+costs over day (not measured on a Wii yet).
+`rsqrt` (frsqrte + 2 Newton steps, ~4e-6) was already used per vertex; these sites were missed.
+No other hot libm/libgcc call is left (the `__udivdi3` in `libPvr_UpdatePvr` are in its
+once-a-second stats block; JIT FSQRT already inlines fsrra).
+
+1. **LIST MATHS** (RENDERING 2, default FAST): bounds without libm. `sqrtUp`/`rsqrtUp` = x rsqrt(x)
+   and rsqrt(x) times 1 + 2^-16 (Newton from frsqrte lands below the root, ~4e-6 at most, so the
+   factor makes them upper bounds). Used where only a bound is needed: the box's half diagonal and
+   the matrix's 1/sqrt(min scale) in `ModelBoxDistance::farFrom` (the quick "out of reach" test,
+   which the exact test after it settles: the picks are the exact test's either way), a light's
+   reach (same test), the spheres' radii. The sphere itself is only worked out when HEADLIGHTS is
+   SOFT or SMOOTH (`sphereNeeded`); with ARCADE (default) it is never read. `coneSide`'s two roots
+   to ~4e-6 (SOFT/SMOOTH only). Expected: ~0.4-0.6 ms off a drawn night frame (400-700 point-lit
+   lists); read the `elan` T&L us a list with a box (log 27: 3.1-4.2 at night, 2.4-2.7 by day).
+2. **3D DECODE** (RENDERING 2, default TABLES): materials and lights decoded without divisions or
+   libm: n / 255 from a table filled with the same division (bit-identical), the gloss
+   (1 + f/32) 2^(e-1) by a table of powers of two (exact; was `ldexpf` and a division), `boxView`'s
+   scale kept squared (`tooSmall` only used its square; was a `sqrtf` once a matrix, in the box
+   test of every model call on a drawn frame). Was meant to be "compiled models" for the ELAN walk,
+   dropped before writing it: MODEL PREFETCH already asks for a model's first 8 command headers at
+   its call (a model has ~6), so a compiled copy would mostly fetch what is already coming; the
+   walk's own arithmetic was the measurable waste (~450 materials a frame: 4 divisions and 2
+   `ldexpf` each; ~300 matrices: a `sqrtf`). Expected ~0.15-0.3 ms; read the walk's ns a command.
+3. **DRAW MEMO** (RENDERING 2, default ON): the draw takes a list's program from the slot
+   `cachedBox` found when the list was recorded (`ElanGxRecord::fetchSlot`, `Item::slot`,
+   `fetchMemo`): its pages were checked then, once a render, so the draw's `pagesSettled` and
+   hash probe are skipped; still checked: the slot holds the list, the program is still in the
+   ring, the sampled checksum is not due (else the full lookup). `prefetchAhead` asks for the
+   right slot. The normal matrix's scale (3 `sqrtf` each time a lit list's matrix changes, and for
+   every env-mapped list) through frsqrte; the ambient colour is not converted again for the same
+   light set. Expected ~0.3-0.5 ms a drawn frame (the roots: ~250 matrix changes a render);
+   read `rend` and the [HW] "ELAN draw a render" rest per list.
+4. **SOUND STEP** (AUDIO, default LAZY): `update_arm_interrupts` (every sample) leaves out the call
+   into the ARM's latch when it would change nothing (same pending state and level, FIQ line
+   already up: exactly what ArmInterruptChange + update_e68k would leave); a voice that does not
+   reach its next sample only moves its fraction (all `StreamStep` does then) without the indirect
+   call; the two clock reads a sample for the `vox` statistic only with PROFILER on. Exact, but
+   small: ~0.05-0.1 ms. (Lazy timers were dropped: StepTimer is a decrement and a compare.)
+5. **SH-4 TIMESLICE** (CORE, default 3584): with the FAST accuracy preset (the port's), 3584 cycles
+   between UpdateSystem calls instead of 1792, the medium/slow/very slow tiers half as many slices
+   apart, so sound (ARM batches, AICA samples), DMA, the cart, Maple and the ELAN DMA keep their
+   cadence in cycles (7168 / 14336 / 28672). Halves the ~1870 timeslice call-outs a frame (and
+   the dispatch after each). TMU, the SPG's scanline events and pending interrupts are seen every
+   18 us instead of 9. The only item that changes timing: first suspect if anything acts up
+   (music, hangs, input). Expected ~0.2-0.4 ms a frame, drawn or dropped.
+
+Runner flags: `--list-maths 1`, `--walk-decode 1`, `--draw-memo 1` (`DRAW MEMO per drawn render`
+line: every memo checked against the full lookup, WRONG must stay 0), `--sound-step 1` (the sound
+hash must not move), `--sh4-slice 1`. The runner's defaults stay the old behaviour.
+
+Windows checks (2026-11-12, `--gpu-tnl --point-lights 1 --list-cull 3 --display-lists 1
+--colour-fetch 1 --small 4`): day driving route to frame 13500 (`--mirror 2`) with items 1-4 on:
+all 166 record digests and the sound hash (76C69E74C0595C38) identical to the run without them,
+DRAW MEMO 117-118 lists a render from the memo, 0 WRONG, the fetch check's mismatches the known
+menu exception, line for line. Night attract demo (9000 frames): digests identical up to render
+5761 (the demo is not repeatable on Windows past that: two runs differ in ELAN command words from
+boot on), the sound hash identical, ~410 lists a render from the memo, 0 WRONG, quick-test
+WRONG 0, set STALE 0, the quick test settling the same counts (the bounds' 1.5e-5 changed no
+verdict there). Item 5 on the day route: the same renders and cart DMAs at every checkpoint, the
+same 4192 mirror views skipped and 3 tire squeals, **all 166 record digests identical**, the car
+at 142 km/h at frame 12014; only the sound hash differs (ARM/AICA events shift within a slice).
+Unit tests pass. The Wii build compiles; `tnl_DrawList` now has 4 frsqrte sites, `elan_gx_draw` 3.
+
 ### Done 2026-11-11: four items behind presets (log 27: ~3 ms off a drawn night in-car frame)
 
 1. **MIRROR = OFF + GAME SKIP** (value 2). The game draws a frame view by view: 0C024100 (r4 =
@@ -977,6 +1051,13 @@ there; the push runs free in that mode since (Done after log 24).
   ~7169), estimated ~0.1 ms on a Wii. Reverted again: check this list first.
 
 ## What is left, best first
+
+After the five items of 2026-11-12 (awaiting log 28): first read what they gave (`elan` T&L us a
+list with a box, the walk's ns a command, `rend`, `sh4`), and the night view/course that showed 90%.
+Left after them: the walk's memory stalls (a compiled form of models only if a log shows the
+headers inside models still stall, see item 2 above), per-list GX state in gxRend's draw loop for
+ELAN items (texture lookups: TEXTURE CACHE VERY FAST+ bind memo, untested), sound (~2.2 ms, no
+exact lever left: SOUND STEP took the last cheap ones), the game's own SH-4 work.
 
 After log 27: night in-car runs 59-60 fps with every frame drawn for most of the race (MIRROR
 OFF + GAME SKIP, JIT FR SWAP); its heaviest stretch is ~17.6 ms (55-58 fps). Under AUTO (not run

@@ -64,6 +64,17 @@ void FASTCALL ArmAvoidRaceCondition();
 
 extern int g_aica_fast_preset;   // wii/main.cpp
 
+// SOUND STEP (launch page): 1 = per-sample work that would change nothing is
+// left out (here, sgc_if.cpp). Same samples, same registers, same interrupts.
+extern "C" {
+int g_sound_step_preset = 0;
+}
+// The ARM7's AICA interrupt latch (vbaARM arm_mem.cpp, C++ linkage), which
+// ArmInterruptChange sets.
+extern bool aica_interr;
+extern u32 aica_reg_L;
+extern bool e68k_out;
+
 void update_arm_interrupts()
 {
     u32 p_ints = SCIEB->full & SCIPD->full;
@@ -91,6 +102,12 @@ void update_arm_interrupts()
         }
     }
 
+    // SOUND STEP: runs every sample, and mostly finds the latch as it would
+    // leave it (pending state, level, the FIQ line already up): the call into
+    // the ARM side is left out then.
+    if (g_sound_step_preset && aica_interr == (p_ints != 0) && (!p_ints || aica_reg_L == Lval) &&
+        (e68k_out || !aica_interr))
+        return;
     ArmInterruptChange(p_ints, Lval);
 }
 

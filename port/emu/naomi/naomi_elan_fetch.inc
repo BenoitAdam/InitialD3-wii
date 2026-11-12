@@ -506,7 +506,7 @@ const FetchList* fetchProgram(const u32* vtx, u32 off, u32 count, u32 vs, FetchO
 // list's pages for this render, which the draw then does not repeat; a page
 // written since the program was built makes the list go without a box (and
 // be drawn directly), as at the draw. Never builds anything.
-bool cachedBox(u32 off, u32 count, u32 vs, float* box)
+bool cachedBox(u32 off, u32 count, u32 vs, float* box, u32* slot)
 {
     const u32 bytes = count * vs;
     if (!s_prog || !count || off >= kElanBytes || bytes > kElanBytes - off)
@@ -519,7 +519,30 @@ bool cachedBox(u32 off, u32 count, u32 vs, float* box)
     if (!pagesSettled(off >> 12, (off + bytes - 1) >> 12, newest) || newest > e->built)
         return false;
     memcpy(box, s_prog + boxPos(e->prog, e->len), 6 * sizeof(float));
+    if (slot)
+        *slot = (u32)(e - s_lists) + 1;
     return true;
+}
+
+// DRAW MEMO: the draw's lookup from the slot cachedBox found when the list was
+// recorded, this render. Its pages were checked then (once a render, the draw
+// would get the same answer) and left unwritten since its program was built, a
+// slot keeps its list until the table starts over, and a rebuild only makes a
+// program newer: what is left to ask is whether the program is still in the
+// ring (builds since may have taken its words) and whether its sampled
+// checksum is due. Null: the full lookup (fetchProgram), which also handles
+// everything else.
+FetchList* fetchMemo(u32 slot, u32 off, u32 count, u32 vs, FetchOutcome& how)
+{
+    if (!slot || slot > kFetchSlots || !s_lists)
+        return nullptr;
+    FetchList& e = s_lists[slot - 1];
+    const u32 key = off + 1;
+    if (e.key != key || e.count != count || e.vsize != vs || !programValid(e) ||
+        ((key >> 4) + s_render) % kSumWindow == 0)
+        return nullptr;
+    how = kFetchCached;
+    return &e;
 }
 
 // COLOUR LISTS = GPU FETCH: a colour list's records hold ARGB, which no GX

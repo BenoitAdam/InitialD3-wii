@@ -11,6 +11,9 @@ int g_elan_colour_fetch_preset = 0;
 int g_elan_point_preset = 0;
 int g_elan_box_preset = 0;
 int g_headlight_preset = 0;
+extern "C" {
+int g_draw_memo_preset = 0;     // DRAW MEMO (launch page)
+}
 
 #include <math.h>
 
@@ -626,6 +629,7 @@ struct FetchRec
     bool alphaOff;          // colour list with TSP UseAlpha 0: gxRend forces its vertex alpha opaque
     u8 colorWord;
     u8 attrs;               // attributes the GPU fetches (the Wii's fmtKey): position, normal, colour, UV
+    u32 slot;               // DRAW MEMO: the slot found with its box when recorded (+1), 0: none
 };
 
 struct CheckTotals
@@ -720,7 +724,29 @@ void fetchNote(const ElanGxRecord& r)
     const bool env = r.envMap, uv = !env && (r.layout == 0x00A || r.layout == 0x00E || r.layout == 0x04A);
     const bool color = r.colorFromVertex != 0;
     const u8 attrs = (u8)(1 + (r.lights.lit || env ? 1 : 0) + (color ? 1 : 0) + (uv ? 1 : 0));
-    s_fetchRecs.push_back({off, r.count, r.vsize, color, !(r.tsp >> 20 & 1), (u8)(r.layout == 0x042 ? 4 : 6), attrs});
+    s_fetchRecs.push_back(
+        {off, r.count, r.vsize, color, !(r.tsp >> 20 & 1), (u8)(r.layout == 0x042 ? 4 : 6), attrs, r.fetchSlot});
+}
+
+// DRAW MEMO, as the Wii's fetchDraw: the slot found when the list was recorded,
+// else the full lookup. Every memo taken is checked against that lookup (the
+// slot it would find, its pages, its program's age): `s_memoWrong` must stay 0.
+u32 s_memoTaken = 0, s_memoWrong = 0;
+const FetchList* drawLookup(const u32* vtx, const FetchRec& r, FetchOutcome& how)
+{
+    if (g_draw_memo_preset)
+        if (FetchList* e = fetchMemo(r.slot, r.off, r.count, r.vsize, how))
+        {
+            s_memoTaken++;
+            bool found;
+            const FetchList* f = findList(r.off + 1, r.count, r.vsize, found);
+            u32 newest;
+            const bool settled = pagesSettled(r.off >> 12, (r.off + r.count * r.vsize - 1) >> 12, newest);
+            if (f != e || !found || !settled || newest > e->built)
+                s_memoWrong++;
+            return e;
+        }
+    return fetchProgram(vtx, r.off, r.count, r.vsize, how);
 }
 
 bool fetchCheckInit(u32 size)
@@ -792,7 +818,7 @@ void elan_gx_census_render()
         const u32* vtx = (const u32*)(ram + r.off);
         const u32 patchesBefore = s_fetchCounts.patchRecords;
         FetchOutcome how;
-        const FetchList* e = fetchProgram(vtx, r.off, r.count, r.vsize, how);
+        const FetchList* e = drawLookup(vtx, r, how);
         if (how == kFetchBuilt)
             for (u32 k = 0; k < kRingGuard; k++)
                 if (s_prog[s_progWords + k] != 0xA5A5)
@@ -928,6 +954,11 @@ void elan_gx_census_render()
             printf("[run]   3D list boxes: %u lists asked, %u had a box (%.0f%%), every box checked against the "
                    "list's records: %u STALE\n",
                    s_check.boxAsked, s_check.boxes, 100.0 * s_check.boxes / s_check.boxAsked, s_check.boxStale);
+        if (g_draw_memo_preset)
+            printf("[run]   DRAW MEMO per drawn render: %.0f lists drawn from the slot found when recorded, each "
+                   "checked against the full lookup: %u WRONG so far\n",
+                   s_memoTaken / d, s_memoWrong);
+        s_memoTaken = 0;
         if (s_beamCheck.lists)
             printf("[run]   HEADLIGHTS SMOOTH per drawn render: %.1f lists with a beam (%.1f masked) | cone check: %llu "
                    "vertices, %llu in front of the lamp, the projected cone against the ELAN's: max error %.3f, %llu "
@@ -943,7 +974,7 @@ void elan_gx_census_render()
     }
 }
 
-bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6])
+bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6], u32* slot)
 {
     u8* ram = naomi_ElanRam();
     const u32 size = naomi_ElanRamSize();
@@ -953,7 +984,7 @@ bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6])
     if (off >= size)
         return false;
     s_check.boxAsked++;
-    if (!cachedBox(off, count, vsize, box))
+    if (!cachedBox(off, count, vsize, box, slot))
         return false;
     elan_gx_box_check(vtx, count, vsize, box);
     return true;
@@ -1165,6 +1196,7 @@ struct Item
     u16 lights;
     u8 base[4];                                 // RGBA, material colour
     u8 textured;                                // PCW Texture: gxRend's stage 0 samples TEXMAP0
+    u16 slot;                                   // DRAW MEMO: its fetch slot + 1 when recorded, 0: none
 };
 
 Item* s_items = nullptr;
@@ -1293,6 +1325,18 @@ inline float asFloat(u32 w)
 inline u8 toByte(float v)
 {
     return v <= 0.f ? 0 : v >= 1.f ? 255 : (u8)(v * 255.f + 0.5f);
+}
+
+// sqrt(x) through frsqrte and two Newton steps (~4e-6), 0 for x <= 0.
+inline float rootFast(float x)
+{
+    if (!(x > 0.f))
+        return 0.f;
+    float y;
+    asm("frsqrte %0,%1" : "=f"(y) : "f"(x));
+    y = y * (1.5f - 0.5f * x * y * y);
+    y = y * (1.5f - 0.5f * x * y * y);
+    return x * y;
 }
 
 
@@ -1462,6 +1506,7 @@ bool elan_gx_record(const ElanGxRecord& r)
     for (int c = 0; c < 4; c++)
         it.base[c] = toByte(r.base[c]);
     it.textured = (u8)(r.pcw >> 3 & 1);
+    it.slot = (u16)(r.fetchSlot <= 0xFFFF ? r.fetchSlot : 0);
     return true;
 }
 
@@ -1481,6 +1526,7 @@ struct RunState
     u32 chan;                   // colour channel set-up loaded (chanKey), ~0 = none
     u32 matColor, ambColor;     // their register colours...
     bool matValid, ambValid;    // ...when loaded since the channel was set up
+    u32 ambSet;                 // DRAW MEMO: the light set ambColor came from (with ambValid)
     bool envTexgen;             // TEXCOORD0 generated from the normal
     // HEADLIGHTS SMOOTH: the cone texture in TEXMAP7, whose beam matrices are
     // in TEXMTX3 / TEXMTX4 (xform << 16 | light set, of that render; ~0 =
@@ -1913,7 +1959,10 @@ void noteFetchEvents()
 bool fetchDraw(const Item& it, u32 fmtKey, u32 alphaOr)
 {
     FetchOutcome how;
-    FetchList* e = const_cast<FetchList*>(fetchProgram(it.vtx, (u32)it.vtx - WII_GUEST_ELAN_EA, it.count, it.vsize, how));
+    const u32 off = (u32)it.vtx - WII_GUEST_ELAN_EA;
+    FetchList* e = g_draw_memo_preset ? fetchMemo(it.slot, off, it.count, it.vsize, how) : nullptr;
+    if (!e)
+        e = const_cast<FetchList*>(fetchProgram(it.vtx, off, it.count, it.vsize, how));
     if (how == kFetchWritten)
         g_fp_elan_wrote += it.count;
     noteFetchEvents();
@@ -1961,9 +2010,9 @@ float s_canvasW = 0.f, s_canvasH = 0.f;
 
 } // namespace
 
-bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6])
+bool elan_gx_list_box(const u32* vtx, u32 count, u32 vsize, float box[6], u32* slot)
 {
-    return s_fetchOn && cachedBox((u32)vtx - WII_GUEST_ELAN_EA, count, vsize, box);
+    return s_fetchOn && cachedBox((u32)vtx - WII_GUEST_ELAN_EA, count, vsize, box, slot);
 }
 
 void elan_gx_canvas(float& width, float& height)
@@ -2040,9 +2089,14 @@ static void prefetchAhead(u32 index)
     {
         const Item& n2 = s_items[index + 2];
         const u32 off = (u32)n2.vtx - WII_GUEST_ELAN_EA;
-        __builtin_prefetch(&s_lists[listHash(off + 1, n2.count)]);
-        if (off < kElanBytes)
-            __builtin_prefetch(&s_pages[off >> 12]);
+        if (g_draw_memo_preset && n2.slot)
+            __builtin_prefetch(&s_lists[n2.slot - 1]);     // DRAW MEMO: its slot, no page state needed
+        else
+        {
+            __builtin_prefetch(&s_lists[listHash(off + 1, n2.count)]);
+            if (off < kElanBytes)
+                __builtin_prefetch(&s_pages[off >> 12]);
+        }
     }
     if (index + 1 < s_nItems)
     {
@@ -2055,7 +2109,7 @@ static void prefetchAhead(u32 index)
         if (s_fetchOn)
         {
             const u32 key = (u32)n1.vtx - WII_GUEST_ELAN_EA + 1;
-            const FetchList& e = s_lists[listHash(key, n1.count)];
+            const FetchList& e = g_draw_memo_preset && n1.slot ? s_lists[n1.slot - 1] : s_lists[listHash(key, n1.count)];
             if (e.key == key && e.count == n1.count)
             {
                 if (s_dl && e.dl)
@@ -2222,8 +2276,12 @@ static bool drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
         // GX does not renormalise: fold the matrix scale (and the S8 normal
         // scale, 1/64 on GX against 1/127 on the ELAN) into the normal matrix.
         const float* l = x.lm;
-        const float s = (sqrtf(l[0] * l[0] + l[1] * l[1] + l[2] * l[2]) + sqrtf(l[3] * l[3] + l[4] * l[4] + l[5] * l[5]) +
-                         sqrtf(l[6] * l[6] + l[7] * l[7] + l[8] * l[8])) / 3.f;
+        const float r0 = l[0] * l[0] + l[1] * l[1] + l[2] * l[2], r1 = l[3] * l[3] + l[4] * l[4] + l[5] * l[5],
+                    r2 = l[6] * l[6] + l[7] * l[7] + l[8] * l[8];
+        // DRAW MEMO: the rows' lengths to ~4e-6 without libm's sqrtf (a 25-step
+        // loop on the Wii, 3 of them each time a lit list's matrix changes).
+        const float s = g_draw_memo_preset ? (rootFast(r0) + rootFast(r1) + rootFast(r2)) / 3.f
+                                           : (sqrtf(r0) + sqrtf(r1) + sqrtf(r2)) / 3.f;
         const float k = (s > 0.f ? 1.f / s : 1.f) * (floatNormal ? 1.f : 64.f / 127.f);
         // S8 normals reach the GPU as z y x (their order in the records):
         // swapping the x and z columns puts them back.
@@ -2290,7 +2348,8 @@ static bool drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
             s_run.matValid = true;
         }
     }
-    if (ls.lit)
+    // DRAW MEMO: the same light set as the colour loaded: nothing to convert.
+    if (ls.lit && !(g_draw_memo_preset && s_run.ambValid && s_run.ambSet == it.lights))
     {
         const u8 amb[3] = {toByte(ls.ambient[0]), toByte(ls.ambient[1]), toByte(ls.ambient[2])};
         const u32 a = rgba(amb, 255);
@@ -2300,6 +2359,7 @@ static bool drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
             s_run.ambColor = a;
             s_run.ambValid = true;
         }
+        s_run.ambSet = it.lights;
     }
 
     const u32 fmtKey = (hasNormal ? 8u : 0u) | (hasNormal && floatNormal ? 4u : 0u) | (hasColor ? 2u : 0u) |
