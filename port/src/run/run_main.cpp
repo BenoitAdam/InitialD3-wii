@@ -747,10 +747,14 @@ static int s_gameCopies;
 struct GameCopyCall
 {
     u32 ret, sp, kind, a[4], r14, word15;
+    u32 r0, r2, fpscrv;     // INT DIVIDE: at the call
 };
 static std::vector<GameCopyCall> s_gcStack;
-static u64 s_gcCalls[4], s_gcNative[4], s_gcChecked[4], s_gcWrong[4], s_gcWords[4], s_gcStackReused;
-static const char* const kGcNames[4] = {"", "word copy", "list copy", "list head"};
+static u64 s_gcCalls[kGameCopyKinds], s_gcNative[kGameCopyKinds], s_gcChecked[kGameCopyKinds],
+    s_gcWrong[kGameCopyKinds], s_gcWords[kGameCopyKinds], s_gcStackReused;
+static const char* const kGcNames[kGameCopyKinds] = {"", "word copy", "list copy", "list head",
+                                                     "word loop called directly", "signed divide",
+                                                     "unsigned divide"};
 
 static void gameCopyWrong(const GameCopyCall& c, const char* what, u32 got, u32 want)
 {
@@ -763,9 +767,9 @@ static void gameCopyCheck(const GameCopyCall& c)
 {
     s_gcChecked[c.kind]++;
     const u32 before = s_gcWrong[c.kind];
-    if (sr.T != kGameCopyT[c.kind])
+    if (c.kind < kGameCopyDivS && sr.T != kGameCopyT[c.kind])     // the divides check theirs
         gameCopyWrong(c, "T", sr.T, kGameCopyT[c.kind]);
-    if (c.kind == kGameCopyWords)
+    if (c.kind == kGameCopyWords || c.kind == kGameCopyWordsDirect)
     {
         const u32 dst = c.a[0], src = c.a[1], n = c.a[2] >> 2;
         const bool sq = (dst >> 26) == 0x38;
@@ -787,6 +791,56 @@ static void gameCopyCheck(const GameCopyCall& c)
                 gameCopyWrong(c, "memory", g, w);
         }
         s_gcWords[c.kind] += n;
+        return;
+    }
+    if (c.kind == kGameCopyDivS || c.kind == kGameCopyDivU)
+    {
+        // What the FPU routine leaves (naomi_copies.cpp): FPUL, the scratch
+        // registers it sets, the two words it pushed below r15, FPSCR as it was.
+        const u32 a = c.a[0], b = c.a[1], sp = c.a[3];
+        const bool one = c.kind == kGameCopyDivU && b <= 1;
+        const u32 q = c.kind == kGameCopyDivS ? (u32)((s32)a / (s32)b) : one ? a : a / b;
+        if (fpul != q)
+            gameCopyWrong(c, "FPUL", fpul, q);
+        if (fpscr.full != c.fpscrv)
+            gameCopyWrong(c, "FPSCR", fpscr.full, c.fpscrv);
+        if (c.kind == kGameCopyDivS)
+        {
+            const u32 want[4] = {0xFFEFFFFF, c.r0, c.r0, c.fpscrv};
+            const u32 got[4] = {r[2], r[0], ReadMem32(sp - 8), ReadMem32(sp - 4)};
+            static const char* const names[4] = {"r2", "r0", "pushed r0", "pushed FPSCR"};
+            for (int i = 0; i < 4; i++)
+                if (got[i] != want[i])
+                {
+                    if (i >= 2)     // below r15 once popped: an interrupt may have pushed there
+                        s_gcStackReused++;
+                    else
+                        gameCopyWrong(c, names[i], got[i], want[i]);
+                }
+            if (sr.T != 0)
+                gameCopyWrong(c, "T", sr.T, 0);
+        }
+        else if (one)
+        {
+            if (r[1] != 1 || r[4] != a || r[5] != b || sr.T != 0)
+                gameCopyWrong(c, "r1/r4/r5/T", r[1], 1);
+        }
+        else
+        {
+            const u32 want[7] = {0x0C222424, 0x80000000, a ^ 0x80000000, b ^ 0x80000000, c.r2, c.r2, c.fpscrv};
+            const u32 got[7] = {r[0], r[1], r[4], r[5], r[2], ReadMem32(sp - 8), ReadMem32(sp - 4)};
+            static const char* const names[7] = {"r0", "r1", "r4", "r5", "r2", "pushed r2", "pushed FPSCR"};
+            for (int i = 0; i < 7; i++)
+                if (got[i] != want[i])
+                {
+                    if (i >= 5)     // below r15 once popped (see above)
+                        s_gcStackReused++;
+                    else
+                        gameCopyWrong(c, names[i], got[i], want[i]);
+                }
+            if (sr.T != 1)
+                gameCopyWrong(c, "T", sr.T, 1);
+        }
         return;
     }
     const bool head = c.kind == kGameCopyHead;
@@ -839,20 +893,69 @@ static void gameCopyCheck(const GameCopyCall& c)
     s_gcWords[c.kind] += bursts * 8;
 }
 
+// Census of the word copy's loop: words still run by the game's code, entries
+// into its word path that did not come from 0C20A280 (by caller), and calls the
+// native copy turned down (by destination area, source area, length & 7).
+static u64 s_gcLoopWords, s_gcDirectEntries;
+static std::map<u32, u64> s_gcDirectBy, s_gcDeclinedBy;
+static u32 s_gcPrevPc;
+
+static void gameCopyCensus(u32 pc)
+{
+    const u32 prev = s_gcPrevPc;
+    s_gcPrevPc = pc;
+    if (pc == 0x0C20A2A0 || pc == 0x0C20A29E)
+    {
+        s_gcLoopWords += pc == 0x0C20A2A0;
+        if (pc == 0x0C20A29E && prev != 0x0C20A288)
+        {
+            s_gcDirectEntries++;
+            s_gcDirectBy[pr & 0x1FFFFFFF]++;
+        }
+    }
+}
+
+static void gameCopyCensusPrint()
+{
+    const double f = g_host_render.vblanks ? (double)g_host_render.vblanks : 1.0;
+    printf("[run] GAME COPIES census: %.1f words a frame through the game's word loop; %llu entries into its word "
+           "path not from 0C20A280\n",
+           s_gcLoopWords / f, (unsigned long long)s_gcDirectEntries);
+    for (int pass = 0; pass < 2; pass++)
+    {
+        const std::map<u32, u64>& m = pass ? s_gcDeclinedBy : s_gcDirectBy;
+        std::vector<std::pair<u64, u32>> v;
+        for (const auto& e : m)
+            v.push_back({e.second, e.first});
+        std::sort(v.rbegin(), v.rend());
+        for (size_t i = 0; i < v.size() && i < 8; i++)
+            if (pass)
+                printf("[run]   declined: dst area %02X, src area %02X, length & 7 = %u: %llu calls\n",
+                       v[i].second >> 16, (v[i].second >> 8) & 0xFF, v[i].second & 0xFF,
+                       (unsigned long long)v[i].first);
+            else
+                printf("[run]   direct entry from pr %08X: %llu\n", v[i].second, (unsigned long long)v[i].first);
+    }
+}
+
 static void gameCopyStep()
 {
     const u32 pc = next_pc & 0x1FFFFFFF;
+    gameCopyCensus(pc);
     while (!s_gcStack.empty() && pc == (s_gcStack.back().ret & 0x1FFFFFFF) && r[15] == s_gcStack.back().sp)
     {
         gameCopyCheck(s_gcStack.back());
         s_gcStack.pop_back();
     }
-    if (pc != 0x0C20A280 && pc != 0x0C1D4F20 && pc != 0x0C1D4EA0)
+    if (pc != 0x0C20A280 && pc != 0x0C20A29E && pc != 0x0C1D4F20 && pc != 0x0C1D4EA0 && pc != 0x0C2223B8 &&
+        pc != 0x0C2223E0)
         return;
     const u32 kind = naomi_GameCopyEntry(pc);
     if (kind == kGameCopyNone)
         return;
     s_gcCalls[kind]++;
+    if (kind == kGameCopyWords && !naomi_GameCopyWould(kind, r[4], r[5], r[6], r[15]))
+        s_gcDeclinedBy[(r[4] >> 24) << 16 | (r[5] >> 24) << 8 | (r[6] & 7)]++;
     if (s_gameCopies == 2)
     {
         if (!naomi_GameCopyWould(kind, r[4], r[5], r[6], r[15]))
@@ -861,22 +964,35 @@ static void gameCopyStep()
         // The head's word 15, as the game reads it before its bursts.
         const u32 word15 = kind == kGameCopyHead ? ReadMem32(r[5] + 60) : 0;
         if (s_gcStack.size() < 64)
-            s_gcStack.push_back({pr, r[15], kind, {r[4], r[5], r[6], r[15]}, r[14], word15});
+            s_gcStack.push_back({pr, r[15], kind, {r[4], r[5], r[6], r[15]}, r[14], word15, r[0], r[2],
+                                 fpscr.full});
         return;
     }
-    const u32 cycles = kind == kGameCopyWords  ? naomi_GameCopyWords(r[4], r[5], r[6])
-                       : kind == kGameCopyList ? naomi_GameCopyList(r[4], r[5], r[14], r[15])
-                                               : naomi_GameCopyHead(r[4], r[5], r[14], r[15]);
+    g_game_copy_fpu_ops = 0;
+    const u32 cycles = kind == kGameCopyWords         ? naomi_GameCopyWords(r[4], r[5], r[6])
+                       : kind == kGameCopyWordsDirect ? naomi_GameCopyWordsDirect(r[4], r[5], r[6])
+                       : kind == kGameCopyList        ? naomi_GameCopyList(r[4], r[5], r[14], r[15])
+                       : kind == kGameCopyHead        ? naomi_GameCopyHead(r[4], r[5], r[14], r[15])
+                       : kind == kGameCopyDivS        ? naomi_IntDivideS(r[4], r[5], r[0], fpscr.full, r[15])
+                                                      : naomi_IntDivideU(r[4], r[5], r[2], fpscr.full, r[15], r[0]);
     if (!cycles)
         return;
-    s_gcWords[kind] += kind == kGameCopyWords ? r[6] >> 2
+    s_gcWords[kind] += kind >= kGameCopyDivS                                ? 0
+                       : kind == kGameCopyWords || kind == kGameCopyWordsDirect ? r[6] >> 2
                        : kind == kGameCopyHead ? 24
                                                : (g_game_copy_regs[2] - r[4] - 96) >> 2;
-    for (u32 i = 0; kGameCopyRegs[kind][i] >= 0; i++)
-        r[kGameCopyRegs[kind][i]] = g_game_copy_regs[i];
-    sr.T = kGameCopyT[kind];
-    // The entry block's instructions too: the interpreter charges each one.
-    g_sh4_hook_cycles += cycles + kGameCopyEntryCycles[kind];
+    u32 i = 0;
+    for (; kGameCopyRegs[kind][i] >= 0; i++)
+    {
+        if (kGameCopyRegs[kind][i] == kGameCopyFpul)
+            fpul = g_game_copy_regs[i];
+        else
+            r[kGameCopyRegs[kind][i]] = g_game_copy_regs[i];
+    }
+    sr.T = kGameCopyT[kind] == kGameCopyTRegs ? g_game_copy_regs[i] : kGameCopyT[kind];
+    // The entry block's instructions too, and the FPU ones (the interpreter
+    // charges each instruction, the recompiler no FPU one).
+    g_sh4_hook_cycles += cycles + kGameCopyEntryCycles[kind] + g_game_copy_fpu_ops;
     s_gcNative[kind]++;
     next_pc = pr;
 }
@@ -1666,10 +1782,21 @@ int main(int argc, char** argv)
             g_sh4_pc_hook = pcHook;
     }
     g_game_copies_preset = 0;
+    g_int_divide_preset = 0;
     if (const char* s = argValue(argc, argv, "--game-copies"))
     {
         s_gameCopies = atoi(s);
         g_game_copies_preset = s_gameCopies != 0;
+        if (s_gameCopies)
+            g_sh4_pc_hook = pcHook;
+    }
+    // --int-divide 0/1: INT DIVIDE (default 0 here, the launcher's is NATIVE); checked or
+    // done natively as --game-copies says (native when it is not given).
+    if (const char* s = argValue(argc, argv, "--int-divide"))
+    {
+        g_int_divide_preset = atoi(s) != 0;
+        if (g_int_divide_preset && !s_gameCopies)
+            s_gameCopies = 1;
         if (s_gameCopies)
             g_sh4_pc_hook = pcHook;
     }
@@ -2036,7 +2163,7 @@ int main(int argc, char** argv)
                kSfNames[k], (unsigned long long)s_sfCalls[k],
                g_host_render.vblanks ? (double)s_sfCalls[k] / g_host_render.vblanks : 0.0,
                (unsigned long long)s_sfNative[k], (unsigned long long)s_sfChecked[k], (unsigned long long)s_sfWrong[k]);
-    for (int k = 1; k < 4 && s_gameCopies; k++)
+    for (int k = 1; k < kGameCopyKinds && s_gameCopies; k++)
         printf("[run] GAME COPIES %s: %llu calls (%.1f a frame), %llu native, %llu checked (%.0f words a frame), "
                "%llu MISMATCHES\n",
                kGcNames[k], (unsigned long long)s_gcCalls[k],
@@ -2045,8 +2172,10 @@ int main(int argc, char** argv)
                g_host_render.vblanks ? (double)s_gcWords[k] / g_host_render.vblanks : 0.0,
                (unsigned long long)s_gcWrong[k]);
     if (s_gameCopies == 2)
-        printf("[run] GAME COPIES: pushed r14 found reused below r15 at %llu returns (an interrupt in between)\n",
+        printf("[run] GAME COPIES: a pushed word found reused below r15 at %llu returns (an interrupt in between)\n",
                (unsigned long long)s_gcStackReused);
+    if (s_gameCopies)
+        gameCopyCensusPrint();
     const double secs = (double)(platform::microseconds() - s_startUs) / 1e6;
     char line[256];
     snprintf(line, sizeof(line), "[run] stopped after %u frames in %.1f s (%.1f emulated fps), pc %08X\n",

@@ -102,6 +102,7 @@ extern "C" int g_sh4_wide_slice_preset;   // SH-4 TIMESLICE (emu/dc/sh4/sh4_inte
 extern "C" int g_cache_hints_preset;      // CACHE HINTS (emu/naomi/naomi_elan_cmd.cpp)
 extern "C" int g_pc_sampler_preset;       // PC SAMPLER (emu/plugs/drkPvr/frame_prof.cpp)
 extern "C" int g_game_copies_preset;      // GAME COPIES (emu/naomi/naomi_copies.cpp)
+extern "C" int g_int_divide_preset;       // INT DIVIDE (emu/naomi/naomi_copies.cpp)
 #if defined(GEKKO)
 u32 recSh4_CodeCacheHighWater();      // emu/dc/sh4/rec_v2/driver.cpp
 u32 recSh4_CodeCacheSize();
@@ -356,6 +357,34 @@ void logMemoryActivity(const NaomiFrameInfo& info)
             log::write("[prof]   IN-CAR REFLECT: %u of %u frames without a reflection map build (in-car view)\n",
                        g_reflection_incar_skips - s_prevInCarSkips, frames);
         s_prevInCarSkips = g_reflection_incar_skips;
+        {
+            // GAME COPIES (naomi_copies.cpp): the game's copy routines done natively.
+            static NaomiGameCopyStats s_prevCopies = {};
+            const NaomiGameCopyStats& gc = g_game_copy_stats;
+            const NaomiGameCopyStats& was = s_prevCopies;
+            u32 now = 0, before = 0;
+            for (int k = 1; k < kGameCopyKinds; k++)
+            {
+                now += gc.calls[k];
+                before += was.calls[k];
+            }
+            if (now != before)
+                log::write("[prof]   GAME COPIES per frame: word copy %u calls, %u native (%u words), %u left to its "
+                           "8-aligned loop; its word loop called directly %u, %u native (%u words); %u turned down "
+                           "(last: dst %08X src %08X, %u bytes) | list copy %u calls, %u native (%u words) | list "
+                           "head %u calls, %u native | INT DIVIDE %u signed (%u native), %u unsigned (%u native)\n",
+                           (gc.calls[1] - was.calls[1]) / frames, (gc.native[1] - was.native[1]) / frames,
+                           (gc.words[1] - was.words[1]) / frames, (gc.aligned8 - was.aligned8) / frames,
+                           (gc.calls[4] - was.calls[4]) / frames, (gc.native[4] - was.native[4]) / frames,
+                           (gc.words[4] - was.words[4]) / frames,
+                           (gc.declined - was.declined) / frames, gc.lastDst, gc.lastSrc, gc.lastLen,
+                           (gc.calls[2] - was.calls[2]) / frames, (gc.native[2] - was.native[2]) / frames,
+                           (gc.words[2] - was.words[2]) / frames, (gc.calls[3] - was.calls[3]) / frames,
+                           (gc.native[3] - was.native[3]) / frames, (gc.calls[5] - was.calls[5]) / frames,
+                           (gc.native[5] - was.native[5]) / frames, (gc.calls[6] - was.calls[6]) / frames,
+                           (gc.native[6] - was.native[6]) / frames);
+            s_prevCopies = gc;
+        }
         const NaomiStats& ns = naomi_Stats();
         log::write("[prof]   cart DMA: %u transfers, %u KB, %u status polls while one ran (totals)\n",
                    ns.cartDmaCount, ns.cartDmaBytes >> 10, ns.cartDmaPolls);
@@ -466,7 +495,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_between_warp_preset,  &g_headlight_preset,  &g_jit_frswap_preset,  &g_elan_model_prefetch_preset,
         &g_aica_half_mix_preset, &g_list_maths_preset, &g_walk_decode_preset, &g_draw_memo_preset,
         &g_sound_step_preset,    &g_sh4_wide_slice_preset, &g_cache_hints_preset,
-        &g_pc_sampler_preset,    &g_game_copies_preset};
+        &g_pc_sampler_preset,    &g_game_copies_preset, &g_int_divide_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

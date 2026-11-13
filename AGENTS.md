@@ -19,8 +19,20 @@ it exists.
   (MSVC: launcher, headless runner and tests, used for bring-up, censuses and A/B checks).
 - GitHub: `BenoitAdam/Initial-D-3-wii`, branch `main`. The owner commits often themselves.
 
-### Status (2026-11-12)
+### Status (2026-11-13)
 
+- **Log 33** (2026-11-13, `idas3wii_log_33.txt`: log 32's settings + GAME COPIES NATIVE, night Akina,
+  in-car then chase). Speed unchanged (chase 49.5-55, p50 18.6-19.7). The list copy went native but its
+  C version is memory-bound and cost the same (`runBursts` 1.4-2.0% chase); the word copy did not:
+  runner census, the game calls the word loop's own entry 0C20A29E directly (2.1M against 0.13M calls
+  at 0C20A280), which was not hooked (0C20A2A0 still 2.2-2.4% chase). New `[PCS] SH-4 code by 1 KB`:
+  the matrix library 0C1F6000-0C1F6BFF ~4% (the recompiler's `frchg` bank swaps and block ends at
+  `fschg`/`frchg`), integer divides 0C2223B8/0C2223E0 ~0.9% (GCC's FPU divides: FPSCR writes end
+  blocks). Built after it, **awaiting log 34**: GAME COPIES hooks 0C20A29E too (kind 4); the burst
+  copy uses `dcbz` + source prefetch on the Wii; **INT DIVIDE** (RECOMPILER 2, last row, last in
+  `CoreOptionId`, default NATIVE, EMULATED (OLD)): both divides in C, exact (zero divisor and INT_MIN/-1
+  left to the game); new `[prof]   GAME COPIES per frame:` line (calls, native, words, turned down with
+  the last addresses). Spans: `port/wii/build/boot_pcs_800439c0.elf`. OPTIMIZATION.md "Log 33".
 - **Log 32** (2026-11-12, `idas3wii_log32.txt`: night Akina, PROFILER + **PC SAMPLER** on, CCALLS and
   HOTBLOCKS off, FRAMESKIPPING 0; in-car ~5900-9000, chase to ~11160). The fixed sampler works (owner).
   Speed as log 30 (in-car 57-60 fps, chase 49.5-55, p50 18.75). Profile (OPTIMIZATION.md "Log 32"):
@@ -322,7 +334,7 @@ it exists.
   yet): S ~11, D ~15.5-17.6, so AUTO should hold 100% with nearly every frame drawn. The owner's
   target (100% at ~45 shown) is met by day and, per log 27, at night in-car; the night chase view
   (no mirror to skip) is not measured since log 23.
-- Latest real-Wii log: **log 32** (2026-11-12, the first PC SAMPLER profile, entry above); latest speed
+- Latest real-Wii log: **log 33** (2026-11-13, GAME COPIES half working, entry above); latest speed
   reference: **log 30** (2026-11-12, entry above). Before it **log 27** (2026-11-11, entry above), log 26 and 2P log 3
   (2026-11-11, entries above; log 26's walk, 750-810 ns a command on drawn frames with ELAN PREFETCH
   ON, matches 2P log 1's: the OFF A/B is still to do).
@@ -460,7 +472,7 @@ current work:
 | `port/emu/naomi/naomi_frontend.cpp` | Core init/run/settings, idle-loop skip (`naomi_IdleCycleScale`), assert/BIOS-entry traps |
 | `port/emu/naomi/naomi_board.cpp` | DIMM board, cart DMA, register counters |
 | `port/emu/naomi/naomi_softfloat.cpp` | SOFT FLOAT: the game's software double divide/multiply (GCC soft-float, SH-4 integer code) run natively, fingerprinted; called by the JIT at the routines' entry |
-| `port/emu/naomi/naomi_copies.cpp` | GAME COPIES: the game's word copy (0C20A280, into the store queues in races) and display-list copy (0C1D4EA0 + 0C1D4F20, into ELAN RAM) done in C, same memory/registers/T/cycles, fingerprinted; called by the JIT at the routines' entry |
+| `port/emu/naomi/naomi_copies.cpp` | GAME COPIES: the game's word copy (0C20A280 and its loop's own entry 0C20A29E, into the store queues in races) and display-list copy (0C1D4EA0 + 0C1D4F20, into ELAN RAM) done in C, same memory/registers/T/cycles, fingerprinted; INT DIVIDE: its FPU integer divides (0C2223B8, 0C2223E0); called by the JIT at the routines' entry (table-driven hook in `wii_driver.cpp`) |
 | `port/emu/naomi/naomi_motion.cpp` | MOTION FX: the race camera's motion a vblank (followed car's step and turn, in-car view, the scene's focal length) for gxRend's `mfx_*` effects |
 | `port/emu/naomi/naomi_2p.cpp` | 2 PLAYERS: whose turn the camera is (rig target, changed at every STARTRENDER), each view's aspect, the CPU car driven by the second pad, the HUD speed of its view; `naomi_2pHalf()` tells the renderers which half a render goes to, `naomi_2pSkip()` pairs their frameskip |
 | `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin + GPU light sets (point lights as GX local lights), `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs (+ each list's bounding box, `cachedBox`) and their GX display-list entries (DISPLAY LISTS: `dlEntry`, its own ring, GPU waits before writing over a queued entry) |
@@ -535,7 +547,8 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--dimm-ahead 0/1` | DIMM AHEAD (default 0 here, the launcher's is on): run cache + stream read-ahead; on Windows the decode is done on the spot |
 | `--reflection N` | REFLECTIONS: one reflection map build in N (default every one, the launcher's is 4) |
 | `--soft-float 0/1/2` | SOFT FLOAT (default 0 here, the launcher's is NATIVE): 1 = the game's double divide/multiply run natively, 2 = the game's code runs and every result is checked against the native one (`SOFT FLOAT ... MISMATCHES` must stay 0). `--soft-float-test N`: N random pairs against the host's doubles, no CHD needed |
-| `--game-copies 0/1/2` | GAME COPIES (default 0 here, the launcher's is NATIVE): 1 = the game's copy routines done natively, their cycles charged to the interpreter (`g_sh4_hook_cycles`); 2 = the game's code runs and every call the native copy would take is checked at its return: registers, T, memory, store queues, QACR, the pushed r14, the list's word 15 (`GAME COPIES ... MISMATCHES` must stay 0). Exit lines: calls a frame, native, words a frame |
+| `--game-copies 0/1/2` | GAME COPIES (default 0 here, the launcher's is NATIVE): 1 = the game's copy routines done natively, their cycles charged to the interpreter (`g_sh4_hook_cycles`); 2 = the game's code runs and every call the native copy would take is checked at its return: registers, T, memory, store queues, QACR, the pushed r14, the list's word 15 (`GAME COPIES ... MISMATCHES` must stay 0). Exit lines: calls a frame, native, words a frame, and a census (words still through the game's word loop, direct entries into it by caller, calls turned down by area) |
+| `--int-divide 0/1` | INT DIVIDE (default 0 here, the launcher's is NATIVE): the game's FPU integer divides (0C2223B8 signed, 0C2223E0 unsigned) done natively, or checked with `--game-copies 2` (FPUL, scratch registers, T, the pushed words, FPSCR: `MISMATCHES` must stay 0) |
 | env `IDAS3_SF_PROBE=LO:HI[:FROM]` | names the routines called into that code range by trying native double operations on their r4-r7 and r0/r1 (how the soft-float routines were found) |
 | `--depth-plane 0/1` | DEPTH MEASURE: 1 = RACE PLANE, frames with no pin keep the race's near plane |
 | env `IDAS3_NEAR_TRACE=1` | a `[near]` line per render: pin, frame near plane, vertices measured and why |

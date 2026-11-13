@@ -14,7 +14,11 @@
 // - 0C20A280, copy(dst r4, src r5, bytes r6): all three 8-aligned, an fmov.d
 //   pair loop (left to the game: it needs the FPU registers); otherwise a word
 //   loop, done here (into the store queues, plain memory or 32-bit VRAM). It
-//   leaves r0 = the last word, r4/r5 past the copy, r6 = 0, T = 1.
+//   leaves r0 = the last word, r4/r5 past the copy, r6 = 0, T = 1. That word
+//   loop has its own entry, 0C20A29E (no alignment test), which other routines
+//   call directly (runner census, race route: 2.1M of them against 0.13M at
+//   0C20A280; real Wii log 33: those kept 0C20A2A0 at 2.2-2.4% of a chase
+//   frame with only 0C20A280 hooked): done here too, the same way.
 // - 0C1D4EA0, a display list's first 96 bytes (src r4, dst r5): three 32-byte
 //   bursts through the store queues to dst (QACR0/1 = dst >> 24, so they land
 //   at dst & 0x1FFFFFE0), the word at dst + 60 read before and written back
@@ -26,6 +30,17 @@
 //   is the word at src + 24, bursts to dst + 96 on (QACR0/1 = (dst + 96) >> 24).
 //   It leaves r1 = the last burst's queue address, r2 = 0, r3/r5 past the copy,
 //   T = 0, the queues and the stack as above.
+//
+// INT DIVIDE (launcher RECOMPILER 2): GCC's SH-4 integer divides, done on the
+// FPU in double precision (__sdivsi3_i4 at 0C2223B8, __udivsi3_i4 at 0C2223E0):
+// FPSCR pushed, PR set, both operands converted, fdiv, ftrc into FPUL, FPSCR
+// popped. ~116 calls a race frame (runner probe, IDAS3_SF_PROBE), and real Wii
+// log 33 put 0C222000-0C2223FF at 0.85-0.95% of a frame: each call's FPSCR
+// writes end a recompiled block. A double quotient of two 32-bit integers
+// truncates to the integer quotient (its rounding error is far below 1/|a|),
+// so C's division gives FPUL exactly; a zero divisor and INT_MIN / -1 (whose
+// ftrc saturates) go back to the game's code. Left as they are: the FPU
+// registers the routines use as scratch (dr0, dr2, dr4: caller-saved).
 //
 // What either cannot do exactly (other memory areas, misaligned addresses, the
 // TA, lengths out of the ordinary) goes back to the game's code. The routines
@@ -44,12 +59,16 @@
 
 extern "C" {
 int g_game_copies_preset = 1;   // launch page GAME COPIES: 1 = NATIVE, 0 = the game's loops (OLD)
+int g_int_divide_preset = 1;    // launch page INT DIVIDE: 1 = NATIVE, 0 = the game's FPU routines (OLD)
+u32 g_game_copy_fpu_ops = 0;
 alignas(32) u32 g_game_copy_regs[8];   // aligned: the recompiler reads them at lo + 0..28
+NaomiGameCopyStats g_game_copy_stats;
 }
 
 namespace {
 
 const u32 kWordsStart = 0x0C20A280;
+const u32 kWordsLoop = 0x0C20A29E;          // its word loop's own entry
 const u16 kWordsCode[] = {0x6043, 0x205B, 0x206B, 0xC807, 0x8B09, 0xF3FD, 0x4609, 0x4601, 0xF059, 0x4610, 0xF40A, 0x8FFB,
                           0x7408, 0x000B, 0xF3FD, 0x4609, 0x6056, 0x4610, 0x2402, 0x8FFB, 0x7404, 0x000B, 0x0009};
 
@@ -69,6 +88,18 @@ const u16 kListCode[] = {
     0x6136, 0x2512, 0x7504, 0x6136, 0x2512, 0x7504, 0x6136, 0x2512, 0x7504, 0x6136, 0x2512, 0x7504,
     0x6136, 0x2512, 0x7504, 0x6136, 0x2512, 0x7504, 0x6136, 0x2512, 0x7504, 0x6136, 0x2512, 0x7504,
     0x6153, 0x71E0, 0x0183, 0x72FF, 0x4215, 0x89DE, 0x6FE3, 0x6EF6, 0x000B, 0x0009};
+const u32 kDivSStart = 0x0C2223B8;
+const u16 kDivSCode[] = {0x4F62, 0x2F06, 0xE208, 0x6229, 0x006A, 0x202B, 0x4200, 0x6227, 0x2029, 0x406A,
+                         0x445A, 0xF02D, 0x455A, 0xF22D, 0xF023, 0x60F6, 0xF03D, 0x000B, 0x4F66};
+const u32 kDivUStart = 0x0C2223E0;
+const u16 kDivUCode[] = {0xE101, 0x3516, 0x8B1A, 0x4F62, 0x2F26, 0xE208, 0x6229, 0x006A, 0x202B, 0x4200, 0x6227,
+                         0x2029, 0x406A, 0xC709, 0x4105, 0x241A, 0x445A, 0xF509, 0xF408, 0xF02D, 0x251A, 0x455A,
+                         0xF22D, 0xF040, 0xF240, 0xF023, 0x62F6, 0xF03D, 0x000B, 0x4F66, 0x000B, 0x445A};
+// __udivsi3_i4's 2^31 (a double, low word first) and where mova points r0.
+const u32 kDivUConst = 0x0C222420;
+//   signed:   entry 10, then 9 more (5 that are not FPU instructions)
+//   unsigned: entry 3; divisor <= 1: return 2; else 10, then 17 (10 not FPU)
+
 // The literal pools: QACR0's address, the queue address mask, the queue area.
 const u32 kListPool = 0x0C1D4F98;
 const u32 kListPoolWords[] = {0xFF000038, 0x03FFFFFF, 0xE0000000};
@@ -76,9 +107,10 @@ const u32 kListPoolWords[] = {0xFF000038, 0x03FFFFFF, 0xE0000000};
 // SH-4 instructions of the game's blocks (a cycle each), beyond the entry
 // block the recompiler has charged already:
 //   word copy:  entry 5, 0C20A29E 6 (first word), loop 5 a word, return 2
+//   (entered at 0C20A29E: that block is the entry, 6)
 //   list copy:  entry 21, 0C1D4F4A 34 (first burst), loop 33 a burst, return 4
 //   its head:   entry 48 (to the first burst's bt), loop 33 a burst, return 5
-const u32 kWordsCycles = 5, kWordsFixed = 6 - 5 + 2;
+const u32 kWordsCycles = 5, kWordsFixed = 6 - 5 + 2;   // at 0C20A29E: n * 5 + 2 - 5 (n >= 1)
 const u32 kListCycles = 33, kListFixed = 34 - 33 + 4;
 const u32 kHeadCycles = 2 * 33 + 5;
 
@@ -128,10 +160,11 @@ inline bool storeQueue(u32 a)
 
 // Where the word copy writes: d (a plain store), else the store queues or the
 // 32-bit VRAM interface (dst says which). False: the game's code runs.
-bool wordsPlan(u32 dst, u32 src, u32 len, const u32*& s, u32*& d)
+// `entry`: called at 0C20A280, whose 8-aligned case is the fmov.d loop.
+bool wordsPlan(u32 dst, u32 src, u32 len, const u32*& s, u32*& d, bool entry = true)
 {
     const u32 n = len >> 2;
-    if (!((dst | src | len) & 7) || ((dst | src) & 3) || n == 0 || n > kMaxWords)
+    if ((entry && !((dst | src | len) & 7)) || ((dst | src) & 3) || n == 0 || n > kMaxWords)
         return false;
     s = (const u32*)direct(src, n * 4);
     if (!s)
@@ -178,18 +211,55 @@ bool burstPlan(u32 src, u32 a, u32 bursts, u32 r15, ListPlan& p)
 
 // The bursts, a whole one read before it is written, as the queues do; the
 // queues keep the last two.
+//
+// Real Wii log 33: done this way the copy cost what the recompiled loop did
+// (1.4-2.0% of a chase frame): it is memory-bound, each burst a cache miss on
+// the source and one on the destination line, which a store first reads in.
+// A burst writes its whole 32-byte line (destinations are 32-byte aligned), so
+// on the Wii the line is zeroed in the cache instead (dcbz: no read; a store,
+// so the guest window's faults and change bits are as for the stores), and the
+// source is asked for four bursts ahead. Read before the dcbz, as the queues
+// read a burst whole before it goes out, so an overlap copies the same.
 void runBursts(const ListPlan& p, u32 r14)
 {
     *p.stack = r14;                             // mov.l r14,@-r15 (popped again)
     CCN_QACR0.reg_data = p.qacr;
     CCN_QACR1.reg_data = p.qacr;
-    u32 burst[8];
-    for (u32 b = 0; b < p.bursts; b++)
+    const u32* s = p.s;
+    u32* d = (u32*)p.d;
+    for (u32 b = 0; b < p.bursts; b++, s += 8, d += 8)
     {
-        memcpy(burst, p.s + b * 8, 32);
-        memcpy(p.d + b * 32, burst, 32);
+#if HOST_OS == OS_WII
+        if (b + 4 < p.bursts)
+            __builtin_prefetch(s + 32);
+#endif
+        // Scalars, not an array: kept in registers across the dcbz.
+        const u32 w0 = s[0], w1 = s[1], w2 = s[2], w3 = s[3], w4 = s[4], w5 = s[5], w6 = s[6], w7 = s[7];
+#if HOST_OS == OS_WII
+        // Its output is the line: ordered after the loads (s may overlap d) and
+        // before the stores, without making the compiler spill anything.
+        asm volatile("dcbz 0,%1" : "=m"(*(u8(*)[32])d) : "r"(d));
+#endif
+        d[0] = w0;
+        d[1] = w1;
+        d[2] = w2;
+        d[3] = w3;
+        d[4] = w4;
+        d[5] = w5;
+        d[6] = w6;
+        d[7] = w7;
         if (b + 2 >= p.bursts)
-            memcpy(&sq_both[(p.queue + b * 32) & 0x20], burst, 32);
+        {
+            u32* const q = (u32*)&sq_both[(p.queue + b * 32) & 0x20];
+            q[0] = w0;
+            q[1] = w1;
+            q[2] = w2;
+            q[3] = w3;
+            q[4] = w4;
+            q[5] = w5;
+            q[6] = w6;
+            q[7] = w7;
+        }
     }
 }
 
@@ -217,11 +287,21 @@ bool listPlan(u32 src, u32 dst, u32 r15, ListPlan& p)
 
 extern "C" u32 naomi_GameCopyEntry(u32 pc)
 {
+    const u32 p = pc & 0x1FFFFFFF;
+    if (g_int_divide_preset)
+    {
+        if (p == kDivSStart && codeMatches(kDivSStart, kDivSCode, sizeof(kDivSCode) / 2))
+            return kGameCopyDivS;
+        if (p == kDivUStart && codeMatches(kDivUStart, kDivUCode, sizeof(kDivUCode) / 2) &&
+            ReadMem32(kDivUConst) == 0 && ReadMem32(kDivUConst + 4) == 0x41E00000)
+            return kGameCopyDivU;
+    }
     if (!g_game_copies_preset)
         return kGameCopyNone;
-    const u32 p = pc & 0x1FFFFFFF;
     if (p == kWordsStart && codeMatches(kWordsStart, kWordsCode, sizeof(kWordsCode) / 2))
         return kGameCopyWords;
+    if (p == kWordsLoop && codeMatches(kWordsStart, kWordsCode, sizeof(kWordsCode) / 2))
+        return kGameCopyWordsDirect;
     if (p == kListStart && codeMatches(kListStart, kListCode, sizeof(kListCode) / 2) && poolMatches(kListPool))
         return kGameCopyList;
     if (p == kHeadStart && codeMatches(kHeadStart, kHeadCode, sizeof(kHeadCode) / 2) && poolMatches(kHeadPool))
@@ -237,19 +317,42 @@ extern "C" u32 naomi_GameCopyWould(u32 kind, u32 r4, u32 r5, u32 r6, u32 r15)
     switch (kind)
     {
     case kGameCopyWords: return wordsPlan(r4, r5, r6, s, d);
+    case kGameCopyWordsDirect: return wordsPlan(r4, r5, r6, s, d, false);
+    case kGameCopyDivS:
+        return (s32)r5 != 0 && !(r4 == 0x80000000 && r5 == 0xFFFFFFFF) && direct(r15 - 8, 8) && !((r15 - 8) & 3);
+    case kGameCopyDivU: return r5 <= 1 || (direct(r15 - 8, 8) && !((r15 - 8) & 3));
     case kGameCopyList:  return listPlan(r4, r5, r15, p);
     case kGameCopyHead:  return headPlan(r4, r5, r15, p);
     default:             return 0;
     }
 }
 
-extern "C" u32 naomi_GameCopyWords(u32 dst, u32 src, u32 len)
+namespace {
+
+// Both entries of the word copy: 0 = the game's code, else the cycles.
+u32 copyWords(u32 dst, u32 src, u32 len, u32 kind)
 {
     const u32* s;
     u32* d;
-    if (!wordsPlan(dst, src, len, s, d))
+    NaomiGameCopyStats& st = g_game_copy_stats;
+    const bool entry = kind == kGameCopyWords;
+    st.calls[kind]++;
+    if (!wordsPlan(dst, src, len, s, d, entry))
+    {
+        if (entry && !((dst | src | len) & 7))
+            st.aligned8++;
+        else
+        {
+            st.declined++;
+            st.lastDst = dst;
+            st.lastSrc = src;
+            st.lastLen = len;
+        }
         return 0;
+    }
     const u32 n = len >> 2;
+    st.native[kind]++;
+    st.words[kind] += n;
     // Word by word, forward, as the game's loop (an overlap copies the same way).
     u32 w = 0;
     if (d)
@@ -278,14 +381,29 @@ extern "C" u32 naomi_GameCopyWords(u32 dst, u32 src, u32 len)
     g_game_copy_regs[1] = dst + n * 4;
     g_game_copy_regs[2] = src + n * 4;
     g_game_copy_regs[3] = 0;
-    return n * kWordsCycles + kWordsFixed;
+    return entry ? n * kWordsCycles + kWordsFixed : n * kWordsCycles - 3;
+}
+
+} // namespace
+
+extern "C" u32 naomi_GameCopyWords(u32 dst, u32 src, u32 len)
+{
+    return copyWords(dst, src, len, kGameCopyWords);
+}
+
+extern "C" u32 naomi_GameCopyWordsDirect(u32 dst, u32 src, u32 len)
+{
+    return copyWords(dst, src, len, kGameCopyWordsDirect);
 }
 
 extern "C" u32 naomi_GameCopyList(u32 src, u32 dst, u32 r14, u32 r15)
 {
     ListPlan p;
+    g_game_copy_stats.calls[kGameCopyList]++;
     if (!listPlan(src, dst, r15, p))
         return 0;
+    g_game_copy_stats.native[kGameCopyList]++;
+    g_game_copy_stats.words[kGameCopyList] += p.bursts * 8;
     runBursts(p, r14);
     const u32 end = p.queue + p.bursts * 32;
     g_game_copy_regs[0] = end - 32;             // r1
@@ -298,8 +416,11 @@ extern "C" u32 naomi_GameCopyList(u32 src, u32 dst, u32 r14, u32 r15)
 extern "C" u32 naomi_GameCopyHead(u32 src, u32 dst, u32 r14, u32 r15)
 {
     ListPlan p;
+    g_game_copy_stats.calls[kGameCopyHead]++;
     if (!headPlan(src, dst, r15, p))
         return 0;
+    g_game_copy_stats.native[kGameCopyHead]++;
+    g_game_copy_stats.words[kGameCopyHead] += 24;
     u32* const word15 = (u32*)(p.d + 60);
     const u32 old = *word15;                    // mov.l @(60,r5),r7 before the bursts
     runBursts(p, r14);
@@ -310,4 +431,57 @@ extern "C" u32 naomi_GameCopyHead(u32 src, u32 dst, u32 r14, u32 r15)
     g_game_copy_regs[3] = src + 96;             // r4
     g_game_copy_regs[4] = old;                  // r7
     return kHeadCycles;
+}
+
+// __sdivsi3_i4: pushes FPSCR then r0 (r0 popped again), leaves FPUL = r4 / r5,
+// r2 = ~SZ (0xFFEFFFFF), T = 0 (its shll), FPSCR as it was.
+extern "C" u32 naomi_IntDivideS(u32 r4, u32 r5, u32 r0, u32 fpscrv, u32 r15)
+{
+    const s32 a = (s32)r4, b = (s32)r5;
+    g_game_copy_stats.calls[kGameCopyDivS]++;
+    u32* const stack = (u32*)direct(r15 - 8, 8);
+    if (b == 0 || (a == (s32)0x80000000 && b == -1) || !stack || ((r15 - 8) & 3))
+        return 0;
+    g_game_copy_stats.native[kGameCopyDivS]++;
+    stack[1] = fpscrv;                          // sts.l FPSCR,@-r15
+    stack[0] = r0;                              // mov.l r0,@-r15
+    g_game_copy_regs[0] = (u32)(a / b);         // FPUL
+    g_game_copy_regs[1] = 0xFFEFFFFF;           // r2
+    g_game_copy_fpu_ops = 4;
+    return 5;
+}
+
+// __udivsi3_i4: a divisor of 0 or 1 leaves FPUL = r4, r1 = 1, T = 0. Else
+// FPSCR and r2 pushed (r2 popped again), FPUL = r4 / r5, r0 = 0C222424 (mova,
+// then @r0+), r1 = 0x80000000, r4 and r5 with their top bit flipped, T = 1.
+extern "C" u32 naomi_IntDivideU(u32 r4, u32 r5, u32 r2, u32 fpscrv, u32 r15, u32 r0)
+{
+    g_game_copy_stats.calls[kGameCopyDivU]++;
+    u32* const regs = g_game_copy_regs;         // FPUL, r0, r1, r4, r5, T
+    if (r5 <= 1)
+    {
+        g_game_copy_stats.native[kGameCopyDivU]++;
+        regs[0] = r4;
+        regs[1] = r0;
+        regs[2] = 1;
+        regs[3] = r4;
+        regs[4] = r5;
+        regs[5] = 0;
+        g_game_copy_fpu_ops = 0;
+        return 2;
+    }
+    u32* const stack = (u32*)direct(r15 - 8, 8);
+    if (!stack || ((r15 - 8) & 3))
+        return 0;
+    g_game_copy_stats.native[kGameCopyDivU]++;
+    stack[1] = fpscrv;                          // sts.l FPSCR,@-r15
+    stack[0] = r2;                              // mov.l r2,@-r15
+    regs[0] = r4 / r5;
+    regs[1] = kDivUConst + 4;
+    regs[2] = 0x80000000;
+    regs[3] = r4 ^ 0x80000000;
+    regs[4] = r5 ^ 0x80000000;
+    regs[5] = 1;
+    g_game_copy_fpu_ops = 8;
+    return 20;
 }

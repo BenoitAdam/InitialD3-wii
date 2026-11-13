@@ -147,31 +147,59 @@ extern "C" u32 g_soft_float_result[2];
 extern "C" int g_soft_float_preset;
 // GAME COPIES (naomi_copies.cpp): the game's word copy (0C20A280, its 32-bit
 // loop) and its store-queue display-list copy (0C1D4EA0 the first 96 bytes,
-// 0C1D4F20 the rest) done natively. Entry: which one starts at pc (0 none, or
-// the option is off). Each returns 0 to leave the call to the game's code, else
-// the SH-4 cycles the game's blocks would have charged after the entry block,
-// with the registers it leaves in g_game_copy_regs (kGameCopyRegs says which)
-// and T = kGameCopyT.
+// 0C1D4F20 the rest) done natively; INT DIVIDE: its integer divides (GCC's
+// FPU-based __sdivsi3_i4 / __udivsi3_i4). Entry: which one starts at pc (0
+// none, or its option is off). Each returns 0 to leave the call to the game's
+// code, else the SH-4 cycles the game's blocks would have charged after the
+// entry block, with the registers it leaves in g_game_copy_regs (kGameCopyRegs
+// says which; kGameCopyFpul is FPUL) and T = kGameCopyT (kGameCopyTRegs: the
+// word after them).
 enum
 {
     kGameCopyNone = 0,
     kGameCopyWords = 1,     // dst r4, src r5, bytes r6
     kGameCopyList = 2,      // src r4, dst r5 (+ r14, r15)
-    kGameCopyHead = 3       // src r4, dst r5 (+ r14, r15)
+    kGameCopyHead = 3,      // src r4, dst r5 (+ r14, r15)
+    kGameCopyWordsDirect = 4,   // the word copy's word loop called directly (0C20A29E): as 1
+    kGameCopyDivS = 5,      // r4 / r5 signed (0C2223B8; + r0, FPSCR, r15)
+    kGameCopyDivU = 6,      // r4 / r5 unsigned (0C2223E0; + r2, FPSCR, r15, r0)
+    kGameCopyKinds = 7,
+    kGameCopyFpul = 16,     // kGameCopyRegs: FPUL
+    kGameCopyTRegs = 2      // kGameCopyT: T is the word after the registers
 };
 extern "C" u32 naomi_GameCopyEntry(u32 pc);
 extern "C" u32 naomi_GameCopyWords(u32 dst, u32 src, u32 len);
+extern "C" u32 naomi_GameCopyWordsDirect(u32 dst, u32 src, u32 len);
 extern "C" u32 naomi_GameCopyList(u32 src, u32 dst, u32 r14, u32 r15);
 extern "C" u32 naomi_GameCopyHead(u32 src, u32 dst, u32 r14, u32 r15);
+extern "C" u32 naomi_IntDivideS(u32 r4, u32 r5, u32 r0, u32 fpscrv, u32 r15);
+extern "C" u32 naomi_IntDivideU(u32 r4, u32 r5, u32 r2, u32 fpscrv, u32 r15, u32 r0);
 // Only checks whether the copy would be taken natively (the runner's check).
 extern "C" u32 naomi_GameCopyWould(u32 kind, u32 r4, u32 r5, u32 r6, u32 r15);
 extern "C" u32 g_game_copy_regs[8];
+// Counted at each native entry (the [prof] GAME COPIES line): calls, those done
+// natively and their words, per kind; the word copy's calls left to the game
+// because all three were 8-aligned (its fmov.d loop), and the last one it
+// turned down for another reason.
+struct NaomiGameCopyStats
+{
+    u32 calls[kGameCopyKinds], native[kGameCopyKinds], words[kGameCopyKinds];
+    u32 aligned8, declined, lastDst, lastSrc, lastLen;
+};
+extern "C" NaomiGameCopyStats g_game_copy_stats;
 // Per kind: the SH-4 registers g_game_copy_regs holds, in order (-1 ends), and T.
-static const int kGameCopyRegs[4][6] = {{-1}, {0, 4, 5, 6, -1}, {1, 2, 3, 5, -1}, {1, 2, 3, 4, 7, -1}};
-static const u32 kGameCopyT[4] = {0, 1, 0, 0};
-// The entry block's instructions (the interpreter charges each one).
-static const u32 kGameCopyEntryCycles[4] = {0, 5, 21, 48};
+static const int kGameCopyRegs[kGameCopyKinds][6] = {
+    {-1}, {0, 4, 5, 6, -1}, {1, 2, 3, 5, -1}, {1, 2, 3, 4, 7, -1}, {0, 4, 5, 6, -1},
+    {kGameCopyFpul, 2, -1}, {kGameCopyFpul, 0, 1, 4, 5, -1}};
+static const u32 kGameCopyT[kGameCopyKinds] = {0, 1, 0, 0, 1, 0, kGameCopyTRegs};
+// The entry block's instructions (the interpreter charges each one; the
+// recompiler charges no FPU instruction, nor does a block it counts).
+static const u32 kGameCopyEntryCycles[kGameCopyKinds] = {0, 5, 21, 48, 6, 10, 3};
 extern "C" int g_game_copies_preset;
+extern "C" int g_int_divide_preset;
+// FPU instructions the last native call stepped over: the recompiler charges
+// them nothing, the interpreter a cycle each (the runner adds them).
+extern "C" u32 g_game_copy_fpu_ops;
 void naomi_VBlank();
 void naomi_OnStartRender();
 // Called from the update cascade: logs the CPU state once if execution ever

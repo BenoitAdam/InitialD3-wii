@@ -397,7 +397,8 @@ render. Menus, attract mode and car select run at 100%.
 | 11-12 | LIST MATHS, 3D DECODE, DRAW MEMO (newlib's `sqrtf` loop and the divisions out of the recording, decode and draw), SOUND STEP, SH-4 TIMESLICE 3584 | log 30 (night Akina, every frame drawn, MIRROR OFF + GAME SKIP): **in-car 59.3-60.8 fps nearly all race**, p50 15.0-15.5, walk ~800 ns a command (928), timeslice call-outs halved; chase view 45-54 |
 | 11-12 | CACHE HINTS (`dcbz` on the per-render tables, prefetches in the draw, the walk and gxRend's strip loop), PMC split of the ELAN phase | log 31 (HOTBLOCKS run, DISPLAY LISTS starved of heap): split read, CACHE HINTS not judged; awaiting log 32 |
 | 11-12 | PC SAMPLER (performance monitor interrupt, 10 kHz PC profile), diagnostics' heap headroom, DISPLAY LISTS ring fallback | log 31b: the sampler froze at start (its handler used the idle thread's r1 = 0; fixed: own stack); CACHE HINTS no net gain (walk ~5-10% slower, T&L ~5-10% faster); log 32: the profile (chase CPU-bound, idle 0.5%; in-car idle 8-16%) |
-| 11-12 | GAME COPIES (the game's word copy and display-list copy in C), PC SAMPLER block table 8192 + SH-4 by 1 KB | awaiting log 33 (expected ~0.5-0.8 ms off a chase frame) |
+| 11-12 | GAME COPIES (the game's word copy and display-list copy in C), PC SAMPLER block table 8192 + SH-4 by 1 KB | log 33: no speed change; the list copy went native but is memory-bound (C cost = loop cost), the word copy's hot calls enter at 0C20A29E (not hooked) |
+| 11-13 | GAME COPIES at 0C20A29E too, `dcbz` bursts, INT DIVIDE (the game's FPU integer divides in C), `[prof] GAME COPIES` line | awaiting log 34 (expected ~0.5-0.7 ms off a chase frame) |
 | 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
@@ -490,6 +491,55 @@ From the `[CC]` and `[HOT]` censuses of a race:
 - All 18 nullDC4Wii JIT presets on (block cache, dynamic IC, FPU pin, fmov direct, T-forward,
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
+
+### Log 33 (2026-11-13): GAME COPIES on the Wii, half of it working
+
+File `idas3wii_log_33.txt`: log 32's settings with GAME COPIES NATIVE, night Akina, in-car ~6360-9720,
+chase ~9720-10920. Spans: `port/wii/build/boot_pcs_800436d8.elf`.
+
+- Speed unchanged: in-car 57-60.4 fps (p50 14.6-15.6, `sh4` 6.9-7.1), chase 49.5-55 (p50 18.6-19.7,
+  `sh4` 8.8-9.3, `elan` 4.5-4.9, `rend` 1.8-2.1). PCS chase: C 52.5-54.6%, JIT 38-39%, ARM7 5-5.4%,
+  trampolines 2.0% (log 32: 2.6-2.8), idle 0.3-2.2%. Block table: 0 over (8192).
+- The display-list copy went native (0C1D4F4C gone), but its C code (`runBursts`, 1.4-2.0% of a
+  chase frame, ~0.8 in-car) cost what the recompiled loop did: memory-bound, each 32-byte burst a
+  miss on the source and one on the destination line (which a store first reads in).
+- The word copy did not: 0C20A2A0 still 2.2-2.4% of a chase frame, 1.4-1.5% in-car, and its C code
+  never shows. Runner census (`--game-copies 1`, new exit lines): the game calls the word loop's own
+  entry 0C20A29E directly far more than 0C20A280 (2.1M against 0.13M calls over the race route; from
+  0C2189A6, 0C21B4F0-0C21B6D0, 0C2109AE-0C210A3A), and only 0C20A280 was hooked. Its 12K calls turned
+  down are the 8-aligned ones (the `fmov.d` loop, by design).
+- The new `[PCS] SH-4 code by 1 KB` line (chase / in-car): 0C20A000 2.3/1.4 (the word loop),
+  0C1F6400 + 0C1F6800 + 0C1F6000 ~4/3.6 (the game's matrix library: XF loads, 4x `ftrv`, push/pop;
+  58 `frchg` and 46 `fschg` in 3 KB), 0C1D8000 1.7/1.4, 0C1DC000 1.4/1.2 (`fmov.d` store-queue
+  bursts from the FPU registers), 0C1DA000 1.0/0.7, 0C222000 0.9/0.85 (integer divides, below),
+  0C207C00-0C208000 ~1.5, 0C1D9800/0C1D3800/0C0D1800 ~0.6 each.
+- 0C222000-0C2223FF (runner `IDAS3_SF_PROBE`): GCC's FPU integer divides, `__sdivsi3_i4` (0C2223B8,
+  ~96 calls a race frame) and `__udivsi3_i4` (0C2223E0, ~20): FPSCR pushed, PR set, fdiv in double,
+  `ftrc` into FPUL, FPSCR popped; each FPSCR write ends a recompiled block.
+- The matrix library's cost is the recompiler's `frchg` (a 16-register bank swap inline, ~50
+  instructions) and `fschg`/`frchg` ending every block (`decoder.cpp`): the library swaps banks
+  around each XF load. A decoder change (an XF load between two `frchg` done straight into the
+  back bank), not checkable on the Windows runner (interpreter only): left for a later build.
+
+Built after it, **awaiting log 34**:
+
+- GAME COPIES also takes the word loop's own entry 0C20A29E (kind 4: same work and registers;
+  cycles from that block). Runner, race route: 2.22M direct calls checked, 0 mismatches (most from
+  0C2189A6, 2^21 of them); natively, no word left through the game's loop, the same race at the
+  end (same vertices and census), but record digests split from render ~3905: an interrupt now
+  lands after a whole copy instead of between two of its blocks (timing, as SH-4 TIMESLICE).
+- The burst copy on the Wii zeroes each destination line with `dcbz` (no read before the write) and
+  asks for the source four bursts ahead; eight scalars, so nothing is spilled around the `dcbz`.
+- INT DIVIDE (RECOMPILER 2, last row, default NATIVE, EMULATED (OLD)): both divides in C at their
+  entry (FPUL, the scratch registers, T, the two words pushed below r15, FPSCR untouched); a zero
+  divisor or INT_MIN / -1 runs the game's code. Runner `--int-divide 1` (checked with
+  `--game-copies 2`): race route, 185,762 signed and 799,533 unsigned calls checked (~18 and ~76 a
+  frame over the run), 0 mismatches; 13 returns found a pushed word below r15 already reused by an
+  interrupt (dead stack, counted apart as for the list copy's r14). Natively, the same race.
+- A `[prof]   GAME COPIES per frame:` line: calls, native calls and words for each routine and
+  divide, the word copy's 8-aligned calls and the last one turned down with its addresses.
+- Expected together: ~0.5-0.7 ms off a chase frame (word loop ~0.45 with its trampolines, bursts
+  ~0.1, divides ~0.15), ~0.3-0.4 in-car. Spans of this build: `boot_pcs_800439c0.elf`.
 
 ### Log 32 (2026-11-12): the first PC SAMPLER profile
 
@@ -1273,6 +1323,11 @@ there; the push runs free in that mode since (Done after log 24).
   ~7169), estimated ~0.1 ms on a Wii. Reverted again: check this list first.
 
 ## What is left, best first
+
+After log 33: read log 34's `[prof]   GAME COPIES per frame:` line first (the word loop's direct
+calls native, few turned down) and the `[PCS]` share of 0C20A000, `runBursts`, 0C222000. Then, by
+size: the matrix library (~4% of a frame, `frchg`/`fschg` in the recompiler, see log 33), the
+recording's list lookup (~3.5%), the walk's header misses, `tnl_SetMatrix`.
 
 After log 32 (the first PC SAMPLER profile): the chase view is CPU-bound (idle 0.5%), ~2 ms short of
 60 fps; in-car has 8-16% to spare. GAME COPIES is built (log 33 to read: the `[PCS]` share of
