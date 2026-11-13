@@ -9,7 +9,7 @@ namespace idas3 {
 // The enum order is the pages' order in the launcher.
 enum CoreOptionPage
 {
-    PAGE_GENERAL,        // what a player changes: 2 PLAYERS, mirror, frameskip, pads
+    PAGE_GENERAL,        // what a player changes: 2 PLAYERS, mirror, frameskip, pads, small 3D, in-car reflect
     PAGE_DEPTH,          // RENDERING 1
     PAGE_DEPTH_2,        // RENDERING 2: textures, 3D T&L, effects (new rendering rows go here)
     PAGE_AUDIO,
@@ -160,7 +160,7 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     {"FRAMESKIPPING ", "dropped frames also skip their NAOMI 2 3D transform (AUTO: when behind)", PAGE_GENERAL, 0,
      5, {"0 (DEFAULT)", "1 (1 OF 2)", "2 (2 OF 3)", "AUTO", "AUTO MAX"}, {0, 1, 2, 3, 4}},
     {"DROPPED 3D    ", "frames the frameskip drops: SKIP MODELS steps over 3D model lists (faster)",
-     PAGE_GENERAL, 1, 2, {"WALK ALL", "SKIP MODELS"}, {0, 1}},
+     PAGE_DEPTH, 1, 2, {"WALK ALL", "SKIP MODELS"}, {0, 1}},
     // (OLD) values last: autolaunch.txt holds each row's index.
     {"TEXTURE CACHE ", "VERY FAST+: NORMAL + a memo of each render's binds. (OLD) ones alias here",
      PAGE_DEPTH_2, 3, 6,
@@ -324,12 +324,12 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
      11, {"0 (MUTED)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10 (AS THE GAME)"},
      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
     // Needs 3D LIST CULL (the boxes): naomi_elan_tnl.cpp, tooSmall.
-    {"SMALL 3D      ", "GPU T&L: 3D objects smaller than this on screen are not drawn (faster)", PAGE_DEPTH, 0, 4,
+    {"SMALL 3D      ", "GPU T&L: 3D objects smaller than this on screen are not drawn (faster)", PAGE_GENERAL, 0, 4,
      {"DRAW ALL (LEGACY)", "UNDER 2 PIXELS", "UNDER 4 PIXELS", "UNDER 8 PIXELS"}, {0, 2, 4, 8}},
     // In-car view = rear-view mirror models on screen (naomi_frontend.cpp,
     // naomi_ReflectionSkip): only the opponent's car shows the reflection there.
     {"IN-CAR REFLECT", "in-car view: only the opponent's car shows the reflection; rebuild it less often",
-     PAGE_DEPTH, 1, 3, {"AS REFLECTIONS", "1 FRAME IN 16", "FROZEN"}, {0, 16, -1}},
+     PAGE_GENERAL, 1, 3, {"AS REFLECTIONS", "1 FRAME IN 16", "FROZEN"}, {0, 16, -1}},
     // GPU fetch's cached lists as GX display lists (naomi_elan_fetch.inc);
     // the guest page pool gives up kElanDlRingBytes when ON (_vmem.cpp).
     {"DISPLAY LISTS ", "3D VTX FETCH: cached 3D sent as GX display lists, the CPU no longer writes indices",
@@ -436,13 +436,13 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
 // rows of the page). kCoreOptions itself stays in CoreOptionId order, which
 // autolaunch.txt reads by position; to move a row on screen, move it here.
 inline constexpr CoreOptionId kCoreOptionOrder[kCoreOptionCount] = {
-    // GENERAL
-    OPT_TWO_PLAYER, OPT_MIRROR, OPT_FRAMESKIP, OPT_MODEL_SKIP, OPT_FPS_OVERLAY, OPT_SPEED_LIMIT,
-    OPT_TEST_MODE, OPT_GC_LAYOUT, OPT_P2_CAR,
+    // GENERAL (the launch row and a space come first: launcher.cpp)
+    OPT_TWO_PLAYER, OPT_MIRROR, OPT_FRAMESKIP, OPT_FPS_OVERLAY, OPT_SPEED_LIMIT,
+    OPT_TEST_MODE, OPT_GC_LAYOUT, OPT_P2_CAR, OPT_SMALL_CULL, OPT_INCAR_REFLECT,
     // RENDERING
-    OPT_FIXED_DEPTH, OPT_DEPTH_CLIP, OPT_HUD_PASS, OPT_ISP_DEPTH_FUNC, OPT_TRANS_SORT, OPT_PUNCH_THROUGH,
-    OPT_AUTOSORT, OPT_SPLIT_SCREEN, OPT_VRAM_PRESENT, OPT_ELAN_POINT, OPT_ISP_CULL, OPT_ELAN_BOX,
-    OPT_REFLECTIONS, OPT_DEPTH_MEASURE, OPT_FIFO_WAKE, OPT_FIFO_SIZE, OPT_SMALL_CULL, OPT_INCAR_REFLECT,
+    OPT_MODEL_SKIP, OPT_FIXED_DEPTH, OPT_DEPTH_CLIP, OPT_HUD_PASS, OPT_ISP_DEPTH_FUNC, OPT_TRANS_SORT,
+    OPT_PUNCH_THROUGH, OPT_AUTOSORT, OPT_SPLIT_SCREEN, OPT_VRAM_PRESENT, OPT_ELAN_POINT, OPT_ISP_CULL,
+    OPT_ELAN_BOX, OPT_REFLECTIONS, OPT_DEPTH_MEASURE, OPT_FIFO_WAKE, OPT_FIFO_SIZE,
     OPT_DISPLAY_LISTS,
     // RENDERING 2
     OPT_P2_SCENERY, OPT_4BPP, OPT_8BPP, OPT_ELAN_GX, OPT_ELAN_FETCH, OPT_TEX_CACHE, OPT_VQ_CMPR,

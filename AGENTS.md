@@ -451,7 +451,7 @@ current work:
 
 | File | Role |
 | --- | --- |
-| `port/src/game/core_options.h` | Launcher option table (9 pages, reorganised 2026-11-11: GENERAL (2 PLAYERS, MIRROR, FRAMESKIPPING, pads, TEST MODE), RENDERING, RENDERING 2 (textures, 3D T&L, effects), AUDIO, CORE (SH-4 CPU choice, idle skip, guest memory), RECOMPILER, RECOMPILER 2, FIXES, LOGS (PROFILER, JIT CCALLS, JIT HOTBLOCKS, AUDIO STATS, PC SAMPLER); a page that fills up gets a second one, ~20 rows fit). A page's row order is `kCoreOptionOrder` (the table stays in `CoreOptionId` order for autolaunch); launcher pages: 1/2 or -/+ |
+| `port/src/game/core_options.h` | Launcher option table (9 pages, reorganised 2026-11-11: GENERAL (LAUNCH GAME row first, then 2 PLAYERS, MIRROR, FRAMESKIPPING, SMALL 3D, IN-CAR REFLECT, pads, TEST MODE), RENDERING (DROPPED 3D), RENDERING 2 (textures, 3D T&L, effects), AUDIO, CORE (SH-4 CPU choice, idle skip, guest memory), RECOMPILER, RECOMPILER 2, FIXES, LOGS (PROFILER, JIT CCALLS, JIT HOTBLOCKS, AUDIO STATS, PC SAMPLER); a page that fills up gets a second one, ~20 rows fit). A page's row order is `kCoreOptionOrder` (the table stays in `CoreOptionId` order for autolaunch); launcher pages: 1/2 or -/+ |
 | `port/src/game/game_runner.cpp` | Runs the core on the Wii: options -> `g_*_preset` globals (array in `CoreOptionId` order, static_assert), pads -> JVS, `[prof]` blocks, async log |
 | `port/src/ui/launcher.cpp` | Menus; `options.txt` saved as `LABEL=VALUE`, matched by label |
 | `port/src/core/log.cpp` | Log file, async ring mode (`log::setAsync`) |

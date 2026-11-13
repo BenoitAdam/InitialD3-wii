@@ -393,6 +393,11 @@ State Launcher::check()
 // Launch options
 // ---------------------------------------------------------------------------
 
+// Pseudo rows of the menu (negative, so never an option's index).
+constexpr int kRowCpu = -1;      // SH-4 CPU choice, heads CORE
+constexpr int kRowLaunch = -2;   // LAUNCH GAME, first row of GENERAL
+constexpr int kRowSpace = -3;    // blank line under LAUNCH GAME: the cursor skips it
+
 State Launcher::options()
 {
     // The BIOS service library: looked for next to the CHD, then in the
@@ -406,11 +411,17 @@ State Launcher::options()
     }
     for (;;)
     {
-        // Rows of the current page, in kCoreOptionOrder: the CPU choice (-1) heads CORE.
-        int rows[kCoreOptionCount + 1];
+        // Rows of the current page, in kCoreOptionOrder: the CPU choice heads CORE,
+        // LAUNCH GAME and a space head GENERAL.
+        int rows[kCoreOptionCount + 3];
         int rowCount = 0;
         if (optionPage_ == PAGE_CORE)
-            rows[rowCount++] = -1;
+            rows[rowCount++] = kRowCpu;
+        if (optionPage_ == PAGE_GENERAL)
+        {
+            rows[rowCount++] = kRowLaunch;
+            rows[rowCount++] = kRowSpace;
+        }
         for (int k = 0; k < kCoreOptionCount; k++)
             if (kCoreOptions[kCoreOptionOrder[k]].page == optionPage_)
                 rows[rowCount++] = kCoreOptionOrder[k];
@@ -423,7 +434,11 @@ State Launcher::options()
         for (int r = 0; r < rowCount; r++)
         {
             const char* cursor = r == optionRow_ ? UI_YELLOW ">" : " ";
-            if (rows[r] < 0)
+            if (rows[r] == kRowSpace)
+                s.blank();
+            else if (rows[r] == kRowLaunch)
+                s.line("%s " UI_GREEN "[ LAUNCH GAME ]" UI_RESET, cursor);
+            else if (rows[r] == kRowCpu)
                 s.line("%s SH-4 CPU       : [< %-17s >]" UI_RESET, cursor, run_.dynarec ? "RECOMPILER" : "INTERPRETER");
             else
             {
@@ -432,8 +447,14 @@ State Launcher::options()
             }
         }
         const int sel = rows[optionRow_];
-        s.line(UI_CYAN "  %s" UI_RESET, sel < 0 ? "recompiler: fast; interpreter: slow, for comparisons"
-                                                : kCoreOptions[sel].hint);
+        const char* hint = "";
+        if (sel == kRowCpu)
+            hint = "recompiler: fast; interpreter: slow, for comparisons";
+        else if (sel == kRowLaunch)
+            hint = "starts the game with the options below (A starts it from any row)";
+        else if (sel >= 0)
+            hint = kCoreOptions[sel].hint;
+        s.line(UI_CYAN "  %s" UI_RESET, hint);
         if (optionPage_ == PAGE_GENERAL)
         {
             if (haveBios_)
@@ -465,15 +486,21 @@ State Launcher::options()
             optionPage_ = (optionPage_ + (back ? kCoreOptionPages - 1 : 1)) % kCoreOptionPages;
             optionRow_ = 0;
         }
-        else if (b & BTN_UP)
-            optionRow_ = (optionRow_ + rowCount - 1) % rowCount;
-        else if (b & BTN_DOWN)
-            optionRow_ = (optionRow_ + 1) % rowCount;
+        else if (b & (BTN_UP | BTN_DOWN))
+        {
+            // Step over the blank line.
+            const int dir = (b & BTN_UP) ? -1 : 1;
+            int r = optionRow_;
+            do
+                r = (r + dir + rowCount) % rowCount;
+            while (rows[r] == kRowSpace);
+            optionRow_ = r;
+        }
         else if (b & (BTN_LEFT | BTN_RIGHT))
         {
-            if (sel < 0)
+            if (sel == kRowCpu)
                 run_.dynarec = !run_.dynarec;
-            else
+            else if (sel >= 0)
             {
                 const int n = kCoreOptions[sel].count;
                 int& v = run_.presets[sel];
@@ -638,6 +665,12 @@ int Launcher::run()
             state = check();
             if (state == State::Browser)
                 refreshListing();
+            if (state == State::Options)
+            {
+                // A freshly loaded game opens the main menu on its first row: LAUNCH GAME.
+                optionPage_ = PAGE_GENERAL;
+                optionRow_ = 0;
+            }
             break;
         case State::Options:
             state = options();
