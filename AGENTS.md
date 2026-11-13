@@ -32,7 +32,14 @@ it exists.
   copy uses `dcbz` + source prefetch on the Wii; **INT DIVIDE** (RECOMPILER 2, last row, last in
   `CoreOptionId`, default NATIVE, EMULATED (OLD)): both divides in C, exact (zero divisor and INT_MIN/-1
   left to the game); new `[prof]   GAME COPIES per frame:` line (calls, native, words, turned down with
-  the last addresses). Spans: `port/wii/build/boot_pcs_800439c0.elf`. OPTIMIZATION.md "Log 33".
+  the last addresses). Also built for log 34, at the owner's request ("let's do next big target"):
+  **JIT FPU BANKS** (RECOMPILER 2, last row, last in `CoreOptionId`, default RENAME, SWAP (OLD)): the
+  decoder renames the float banks at `frchg` instead of swapping 16 registers (FR/XF exchanged in the
+  operands of the ops decoded while crossed; the physical swap only at block end, before an interpreter
+  fallback or an FPSCR load); `fschg`/`frchg` end no block. For the matrix library (~4%). Checked on
+  Windows with the new **SHIL executor** (runner `--shil-exec 1`): night attract demo and race route,
+  record digests identical with it off and on. New `[prof]   JIT FPU BANKS:` line. Spans:
+  `port/wii/build/boot_pcs_80043f10.elf`. OPTIMIZATION.md "Log 33".
 - **Log 32** (2026-11-12, `idas3wii_log32.txt`: night Akina, PROFILER + **PC SAMPLER** on, CCALLS and
   HOTBLOCKS off, FRAMESKIPPING 0; in-car ~5900-9000, chase to ~11160). The fixed sampler works (owner).
   Speed as log 30 (in-car 57-60 fps, chase 49.5-55, p50 18.75). Profile (OPTIMIZATION.md "Log 32"):
@@ -472,6 +479,8 @@ current work:
 | `port/emu/naomi/naomi_frontend.cpp` | Core init/run/settings, idle-loop skip (`naomi_IdleCycleScale`), assert/BIOS-entry traps |
 | `port/emu/naomi/naomi_board.cpp` | DIMM board, cart DMA, register counters |
 | `port/emu/naomi/naomi_softfloat.cpp` | SOFT FLOAT: the game's software double divide/multiply (GCC soft-float, SH-4 integer code) run natively, fingerprinted; called by the JIT at the routines' entry |
+| `port/emu/dc/sh4/rec_v2/decoder.cpp` | SH-4 -> SHIL decoder shared by the Wii recompiler and the runner's SHIL executor; JIT FPU BANKS (`dec_SwapBanks`, `dec_FpuPhysical`) |
+| `port/emu/host/shil_exec.cpp` | Windows runner's SHIL executor (`--shil-exec`): blocks from the decoder run op by op in C, the canonical bodies through `ngen_CC_*` |
 | `port/emu/naomi/naomi_copies.cpp` | GAME COPIES: the game's word copy (0C20A280 and its loop's own entry 0C20A29E, into the store queues in races) and display-list copy (0C1D4EA0 + 0C1D4F20, into ELAN RAM) done in C, same memory/registers/T/cycles, fingerprinted; INT DIVIDE: its FPU integer divides (0C2223B8, 0C2223E0); called by the JIT at the routines' entry (table-driven hook in `wii_driver.cpp`) |
 | `port/emu/naomi/naomi_motion.cpp` | MOTION FX: the race camera's motion a vblank (followed car's step and turn, in-car view, the scene's focal length) for gxRend's `mfx_*` effects |
 | `port/emu/naomi/naomi_2p.cpp` | 2 PLAYERS: whose turn the camera is (rig target, changed at every STARTRENDER), each view's aspect, the CPU car driven by the second pad, the HUD speed of its view; `naomi_2pHalf()` tells the renderers which half a render goes to, `naomi_2pSkip()` pairs their frameskip |
@@ -548,6 +557,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--reflection N` | REFLECTIONS: one reflection map build in N (default every one, the launcher's is 4) |
 | `--soft-float 0/1/2` | SOFT FLOAT (default 0 here, the launcher's is NATIVE): 1 = the game's double divide/multiply run natively, 2 = the game's code runs and every result is checked against the native one (`SOFT FLOAT ... MISMATCHES` must stay 0). `--soft-float-test N`: N random pairs against the host's doubles, no CHD needed |
 | `--game-copies 0/1/2` | GAME COPIES (default 0 here, the launcher's is NATIVE): 1 = the game's copy routines done natively, their cycles charged to the interpreter (`g_sh4_hook_cycles`); 2 = the game's code runs and every call the native copy would take is checked at its return: registers, T, memory, store queues, QACR, the pushed r14, the list's word 15 (`GAME COPIES ... MISMATCHES` must stay 0). Exit lines: calls a frame, native, words a frame, and a census (words still through the game's word loop, direct entries into it by caller, calls turned down by area) |
+| `--shil-exec 1`, `--jit-fpu-banks 0/1` | the SH-4 run through the recompiler's decoder and SHIL ops executed in C (`emu/host/shil_exec.cpp`) instead of the interpreter: checks decoder changes on Windows. Compare two runs (a decoder preset off/on) by `record digest`; its timing is not the interpreter's (the race route's presses miss the race: use the night attract demo, no presses, to frame ~12000). Exit line: JIT FPU BANKS stretches decoded. Not the Wii back end (no pinned registers, fastmem, PPC code) |
 | `--int-divide 0/1` | INT DIVIDE (default 0 here, the launcher's is NATIVE): the game's FPU integer divides (0C2223B8 signed, 0C2223E0 unsigned) done natively, or checked with `--game-copies 2` (FPUL, scratch registers, T, the pushed words, FPSCR: `MISMATCHES` must stay 0) |
 | env `IDAS3_SF_PROBE=LO:HI[:FROM]` | names the routines called into that code range by trying native double operations on their r4-r7 and r0/r1 (how the soft-float routines were found) |
 | `--depth-plane 0/1` | DEPTH MEASURE: 1 = RACE PLANE, frames with no pin keep the race's near plane |
@@ -671,6 +681,9 @@ and SH-4 block; see log 31's entry); `[CC]` JIT call-outs into C
   448 KB table (malloc'd at the first compile) left no room for the DISPLAY LISTS ring (allocated at
   the first race), and `rend` grew ~0.6-1 ms. Size such tables into `_vmem.cpp`'s heap headroom
   (`hotblocks_heap_bytes()`, `frame_prof_heap_bytes()`), and read `[elan] GX display lists:` first.
+- `sh4_registers.h` defines `r`, `fr`, `xf`, `pr`, `sr`, `fpul`, `fpscr` ... as macros for the SH-4's
+  registers: never name a local or a parameter that in a file that includes it (decoder.cpp, the
+  runner, naomi.h's users); the errors are confusing (`'->' attendu`, `'Sh4cntx': objet const`).
 - An asynchronous exception handler (the PC SAMPLER's) must not use the interrupted r1, r2 or r13:
   libogc's idle thread (`KThreadIdleMain`, `b .`) runs with all three 0, and libogc's own IRQ entry
   switches to `__ppc_excpt_sp`. A synchronous one (the fastmem DSI handler) can, because its faults

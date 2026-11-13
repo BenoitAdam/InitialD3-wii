@@ -399,6 +399,7 @@ render. Menus, attract mode and car select run at 100%.
 | 11-12 | PC SAMPLER (performance monitor interrupt, 10 kHz PC profile), diagnostics' heap headroom, DISPLAY LISTS ring fallback | log 31b: the sampler froze at start (its handler used the idle thread's r1 = 0; fixed: own stack); CACHE HINTS no net gain (walk ~5-10% slower, T&L ~5-10% faster); log 32: the profile (chase CPU-bound, idle 0.5%; in-car idle 8-16%) |
 | 11-12 | GAME COPIES (the game's word copy and display-list copy in C), PC SAMPLER block table 8192 + SH-4 by 1 KB | log 33: no speed change; the list copy went native but is memory-bound (C cost = loop cost), the word copy's hot calls enter at 0C20A29E (not hooked) |
 | 11-13 | GAME COPIES at 0C20A29E too, `dcbz` bursts, INT DIVIDE (the game's FPU integer divides in C), `[prof] GAME COPIES` line | awaiting log 34 (expected ~0.5-0.7 ms off a chase frame) |
+| 11-13 | JIT FPU BANKS (frchg renames the float banks in the decoder, fschg/frchg end no block), SHIL executor for the runner | awaiting log 34 (expected ~0.4-0.6 ms more off a chase frame) |
 | 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
@@ -539,7 +540,33 @@ Built after it, **awaiting log 34**:
 - A `[prof]   GAME COPIES per frame:` line: calls, native calls and words for each routine and
   divide, the word copy's 8-aligned calls and the last one turned down with its addresses.
 - Expected together: ~0.5-0.7 ms off a chase frame (word loop ~0.45 with its trampolines, bursts
-  ~0.1, divides ~0.15), ~0.3-0.4 in-car. Spans of this build: `boot_pcs_800439c0.elf`.
+  ~0.1, divides ~0.15), ~0.3-0.4 in-car.
+- **JIT FPU BANKS** (RECOMPILER 2, last row, default RENAME; SWAP (OLD)), the matrix library above.
+  `decoder.cpp`: `frchg` flips FPSCR.FR and marks the banks crossed instead of swapping them; the
+  ops decoded while crossed get FR and XF exchanged in their operands when the stretch closes
+  (`dec_SwapBanks`: every float operand is a base register in two parallel blocks), so a
+  `frchg ... frchg` pair costs no swap, and `ftrv` inside it reads XMTRX from the pinned
+  registers. The physical swap (a plain `shop_sync_fpscr`) is emitted only where the banks must be
+  real (`dec_FpuPhysical`): at the block's end, before an interpreter fallback, before any other
+  op that sets FPSCR. `fschg` and `frchg` end no block; inside a crossed stretch `fschg` skips its
+  sync (the SZ-only sync copies all of FPSCR into `old_fpscr`, FR bit included, which would hide
+  the swap still owed). The back end needs nothing new: XF operands take the generic memory paths
+  (as `fmov.d` XD and `ftrv`'s XMTRX always did), the appended sync uses r3/r4/f0 while the jump
+  target sits in r31 and CR0/T forwarding only spans adjacent ops. New `[prof]   JIT FPU BANKS:`
+  line (stretches closed without a swap, stretches ending in one, totals of the blocks compiled).
+  Expected: most of the ~4% (~0.4-0.6 ms a chase frame), not measured.
+- **SHIL executor** (runner `--shil-exec 1`, `emu/host/shil_exec.cpp`): the SH-4 run block by
+  block through the recompiler's own decoder, each SHIL op executed in C (the canonical bodies
+  through `ngen_CC_*`, which on Windows were empty stubs; moves, memory, jumps and interpreter
+  fallbacks by hand; block exits as `ngen_End`). It checks decoder changes against themselves:
+  JIT FPU BANKS off vs on (`--jit-fpu-banks`), night attract demo to frame 12000 (half the
+  stretch over 20K opaque vertices a frame, point lights): record digests identical at all 106
+  shared renders (the rename run fits one more render in: block ends moved, so timing, and the
+  sound hash, differ); the race route: 109 identical. It is not the Wii back end (no pinned
+  registers, fastmem or PowerPC code), and its timing differs from the interpreter's (the race
+  route's presses miss the race under it).
+
+Spans of this build: `port/wii/build/boot_pcs_80043f10.elf`.
 
 ### Log 32 (2026-11-12): the first PC SAMPLER profile
 
@@ -1327,7 +1354,10 @@ there; the push runs free in that mode since (Done after log 24).
 After log 33: read log 34's `[prof]   GAME COPIES per frame:` line first (the word loop's direct
 calls native, few turned down) and the `[PCS]` share of 0C20A000, `runBursts`, 0C222000. Then, by
 size: the matrix library (~4% of a frame, `frchg`/`fschg` in the recompiler, see log 33), the
-recording's list lookup (~3.5%), the walk's header misses, `tnl_SetMatrix`.
+recording's list lookup (~3.5%), the walk's header misses, `tnl_SetMatrix`. JIT FPU BANKS is built
+for the matrix library; next in the recompiler, if it pays: `ftrv` loading XMTRX once per block
+instead of 16 loads each, and the block-end swap of a stretch left crossed (0C1F6504's
+`frchg; fmov x4; rts`) folded into the next block.
 
 After log 32 (the first PC SAMPLER profile): the chase view is CPU-bound (idle 0.5%), ~2 ms short of
 60 fps; in-car has 8-16% to spare. GAME COPIES is built (log 33 to read: the `[PCS]` share of

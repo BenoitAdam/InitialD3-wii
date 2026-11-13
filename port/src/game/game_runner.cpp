@@ -103,6 +103,8 @@ extern "C" int g_cache_hints_preset;      // CACHE HINTS (emu/naomi/naomi_elan_c
 extern "C" int g_pc_sampler_preset;       // PC SAMPLER (emu/plugs/drkPvr/frame_prof.cpp)
 extern "C" int g_game_copies_preset;      // GAME COPIES (emu/naomi/naomi_copies.cpp)
 extern "C" int g_int_divide_preset;       // INT DIVIDE (emu/naomi/naomi_copies.cpp)
+extern "C" int g_jit_fpu_banks_preset;    // JIT FPU BANKS (emu/naomi/naomi_frontend.cpp, decoder.cpp)
+extern u32 g_dec_fpu_uncrossed, g_dec_fpu_physical;   // JIT FPU BANKS counts (decoder.cpp)
 #if defined(GEKKO)
 u32 recSh4_CodeCacheHighWater();      // emu/dc/sh4/rec_v2/driver.cpp
 u32 recSh4_CodeCacheSize();
@@ -385,6 +387,16 @@ void logMemoryActivity(const NaomiFrameInfo& info)
                            (gc.native[6] - was.native[6]) / frames);
             s_prevCopies = gc;
         }
+        {
+            // JIT FPU BANKS (decoder.cpp): what the blocks compiled so far got.
+            static u32 s_prevUncrossed = 0, s_prevPhysical = 0;
+            if (g_dec_fpu_uncrossed != s_prevUncrossed || g_dec_fpu_physical != s_prevPhysical)
+                log::write("[prof]   JIT FPU BANKS: blocks compiled have %u renamed float-bank stretches closed with no "
+                           "swap, %u ending in a swap (totals)\n",
+                           g_dec_fpu_uncrossed, g_dec_fpu_physical);
+            s_prevUncrossed = g_dec_fpu_uncrossed;
+            s_prevPhysical = g_dec_fpu_physical;
+        }
         const NaomiStats& ns = naomi_Stats();
         log::write("[prof]   cart DMA: %u transfers, %u KB, %u status polls while one ran (totals)\n",
                    ns.cartDmaCount, ns.cartDmaBytes >> 10, ns.cartDmaPolls);
@@ -495,7 +507,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_between_warp_preset,  &g_headlight_preset,  &g_jit_frswap_preset,  &g_elan_model_prefetch_preset,
         &g_aica_half_mix_preset, &g_list_maths_preset, &g_walk_decode_preset, &g_draw_memo_preset,
         &g_sound_step_preset,    &g_sh4_wide_slice_preset, &g_cache_hints_preset,
-        &g_pc_sampler_preset,    &g_game_copies_preset, &g_int_divide_preset};
+        &g_pc_sampler_preset,    &g_game_copies_preset, &g_int_divide_preset, &g_jit_fpu_banks_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

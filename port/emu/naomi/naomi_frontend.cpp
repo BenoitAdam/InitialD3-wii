@@ -221,6 +221,7 @@ int g_vram32_fast_preset = 1;   // rec: inline 32-bit VRAM stores (wii_driver.cp
 int g_sq_fast_preset = 1;       // rec: inline store-queue flushes to memory (wii_driver.cpp shop_pref)
 int g_cold_entry_preset = 1;    // rec: timeslice exit after the block's tail (wii_driver.cpp ngen_Begin)
 int g_jit_frswap_preset = 1;    // rec: FPSCR.FR bank swap inline, no C call (wii_driver.cpp shop_sync_fpscr)
+int g_jit_fpu_banks_preset = 1; // rec: frchg renames the float banks, fschg/frchg end no block (decoder.cpp)
 int g_fifo_wake_preset = 1;     // gxRend: wake from a full GX FIFO early (InitRenderer)
 int g_mem_sweep_preset = 1;     // wii_fastmem: short synchronous sweeps (page_alloc)
 int g_fifo_size_preset = 1;     // gxRend: 512 KB GX FIFO (InitRenderer)

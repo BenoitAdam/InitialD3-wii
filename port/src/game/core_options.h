@@ -134,6 +134,7 @@ enum CoreOptionId
     OPT_PC_SAMPLER,
     OPT_GAME_COPIES,
     OPT_INT_DIVIDE,
+    OPT_JIT_FPU_BANKS,
     kCoreOptionCount
 };
 
@@ -435,6 +436,10 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // (naomi_copies.cpp): two FPSCR writes a call, each ending a recompiled block.
     {"INT DIVIDE    ", "game's integer divisions (done on its FPU) run natively, same results",
      PAGE_RECOMPILER_2, 1, 2, {"EMULATED (OLD)", "NATIVE"}, {0, 1}},
+    // The SH-4's two float banks (decoder.cpp): frchg renames them in the
+    // recompiled code instead of swapping 16 registers, fschg/frchg end no block.
+    {"JIT FPU BANKS ", "float bank switches renamed, not swapped, in the recompiled code (matrix maths)",
+     PAGE_RECOMPILER_2, 1, 2, {"SWAP (OLD)", "RENAME"}, {0, 1}},
 };
 
 // The order a page shows its rows in (the launcher walks this list and keeps the
@@ -464,7 +469,7 @@ inline constexpr CoreOptionId kCoreOptionOrder[kCoreOptionCount] = {
     OPT_IFB_FLUSH, OPT_JIT_NEWOPS, OPT_JIT_TFWD, OPT_JIT_FMOV, OPT_JIT_CARRY, OPT_JIT_MAC, OPT_JIT_FSCHG,
     OPT_JIT_CR0, OPT_BLOCKCOPY, OPT_JIT_FSQRT, OPT_JIT_FIPR, OPT_VRAM32_FAST, OPT_SQ_FAST,
     // RECOMPILER 2
-    OPT_JIT_COLD_ENTRY, OPT_SOFT_FLOAT, OPT_JIT_FRSWAP, OPT_GAME_COPIES, OPT_INT_DIVIDE,
+    OPT_JIT_COLD_ENTRY, OPT_SOFT_FLOAT, OPT_JIT_FRSWAP, OPT_GAME_COPIES, OPT_INT_DIVIDE, OPT_JIT_FPU_BANKS,
     // FIXES
     OPT_ARM7_STR_ALIGN, OPT_ADPCM_LOOP, OPT_ARM7_RESET_FIX, OPT_AICA_RACE, OPT_AICA_CA_CLAMP,
     OPT_JIT_LINK_GUARD, OPT_DIV32_FIX, OPT_INTERP_FIX, OPT_SPG_FIX, OPT_TA_GUARD, OPT_INF_VTX,

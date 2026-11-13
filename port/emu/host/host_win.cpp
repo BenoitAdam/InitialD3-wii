@@ -153,11 +153,7 @@ void wii_WriteSample(s16 r, s16 l)
 }
 extern "C" void wii_audio_aica_ready() {}
 
-// ---- Recompiler call-outs (rec_v2 is compiled out: HOST_NO_REC) ----------
-void ngen_CC_Start(shil_opcode*) {}
-void ngen_CC_Param(shil_opcode*, shil_param*, CanonicalParamType) {}
-void ngen_CC_Call(shil_opcode*, void*) {}
-void ngen_CC_Finish(shil_opcode*) {}
+// ---- Recompiler call-outs: emu/host/shil_exec.cpp (the runner's SHIL executor)
 
 // ---- Wii-side diagnostics referenced by SPG.cpp ---------------------------
 void strip_dedup_dump(double) {}

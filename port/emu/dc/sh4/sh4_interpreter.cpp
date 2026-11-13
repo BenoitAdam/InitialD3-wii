@@ -62,6 +62,9 @@ void (*g_sh4_step_hook)(u32 pc, u32 op) = nullptr;
 void (*g_sh4_pc_hook)() = nullptr;
 // Instructions a pc hook stepped over (the runner's GAME COPIES): charged as if run.
 u32 g_sh4_hook_cycles = 0;
+// The runner's SHIL executor (emu/host/shil_exec.cpp, --shil-exec 1): a whole
+// recompiler block at next_pc instead of one instruction; returns its cycles.
+u32 (*g_sh4_block_exec)() = nullptr;
 // Cycles charged per interpreted instruction when > 0 (runner's --cpi).
 s32 g_sh4_cpu_ratio_override = 0;
 #endif
@@ -176,6 +179,11 @@ void Sh4_int_Run()
 		do
 		{
 #if HOST_OS != OS_WII
+			if (g_sh4_block_exec)
+			{
+				l -= (s32)(g_sh4_block_exec() * s_cpu_ratio);
+				continue;
+			}
 			if (g_sh4_pc_hook)
 			{
 				g_sh4_pc_hook();

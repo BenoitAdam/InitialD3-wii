@@ -743,6 +743,9 @@ static int softFloatTest(u32 pairs)
 // registers, T, the copied memory (through the memory handlers), the store queues, QACR, the
 // pushed r14, the list's word 15.
 extern u32 g_sh4_hook_cycles;           // sh4_interpreter.cpp: charged after the pc hook
+extern u32 (*g_sh4_block_exec)();       // sh4_interpreter.cpp: --shil-exec's block runner
+u32 shilexec_Block();                   // emu/host/shil_exec.cpp
+extern "C" int g_jit_fpu_banks_preset;  // JIT FPU BANKS (naomi_frontend.cpp, decoder.cpp)
 static int s_gameCopies;
 struct GameCopyCall
 {
@@ -1790,6 +1793,18 @@ int main(int argc, char** argv)
         if (s_gameCopies)
             g_sh4_pc_hook = pcHook;
     }
+    // --shil-exec 1: the SH-4 run block by block through the recompiler's decoder
+    // and SHIL (emu/host/shil_exec.cpp) instead of the interpreter: checks decoder
+    // changes on Windows. --jit-fpu-banks 0/1: JIT FPU BANKS (decoder.cpp; default
+    // here 0 = SWAP, the launcher's is RENAME): only matters with --shil-exec.
+    {
+        g_jit_fpu_banks_preset = 0;
+        if (const char* s = argValue(argc, argv, "--jit-fpu-banks"))
+            g_jit_fpu_banks_preset = atoi(s);
+        if (const char* s = argValue(argc, argv, "--shil-exec"))
+            if (atoi(s))
+                g_sh4_block_exec = shilexec_Block;
+    }
     // --int-divide 0/1: INT DIVIDE (default 0 here, the launcher's is NATIVE); checked or
     // done natively as --game-copies says (native when it is not given).
     if (const char* s = argValue(argc, argv, "--int-divide"))
@@ -2176,6 +2191,13 @@ int main(int argc, char** argv)
                (unsigned long long)s_gcStackReused);
     if (s_gameCopies)
         gameCopyCensusPrint();
+    if (g_sh4_block_exec)
+    {
+        extern u32 g_dec_fpu_uncrossed, g_dec_fpu_physical;
+        printf("[run] SHIL executor: JIT FPU BANKS %s; blocks decoded: %u crossed stretches closed by a frchg, %u made "
+               "physical (a swap)\n",
+               g_jit_fpu_banks_preset ? "RENAME" : "SWAP", g_dec_fpu_uncrossed, g_dec_fpu_physical);
+    }
     const double secs = (double)(platform::microseconds() - s_startUs) / 1e6;
     char line[256];
     snprintf(line, sizeof(line), "[run] stopped after %u frames in %.1f s (%.1f emulated fps), pc %08X\n",

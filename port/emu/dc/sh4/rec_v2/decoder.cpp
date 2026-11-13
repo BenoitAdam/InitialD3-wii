@@ -15,6 +15,28 @@
 extern "C" u32 naomi_IdleCycleScale(u32 pc, u32 bytes);
 #endif
 
+// JIT FPU BANKS preset (naomi_frontend.cpp; launcher RECOMPILER 2). 0 = SWAP
+// (OLD): frchg swaps the two float banks there and then (16 registers with
+// FPU PIN) and, like fschg, ends the block. 1 = RENAME: frchg only flips
+// FPSCR.FR and the decoder remembers the banks are crossed; the ops decoded
+// while they are have FR and XF swapped in their operands (dec_SwapBanks), so
+// a frchg ... frchg pair costs no swap at all, and the physical swap (a plain
+// shop_sync_fpscr, which swaps when FPSCR.FR differs from old_fpscr's) is only
+// emitted where the banks must be real: at the block's end, before an
+// interpreter fallback and before any other op that sets FPSCR
+// (dec_FpuPhysical). fschg no longer ends the block either: SZ is decoded
+// statically, and the code after it is always reached with it flipped.
+//
+// Real Wii log 33: Initial D's matrix library (0C1F6000-0C1F6BFF, ~4% of a
+// frame) loads and multiplies matrices with frchg around every XF access
+// (frchg; fmov x16 or ftrv x4; frchg) and fschg around its pair moves: two
+// 16-register swaps and two or more block ends a call, and every ftrv read its
+// XMTRX from memory. Renamed, XMTRX inside such a pair is the pinned bank.
+extern "C" int g_jit_fpu_banks_preset;
+// Blocks decoded: crossed stretches closed by a second frchg (no swap at all),
+// and those made physical (a swap emitted) - the runner prints them.
+u32 g_dec_fpu_uncrossed = 0, g_dec_fpu_physical = 0;
+
 #define NullAddress 0xFFFFFFFF
 
 static shil_param mk_imm(u32 immv)
@@ -67,6 +89,8 @@ struct
 		bool RoundToZero;	//false -> Round to nearest.
 		u32 rpc;
 		bool is_delayslot;
+		bool FRcrossed;		// JIT FPU BANKS: banks crossed since oplist[crossedFrom]
+		u32 crossedFrom;
 	}cpu;
 
 	ngen_features ngen;
@@ -85,6 +109,8 @@ struct
 		cpu.FPR64=fpu_cfg.PR;
 		cpu.FSZ64=fpu_cfg.SZ;
 		cpu.RoundToZero=fpu_cfg.RM==1;
+		cpu.FRcrossed=false;
+		cpu.crossedFrom=0;
 		verify(fpu_cfg.RM<2);
 		//what about fp/fs ?
 
@@ -99,8 +125,46 @@ struct
 	}
 } state;
 
+// JIT FPU BANKS: FR <-> XF in the float operands of oplist[from..]. The two
+// banks are contiguous and parallel (reg_fr_0..15, reg_xf_0..15), and a pair,
+// vector or matrix operand is its base register, so moving the base moves it.
+static void dec_SwapBanks(u32 from)
+{
+	// (not fr, xf, pr, r: sh4_registers.h makes those the SH-4's registers)
+	const u32 frBase=reg_fr_0, xfBase=reg_xf_0;
+	for (size_t i=from;i<block.oplist.size();i++)
+	{
+		shil_opcode& o=block.oplist[i];
+		shil_param* const ps[5]={&o.rd,&o.rd2,&o.rs1,&o.rs2,&o.rs3};
+		for (u32 k=0;k<5;k++)
+		{
+			shil_param* const prm=ps[k];
+			if (!prm->is_reg())
+				continue;
+			const u32 reg=prm->_imm;
+			if (reg>=frBase && reg<frBase+16)
+				prm->_imm=reg-frBase+xfBase;
+			else if (reg>=xfBase && reg<xfBase+16)
+				prm->_imm=reg-xfBase+frBase;
+		}
+	}
+}
+
+// JIT FPU BANKS: the banks made physical again, if they are crossed: the ops
+// since the frchg get their operands renamed, then the swap itself.
+static void dec_FpuPhysical()
+{
+	if (!state.cpu.FRcrossed)
+		return;
+	dec_SwapBanks(state.cpu.crossedFrom);
+	state.cpu.FRcrossed=false;
+	block.Emit(shop_sync_fpscr);
+	g_dec_fpu_physical++;
+}
+
 static void dec_fallback(u32 op)
 {
+	dec_FpuPhysical();	// the interpreter sees fr[] and xf[] as they are
 	shil_opcode opcd;
 	opcd.op=shop_ifb;
 
@@ -428,6 +492,16 @@ sh4dec(i1111_0011_1111_1101)
 {
 	//fpscr.SZ is bit 20
 	block.Emit(shop_xor,reg_fpscr,reg_fpscr,mk_imm(1<<20));
+	if (g_jit_fpu_banks_preset)
+	{
+		// JIT FPU BANKS: no block end. With the banks crossed, no sync either:
+		// the SZ-only sync copies all of FPSCR into old_fpscr, FR included,
+		// which would hide the swap still owed.
+		if (!state.cpu.FRcrossed)
+			block.Emit(shop_sync_fpscr,shil_param(),shil_param(),shil_param(),SYNC_FPSCR_SZ_ONLY);
+		state.cpu.FSZ64=!state.cpu.FSZ64;
+		return;
+	}
 	// SZ-only: flag it so a backend can skip UpdateFPSCR() entirely (see
 	// SYNC_FPSCR_SZ_ONLY in shil.h, consumed by the Wii backend's JIT_FSCHG
 	// preset). Measured at ~1.3 M/s -- 2.3 per transformed vertex -- in ChuChu
@@ -451,6 +525,23 @@ sh4dec(i1111_1011_1111_1101)
 {
 	//fpscr.FR is bit 21
 	block.Emit(shop_xor, reg_fpscr, reg_fpscr, mk_imm(1 << 21));
+	if (g_jit_fpu_banks_preset)
+	{
+		// JIT FPU BANKS: cross the banks, or uncross them (the ops since the
+		// first frchg renamed: no swap); no block end.
+		if (!state.cpu.FRcrossed)
+		{
+			state.cpu.FRcrossed=true;
+			state.cpu.crossedFrom=(u32)block.oplist.size();
+		}
+		else
+		{
+			dec_SwapBanks(state.cpu.crossedFrom);
+			state.cpu.FRcrossed=false;
+			g_dec_fpu_uncrossed++;
+		}
+		return;
+	}
 	
 	// Si shop_sync_fpscr existe:
 	block.Emit(shop_sync_fpscr);
@@ -543,6 +634,7 @@ sh4dec(i0100_nnnn_0110_1010)
 {
 	u32 n = GetN(op);
 	
+	dec_FpuPhysical();	// JIT FPU BANKS: the sync below then sees real banks
 	// Load FPSCR from register
 	block.Emit(shop_mov32, reg_fpscr, mk_regi(reg_r0 + n));
 	
@@ -562,6 +654,7 @@ sh4dec(i0100_nnnn_0110_0110)
 	u32 n = GetN(op);
 	shil_param rn = mk_regi(reg_r0 + n);
 	
+	dec_FpuPhysical();	// JIT FPU BANKS: the sync below then sees real banks
 	// Read from memory
 	state.info.has_readm = true;
 	block.Emit(shop_readm, reg_fpscr, rn, shil_param(), 4);
@@ -1404,6 +1497,10 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 					RecOpCallFP* rec_oph=OpDesc[op]->rec_oph;
 					if (rec_oph && dec_is_newop(op) && !get_jit_newops_preset())
 						rec_oph=0;
+					// JIT FPU BANKS: real banks before anything else that sets
+					// FPSCR (frchg and fschg handle the crossing themselves).
+					if (state.cpu.FRcrossed && OpDesc[op]->SetFPSCR() && op!=0xFBFD && op!=0xF3FD)
+						dec_FpuPhysical();
 
 					if (state.ngen.OnlyDynamicEnds || !rec_oph)
 					{
@@ -1443,6 +1540,7 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 	}
 
 _end:
+	dec_FpuPhysical();	// JIT FPU BANKS: the next block starts with real banks
 	block.sh4_code_size=state.cpu.rpc-block.start;
 	block.NextBlock=state.NextAddr;
 	block.BranchBlock=state.JumpAddr;
