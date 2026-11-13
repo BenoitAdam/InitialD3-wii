@@ -1328,11 +1328,16 @@ u8 *vram_buffer;
 u8 *plus_tex_arena = 0;
 u32 plus_tex_arena_size = 0;
 
-// Double buffering setup: frameBuffer[0] and [1] prevent screen tearing.
-static void *frameBuffer[2] = {NULL, NULL};
+// Display buffers (XFBs): two from nullDC4Wii, a third with SCREEN BUFFERS
+// (xfb_target below explains why two still tear).
+static void *frameBuffer[3] = {NULL, NULL, NULL};
 static GXRModeObj *rmode;
 static u8 gp_fifo[LARGE_FIFO_SIZE] __attribute__((aligned(32)));
 static int fb = 0; // Current framebuffer index
+static int s_xfb_count = 2;   // 3 once SCREEN BUFFERS' third XFB is allocated (InitRenderer)
+#if defined(BUILD_NAOMI2)
+extern "C" int g_screen_buffers_preset;   // SCREEN BUFFERS (naomi_frontend.cpp)
+#endif
 
 // ============================================================================
 // SOFTWARE XFB FPS TEXT RENDERER
@@ -1665,9 +1670,22 @@ static int  s_gx_pending_fb = 0;
 // queued frame would otherwise never reach the screen.
 static volatile bool s_gx_done_irq = false;
 
+// The XFB a queued display copy went to, looked at when the GPU is done with it
+// ([prof] frames shown line): still the one on screen then means the copy was
+// written under the scan, a torn picture.
+static volatile int s_xfb_check = -1;
+static volatile u32 s_xfb_tears = 0;
+static u32 s_xfb_fallbacks = 0;   // SCREEN BUFFERS 3 with none free (should stay 0)
+
 static void gx_drawdone_cb(void)
 {
   s_gx_done_irq = true;
+  if (s_xfb_check >= 0)
+  {
+    if (VIDEO_GetCurrentFramebuffer() == frameBuffer[s_xfb_check])
+      s_xfb_tears++;
+    s_xfb_check = -1;
+  }
   frame_prof_gp_done();   // [HW] probe: when the GP got through a render
 }
 
@@ -1697,6 +1715,54 @@ static void gx_present_if_done()
     VIDEO_Flush();
     s_gx_pending = false;
   }
+}
+
+// SCREEN BUFFERS: the XFB the next display copy goes to.
+//
+// A flip asked for (VIDEO_SetNextFramebuffer + VIDEO_Flush) reaches the screen
+// at the next retrace: libogc's retrace handler writes the VI registers, then
+// sets currentFb = nextFb. The emulation is not paced to that retrace (SPG's
+// deadline at the game's 59.79 Hz against the Wii's 59.94, the audio ring's
+// waits), and a frame's flip is asked for at the next emulated vblank or render
+// only. So with two XFBs the next render's copy, into "the other one", often
+// comes before that retrace, while the other one is still on screen: it is
+// written under the scan (tearing; the sooner the render comes in the frame,
+// the likelier). With three, the copy goes to one that is neither on screen,
+// nor asked for, nor waiting for its flip: nothing shows it until its own flip.
+static void* xfb_target()
+{
+  if (s_xfb_count == 3)
+  {
+    // currentFb only ever moves to nextFb, so reading the two apart is safe.
+    void* const shown = VIDEO_GetCurrentFramebuffer();
+    void* const asked = VIDEO_GetNextFramebuffer();
+    int pick = -1;
+    for (int i = 0; i < 3 && pick < 0; i++)
+      if (frameBuffer[i] != shown && frameBuffer[i] != asked && !(s_gx_pending && i == s_gx_pending_fb))
+        pick = i;
+    if (pick < 0 && s_gx_pending)
+    {
+      pick = s_gx_pending_fb;   // over the frame still waiting for its flip: not on screen
+      s_xfb_fallbacks++;
+    }
+    if (pick >= 0)
+      fb = pick;
+  }
+  return frameBuffer[fb];
+}
+
+// ASYNC_RENDER(): the display copy just queued into frameBuffer[fb] goes to the
+// screen once the GPU is done (gx_sync_pending / gx_present_if_done). With two
+// XFBs the next frame renders into the other one.
+static void xfb_queue_async()
+{
+  s_gx_done_irq = false; // must clear BEFORE queuing the token (irq race)
+  s_xfb_check = fb;
+  GX_SetDrawDone();
+  s_gx_pending = true;
+  s_gx_pending_fb = fb;
+  if (s_xfb_count == 2)
+    fb ^= 1;
 }
 
 // Set once at startup or when preset changes
@@ -7431,17 +7497,11 @@ static void mfx_inbetween()
   }
   mfx_done();
   // To the screen, like a render (ASYNC_RENDER: flipped when the GPU is done).
-  GX_CopyDisp(frameBuffer[fb], GX_TRUE);
+  GX_CopyDisp(xfb_target(), GX_TRUE);
   s_mfx_efb_kept = false;
   s_mfx_shown_between++;
   if (ASYNC_RENDER())
-  {
-    s_gx_done_irq = false;
-    GX_SetDrawDone();
-    s_gx_pending = true;
-    s_gx_pending_fb = fb;
-    fb ^= 1;
-  }
+    xfb_queue_async();
   else
   {
     fp_GX_DrawDone();
@@ -7761,15 +7821,9 @@ static void split_compose_present()
   if (!async_render)
     fp_GX_DrawDone();
 
-  GX_CopyDisp(frameBuffer[fb], GX_TRUE);
+  GX_CopyDisp(xfb_target(), GX_TRUE);
   if (async_render)
-  {
-    s_gx_done_irq = false; // must clear BEFORE queuing the token (irq race)
-    GX_SetDrawDone();
-    s_gx_pending = true;
-    s_gx_pending_fb = fb;
-    fb ^= 1;
-  }
+    xfb_queue_async();
   else
   {
     fp_GX_DrawDone(); // wait for the copy before the CPU draws the FPS text
@@ -8955,7 +9009,7 @@ void DoRender()
   // its depth. Clear the whole EFB (into the back XFB, which this frame's
   // copy overwrites) before drawing over it.
   if (s_2p_half_now < 0 && s_2p_last_half >= 0)
-    GX_CopyDisp(frameBuffer[fb], GX_TRUE);
+    GX_CopyDisp(xfb_target(), GX_TRUE);
 
   GX_SetViewport(vp_x, vp_y, vp_w, rmode->efbHeight, 0, 1);
 
@@ -11480,26 +11534,23 @@ void DoRender()
 #else
   const bool mfx_keep = false;
 #endif
+  void* const xfb = xfb_target();
   if (s_2p_half_now >= 0)
   {
-    split2p_copy_disp(frameBuffer[fb]);
+    split2p_copy_disp(xfb);
     naomi_2pDrawn(s_2p_half_now);
   }
   else
-    GX_CopyDisp(frameBuffer[fb], mfx_keep ? GX_FALSE : GX_TRUE);
+    GX_CopyDisp(xfb, mfx_keep ? GX_FALSE : GX_TRUE);
   s_2p_last_half = s_2p_half_now;
   if (async_render)
   {
     // Queue a draw-done token after the display copy and return without
     // waiting: gx_sync_pending() (next frame / next present path) waits on it
-    // and only then flips VI to this buffer. Toggling fb makes the next frame
-    // render into the other XFB, so the CPU never copies into the buffer VI
-    // is about to scan out — true double buffering.
-    s_gx_done_irq = false; // must clear BEFORE queuing the token (irq race)
-    GX_SetDrawDone();
-    s_gx_pending = true;
-    s_gx_pending_fb = fb;
-    fb ^= 1;
+    // and only then flips VI to this buffer. With two XFBs the next frame
+    // renders into the other one, which can still be on screen when that flip
+    // has not reached it yet (tearing): SCREEN BUFFERS 3, xfb_target.
+    xfb_queue_async();
   }
   else
   {
@@ -11692,7 +11743,7 @@ void PresentFramebuffer()
   GX_End();
 
   fp_GX_DrawDone();
-  GX_CopyDisp(frameBuffer[fb], GX_TRUE);
+  GX_CopyDisp(xfb_target(), GX_TRUE);
   VIDEO_SetNextFramebuffer(frameBuffer[fb]);
   VIDEO_Flush();
   wii_audio_frame();
@@ -11757,13 +11808,22 @@ extern "C" void rend_LogShownFrames(double seconds)
 {
   if (seconds <= 0.0)
     seconds = 1.0;
-  char line[200];
-  snprintf(line, sizeof(line), "[prof] frames shown per second: %.1f 3D renders, %.1f video memory copies, %.1f held back%s",
-           s_n2_shown_3d / seconds, s_n2_shown_vram / seconds, s_n2_held_vram / seconds,
-           mfx_between_mode() ? "" : "\n");
-  printf("%s", line);
+  char line[320];
+  int n = snprintf(line, sizeof(line), "[prof] frames shown per second: %.1f 3D renders, %.1f video memory copies, %.1f held back",
+                   s_n2_shown_3d / seconds, s_n2_shown_vram / seconds, s_n2_held_vram / seconds);
   if (mfx_between_mode())
-    printf(", %.1f MOTION FX in-between frames\n", s_mfx_shown_between / seconds);
+    n += snprintf(line + n, sizeof(line) - n, ", %.1f MOTION FX in-between frames", s_mfx_shown_between / seconds);
+  // SCREEN BUFFERS: renders whose copy was still on screen when the GPU had
+  // written it (torn pictures; 0 expected with 3 buffers).
+  const u32 tears = s_xfb_tears;
+  s_xfb_tears = 0;
+  n += snprintf(line + n, sizeof(line) - n, " | %d screen buffers: %.1f copied onto the picture on screen (torn)",
+                s_xfb_count, tears / seconds);
+  if (s_xfb_fallbacks)
+    n += snprintf(line + n, sizeof(line) - n, ", %u with no free buffer", s_xfb_fallbacks);
+  s_xfb_fallbacks = 0;
+  snprintf(line + n, sizeof(line) - n, "\n");
+  printf("%s", line);
   s_n2_shown_3d = s_n2_shown_vram = s_n2_held_vram = 0;
   s_mfx_shown_between = 0;
 }
@@ -13266,7 +13326,7 @@ void StartRender()
         mfx_settle();      // MOTION FX: copy the EFB as the frame left it, cleared
 #endif
         fp_GX_DrawDone();
-        GX_CopyDisp(frameBuffer[fb], GX_TRUE);
+        GX_CopyDisp(xfb_target(), GX_TRUE);
         VIDEO_SetNextFramebuffer(frameBuffer[fb]);
         VIDEO_Flush();
         wii_audio_frame();
@@ -14137,7 +14197,22 @@ bool InitRenderer()
   // allocate 2 framebuffers for double buffering
   frameBuffer[0] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
   frameBuffer[1] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
-  
+#if defined(BUILD_NAOMI2)
+  // SCREEN BUFFERS: a third (xfb_target); _vmem.cpp left the heap room for it
+  // (kScreenBufferBytes). MEM2 is fine: libogc gives VI addresses past 16 MB.
+  if (g_screen_buffers_preset)
+  {
+    void* const third = SYS_AllocateFramebuffer(rmode);
+    if (third)
+    {
+      frameBuffer[2] = MEM_K0_TO_K1(third);
+      VIDEO_ClearFrameBuffer(rmode, frameBuffer[2], COLOR_BLACK);
+      s_xfb_count = 3;
+    }
+    printf("[gx] SCREEN BUFFERS: %d display buffers%s\n", s_xfb_count, third ? "" : " (no memory for the third)");
+  }
+#endif
+
   // Set up the video registers with the chosen mode (devkit wii example)
   VIDEO_Configure(rmode);
   // Tell the video hardware where our display memory is (devkit wii example)

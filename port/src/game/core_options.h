@@ -135,6 +135,7 @@ enum CoreOptionId
     OPT_GAME_COPIES,
     OPT_INT_DIVIDE,
     OPT_JIT_FPU_BANKS,
+    OPT_SCREEN_BUFFERS,
     kCoreOptionCount
 };
 
@@ -440,6 +441,11 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // recompiled code instead of swapping 16 registers, fschg/frchg end no block.
     {"JIT FPU BANKS ", "float bank switches renamed, not swapped, in the recompiled code (matrix maths)",
      PAGE_RECOMPILER_2, 1, 2, {"SWAP (OLD)", "RENAME"}, {0, 1}},
+    // Display buffers (gxRend.cpp xfb_target). With two, a render's copy goes to
+    // the one on screen whenever the last flip has not reached the screen yet:
+    // the copy then lands under the scan (tearing). A third is always free.
+    {"SCREEN BUFFERS", "3: a new picture is never copied over the one on screen (no tearing, 0.7 MB)",
+     PAGE_DEPTH, 1, 2, {"2 (OLD)", "3 (NO TEARING)"}, {0, 1}},
 };
 
 // The order a page shows its rows in (the launcher walks this list and keeps the
@@ -453,7 +459,7 @@ inline constexpr CoreOptionId kCoreOptionOrder[kCoreOptionCount] = {
     OPT_MODEL_SKIP, OPT_FIXED_DEPTH, OPT_DEPTH_CLIP, OPT_HUD_PASS, OPT_ISP_DEPTH_FUNC, OPT_TRANS_SORT,
     OPT_PUNCH_THROUGH, OPT_AUTOSORT, OPT_SPLIT_SCREEN, OPT_VRAM_PRESENT, OPT_ELAN_POINT, OPT_ISP_CULL,
     OPT_ELAN_BOX, OPT_REFLECTIONS, OPT_DEPTH_MEASURE, OPT_FIFO_WAKE, OPT_FIFO_SIZE,
-    OPT_DISPLAY_LISTS,
+    OPT_DISPLAY_LISTS, OPT_SCREEN_BUFFERS,
     // RENDERING 2
     OPT_P2_SCENERY, OPT_4BPP, OPT_8BPP, OPT_ELAN_GX, OPT_ELAN_FETCH, OPT_TEX_CACHE, OPT_VQ_CMPR,
     OPT_TMEM_CACHE, OPT_COLOUR_FETCH, OPT_ELAN_PREFETCH, OPT_MODEL_PREFETCH, OPT_HEADLIGHTS,

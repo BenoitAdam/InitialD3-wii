@@ -19,8 +19,28 @@ it exists.
   (MSVC: launcher, headless runner and tests, used for bring-up, censuses and A/B checks).
 - GitHub: `BenoitAdam/Initial-D-3-wii`, branch `main`. The owner commits often themselves.
 
-### Status (2026-11-13)
+### Status (2026-11-14)
 
+- **Log 34** (2026-11-14, `idas3wii_log_34prev.txt`: log 33's settings + INT DIVIDE NATIVE + JIT FPU BANKS
+  RENAME, PC SAMPLER on, night Akina, in-car ~6480-12480 with two short chase stretches ~9500-9720 and
+  ~9960-10080). In-car 59.4-60.8 fps, p50 14.5-15.0, typical `sh4` 6.55-6.8 against log 32's 6.96-7.2
+  (**-0.4 ms**, same course and view); chase 52.7-58.6 (`elan` 5.6). The three hot loops of log 32/33 are
+  gone from the profile (word copy 0C20A2A0 1.47% in-car in log 32, list copy 0C1D4F4C 0.63%, divide
+  0C2223FA 0.45%); all calls native, 0 turned down. JIT FPU BANKS: 19 stretches in all (13 closed with no
+  swap); the matrix library 0C1F6000-0C1F6BFF is still 3.0-3.7% of in-car samples, its gain not separable.
+  **Owner: "some kind of tearing" with any of the three new rows on, fine with all three off.** Found in
+  gxRend: with two XFBs, a render's display copy goes to "the other" buffer, which is still the one on screen
+  until the last flip reaches the next real retrace; the emulation is not paced to the Wii's retrace (SPG
+  deadline 59.79 Hz vs VI 59.94, audio-ring waits) and a flip is asked for only at the next emulated vblank
+  or render, so the copy often lands under the scan. The sooner the SH-4 reaches STARTRENDER, the likelier:
+  the three rows (all SH-4 speed) make it more frequent; the bug is older. Built, **awaiting log 35**:
+  **SCREEN BUFFERS** (RENDERING, last row, last in `CoreOptionId`, default 3 (NO TEARING), 2 (OLD)): a third
+  XFB (`xfb_target`: the copy goes to one neither on screen, nor asked for, nor waiting for its flip, from
+  libogc's `VIDEO_GetCurrentFramebuffer`/`VIDEO_GetNextFramebuffer`); `_vmem.cpp` leaves the heap
+  `kScreenBufferBytes` (720 KB) more when chosen. The `[prof] frames shown per second` line now ends with
+  `| N screen buffers: X copied onto the picture on screen (torn)` (checked at each render's draw-done:
+  the copied XFB still `currentFb`): with 2 it measures the tearing, with 3 it must stay 0. Elf:
+  `port/wii/build/boot_pcs_80043f24.elf`. OPTIMIZATION.md "Log 34".
 - **Log 33** (2026-11-13, `idas3wii_log_33.txt`: log 32's settings + GAME COPIES NATIVE, night Akina,
   in-car then chase). Speed unchanged (chase 49.5-55, p50 18.6-19.7). The list copy went native but its
   C version is memory-bound and cost the same (`runBursts` 1.4-2.0% chase); the word copy did not:
@@ -341,7 +361,8 @@ it exists.
   yet): S ~11, D ~15.5-17.6, so AUTO should hold 100% with nearly every frame drawn. The owner's
   target (100% at ~45 shown) is met by day and, per log 27, at night in-car; the night chase view
   (no mirror to skip) is not measured since log 23.
-- Latest real-Wii log: **log 33** (2026-11-13, GAME COPIES half working, entry above); latest speed
+- Latest real-Wii log: **log 34** (2026-11-14, the three SH-4 rows work, -0.4 ms `sh4` in-car; tearing
+  found, entry above); before it **log 33** (2026-11-13, GAME COPIES half working); latest speed
   reference: **log 30** (2026-11-12, entry above). Before it **log 27** (2026-11-11, entry above), log 26 and 2P log 3
   (2026-11-11, entries above; log 26's walk, 750-810 ns a command on drawn frames with ELAN PREFETCH
   ON, matches 2P log 1's: the OFF A/B is still to do).
@@ -671,6 +692,11 @@ and SH-4 block; see log 31's entry); `[CC]` JIT call-outs into C
   (the RO zero page, PAGE GUARD).
   `wii_fastmem.cpp` probes this at init (`zero_page_protected`, `change_bit_tracked`) and falls
   back; keep the probes when adding such tricks.
+- A VI flip (`VIDEO_SetNextFramebuffer` + `VIDEO_Flush`) only reaches the screen at the next real
+  retrace (libogc's handler writes the registers, then `currentFb = nextFb`), and the emulation is not
+  paced to that retrace. Never copy into an XFB that `VIDEO_GetCurrentFramebuffer()` or
+  `VIDEO_GetNextFramebuffer()` returns: it is, or is about to be, under the scan (tearing; SCREEN
+  BUFFERS). Faster emulation makes such a race show more, so a speed row can look like it causes it.
 - After installing PPC exception handlers put a `sync` + memory clobber: GCC moved the inline
   store past a volatile guest read once.
 - The dynarec pins SH-4 GPRs in r14..r28: `Sh4cntx.r[]` read from C (e.g. in a trap) can be stale.

@@ -398,8 +398,9 @@ render. Menus, attract mode and car select run at 100%.
 | 11-12 | CACHE HINTS (`dcbz` on the per-render tables, prefetches in the draw, the walk and gxRend's strip loop), PMC split of the ELAN phase | log 31 (HOTBLOCKS run, DISPLAY LISTS starved of heap): split read, CACHE HINTS not judged; awaiting log 32 |
 | 11-12 | PC SAMPLER (performance monitor interrupt, 10 kHz PC profile), diagnostics' heap headroom, DISPLAY LISTS ring fallback | log 31b: the sampler froze at start (its handler used the idle thread's r1 = 0; fixed: own stack); CACHE HINTS no net gain (walk ~5-10% slower, T&L ~5-10% faster); log 32: the profile (chase CPU-bound, idle 0.5%; in-car idle 8-16%) |
 | 11-12 | GAME COPIES (the game's word copy and display-list copy in C), PC SAMPLER block table 8192 + SH-4 by 1 KB | log 33: no speed change; the list copy went native but is memory-bound (C cost = loop cost), the word copy's hot calls enter at 0C20A29E (not hooked) |
-| 11-13 | GAME COPIES at 0C20A29E too, `dcbz` bursts, INT DIVIDE (the game's FPU integer divides in C), `[prof] GAME COPIES` line | awaiting log 34 (expected ~0.5-0.7 ms off a chase frame) |
-| 11-13 | JIT FPU BANKS (frchg renames the float banks in the decoder, fschg/frchg end no block), SHIL executor for the runner | awaiting log 34 (expected ~0.4-0.6 ms more off a chase frame) |
+| 11-13 | GAME COPIES at 0C20A29E too, `dcbz` bursts, INT DIVIDE (the game's FPU integer divides in C), `[prof] GAME COPIES` line | log 34 (with the row below, night in-car): `sh4` 6.96-7.2 -> 6.55-6.8 ms; the copy loops and the divides gone from the profile |
+| 11-13 | JIT FPU BANKS (frchg renames the float banks in the decoder, fschg/frchg end no block), SHIL executor for the runner | log 34: 19 stretches renamed; matrix library still 3.0-3.7% of in-car samples, gain not separable from the row above |
+| 11-14 | SCREEN BUFFERS (a third XFB: no display copy onto the picture on screen), torn-copy count | awaiting log 35 (owner saw tearing with the faster SH-4; no speed effect expected) |
 | 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
@@ -492,6 +493,58 @@ From the `[CC]` and `[HOT]` censuses of a race:
 - All 18 nullDC4Wii JIT presets on (block cache, dynamic IC, FPU pin, fmov direct, T-forward,
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
+
+### Log 34 (2026-11-14): the three SH-4 rows, and the tearing they uncovered
+
+Settings: log 33's + INT DIVIDE NATIVE + JIT FPU BANKS RENAME, PC SAMPLER on, CCALLS and HOTBLOCKS off,
+FRAMESKIPPING 0, MIRROR OFF + GAME SKIP. Night Akina, in-car from ~6480 to the end (~12480), the chase
+view only at ~9500-9720 and ~9960-10080. Same course and view as log 32's in-car stretch, so comparable.
+
+| In-car, typical frame (ms) | log 32 | log 34 |
+| --- | --- | --- |
+| `sh4` | 6.96-7.2 | 6.55-6.8 |
+| `elan` | 3.1-3.8 | 3.1-4.4 (heavier stretches) |
+| `rend` | 1.2-1.5 | 1.2-1.8 |
+| `arm` + `aica` | ~2.1 | ~2.1 |
+| p50 | 14.7-15.7 | 14.5-15.0 |
+
+- In-car 59.4-60.8 emulated fps (already ~100% in log 32), chase 52.7-58.6 (`elan` 5.55-5.7: 2.6-2.7
+  commands, 2.9-3.0 T&L). The `sh4` saving is ~0.4 ms (~6%).
+- PC SAMPLER in-car: C 43-50%, SH-4 JIT 31-34% (log 32 35%), trampolines 1.8% (2.2%), ARM7 5%. Gone:
+  0C20A2A0 (word copy, 1.47% in log 32's in-car), 0C1D4F4C (list copy, 0.63%), 0C2223FA (divide, 0.45%).
+  0C222000's KB keeps 0.26-0.32% (block 0C222354, another routine than the two divides).
+- `[prof] GAME COPIES per frame` in-car: word copy 30 calls (360 words), the word loop's own entry a few big
+  calls (~4096 words a frame), list copy + head 46-52 calls (3.3-4.7K words), INT DIVIDE 30-62 signed +
+  72-79 unsigned: all native, 0 turned down. (Per-frame integers: "0 calls, 4096 words" is < 1 call a frame.)
+- `[prof] JIT FPU BANKS`: 13 stretches closed with no swap, 6 ending in one, in all the code compiled. The
+  matrix library 0C1F6000-0C1F6BFF still takes 3.0-3.7% of in-car samples (0C1F6400 1.5-1.9, 0C1F6800
+  1.0-1.35, 0C1F6000 0.4); its blocks merged (0C1F6510, 0C1F6610 now hold what were separate blocks). Its
+  share of the 0.4 ms is not separable; the rest of its time is FPU work, not bank swaps.
+- Frame pacing as log 32: VI histogram in the race 0x 44-59, 2x 36-46, 3+ 1-8 per 512 frames; the FPROF
+  tails are the audio ring's waits (`snd` 20-29 ms), at 100% speed.
+
+**Tearing.** The owner saw "some kind of tearing" with any of the three rows on, none with all three
+off. gxRend's present (ASYNC_RENDER, on): render N's display copy is queued into XFB A, its flip asked for
+at the next emulated vblank (if the GPU is done) or at render N+1's start; the flip reaches the screen at
+the next real retrace. Render N+1 copies into B, "the other one", which stays on screen until that retrace.
+The emulation runs on its own clock (SPG deadline at the game's 59.79 Hz, the Wii's VI at 59.94, the audio
+ring's waits), so that retrace falls anywhere: whenever it falls after N+1's copy (~6 ms after its
+STARTRENDER in-car: 1.4 ms CPU + ~5 ms GPU), the copy is written under the scan. The sooner the SH-4 gets
+to STARTRENDER after the flip was asked for, the likelier, so the three speed rows made it show more; the
+race is older than them. The two synchronous 2D presents (VRAM copies, 2D after 3D) copy into the same XFB
+every time, also onto the shown one (no race frames take them).
+
+Built, awaiting log 35: SCREEN BUFFERS (RENDERING, last row, default 3 (NO TEARING), 2 (OLD)). A third XFB,
+and every display copy goes through `xfb_target`: an XFB that is neither `VIDEO_GetCurrentFramebuffer()`
+(on screen) nor `VIDEO_GetNextFramebuffer()` (asked for) nor the one waiting for its flip (libogc's retrace
+handler only moves currentFb to nextFb, so nothing can show it before its own flip). `_vmem.cpp` leaves the
+heap `kScreenBufferBytes` (640 x 576 x 2 = 720 KB) more when chosen; libogc gives VI XFB addresses past
+16 MB, so MEM2 is fine. A copy's XFB is checked at its draw-done interrupt (still `currentFb`: torn), and the
+`[prof] frames shown per second` line ends with `| N screen buffers: X copied onto the picture on screen
+(torn)` (and `, N with no free buffer` if `xfb_target` ever found none: must not happen). To read: a run
+with 2 (OLD) should show the torn count (the proof); with 3 it must be 0. Not done: asking for the flip
+from the draw-done interrupt (shows each frame up to a frame sooner, steadier cadence); worth it if the
+judder (VI 0x/2x) bothers more than the tearing did.
 
 ### Log 33 (2026-11-13): GAME COPIES on the Wii, half of it working
 
@@ -1294,6 +1347,9 @@ badly are skipped (`COMP_MAX_BYTES` 2048). On hardware: DTLB walks 0-1% of cycle
 
 - VRAM PRESENT = NOT DURING 3D: VRAM framebuffer copies between 3D renders caused the flicker
   and wasted presents.
+- SCREEN BUFFERS (2026-11-14, log 34): two XFBs tore (a copy onto the picture still on screen when the
+  last flip had not reached the retrace); a third, chosen against libogc's current/next framebuffer.
+  See "Log 34".
 - Texture cache modes (owner's choice: NORMAL); 4/8bpp CI paths; TMEM cache.
 - Texture cache census (2026-11-11, runner env `IDAS3_TEXCACHE`, boot to a Myogi race): NORMAL
   decodes 0.25 textures a render (2 arena wraps in the run, at the race's load), so the texture

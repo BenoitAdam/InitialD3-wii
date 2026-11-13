@@ -127,6 +127,12 @@ extern "C" int g_motion_fx_preset;      // 0 OFF, 1 SPEED BLUR, 2 FRAME BLEND, 3
 // _vmem.cpp leaves the heap this much more for it.
 constexpr u32 kMotionMaskBytes = 640u * 576u;
 inline bool naomi_MotionInBetween() { return g_motion_fx_preset == 3 || g_motion_fx_preset == 4; }
+// SCREEN BUFFERS (gxRend.cpp xfb_target): 1 = a third display buffer, so a
+// render's display copy never lands on the picture being scanned out (the
+// tearing two buffers allow). _vmem.cpp leaves the heap one more XFB of the
+// largest mode (640 x 576, 2 bytes a pixel).
+extern "C" int g_screen_buffers_preset;
+constexpr u32 kScreenBufferBytes = 640u * 576u * 2u;
 extern "C" int g_motion_level_preset;   // 1 LOW, 2 MEDIUM, 3 HIGH
 extern "C" int g_between_warp_preset;   // IN-BETWEEN picture: 0 SMOOTH (one pass), 1 BANDS (three depth bands), 2 ROTATION ONLY, 3 NO MOVE
 extern "C" bool g_motion_trace_now;     // runner: IDAS3_MOTION's frames

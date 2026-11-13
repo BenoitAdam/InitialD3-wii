@@ -558,9 +558,11 @@ bool _vmem_reserve()
     // Headroom left to the C heap: the renderer's frame buffers and GX FIFO
     // (MEM1), the CHD reader, audio and libogc allocations made after this,
     // with DISPLAY LISTS on their ring (naomi_elan_gx.cpp, allocateFetch), and
-    // with MOTION FX's in-between frames their depth mask (gxRend.cpp).
+    // with MOTION FX's in-between frames their depth mask, with SCREEN BUFFERS
+    // the third display buffer (gxRend.cpp).
     if (!WiiGuestMem_Init(WII_HEAP_KEEP_MEM1, WII_HEAP_KEEP_MEM2 + (g_elan_dl_preset ? kElanDlRingBytes : 0u) +
                                                   (naomi_MotionInBetween() ? kMotionMaskBytes : 0u) +
+                                                  (g_screen_buffers_preset ? kScreenBufferBytes : 0u) +
                                                   hotblocks_heap_bytes() + frame_prof_heap_bytes()))
         return false;
 
