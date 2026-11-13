@@ -21,6 +21,42 @@ it exists.
 
 ### Status (2026-11-12)
 
+- **Log 32** (2026-11-12, `idas3wii_log32.txt`: night Akina, PROFILER + **PC SAMPLER** on, CCALLS and
+  HOTBLOCKS off, FRAMESKIPPING 0; in-car ~5900-9000, chase to ~11160). The fixed sampler works (owner).
+  Speed as log 30 (in-car 57-60 fps, chase 49.5-55, p50 18.75). Profile (OPTIMIZATION.md "Log 32"):
+  in-car C 42-48%, SH-4 JIT 32-36%, ARM7 JIT ~5%, trampolines ~2.2%, **idle 8-16%**; chase C 48-51%, JIT
+  41-43%, ARM7 5-5.5%, trampolines 2.6-2.8%, **idle 0.5%** (CPU-bound). Top C: the ELAN walk `execute`
+  ~5.4% (1.9-2.1% at its header read), the recording's list lookup ~3.5% (`findList` 1.4%,
+  `pagesSettled` 0.7%, `elan_gx_list_box`), `elan_gx_draw` ~3%, `tnl_DrawList` ~2.8%, `tnl_SetMatrix`
+  1.1%, sound ~2.7%. Top SH-4 blocks (chase): 0C20A2A0 2.5% and 0C1D4F4C 1.9%, two game copy loops
+  (runner trace: the word copy 0C20A280 moves 32/64 bytes from main RAM into the store queues; the
+  display-list copy 0C1D4F20 bursts lists into ELAN RAM), then 0C1DC008 1.2% and a flat tail.
+  Built after it, **awaiting log 33**: **GAME COPIES** (RECOMPILER 2, last row, last in `CoreOptionId`,
+  default NATIVE, EMULATED (OLD)): `naomi_copies.cpp` does the word copy's 32-bit loop and both parts
+  of the display-list copy (0C1D4EA0 head, 0C1D4F20 rest) in C at their entry (as SOFT FLOAT), same
+  memory, registers, T and cycles, fingerprinted, anything unusual left to the game's code; expected
+  ~0.5-0.8 ms off a chase frame. PC SAMPLER: block table 8192, new `[PCS] SH-4 code by 1 KB` line.
+  Resolve this build's spans with `port/wii/build/boot_pcs_800436d8.elf`.
+- **Log 31b** (2026-11-12, file `idas3wii_log31.txt`: the build below, night Akina, PROFILER + JIT
+  CCALLS on, HOTBLOCKS off, CACHE HINTS on, FRAMESKIPPING 0, in-car to ~8640 then chase to the end).
+  **PC SAMPLER froze the game at start** (owner), so this run has it off. Cause, from libogc's
+  disassembly: its idle thread (`KThreadIdleMain`, a `b .` loop that runs whenever every thread waits)
+  has a zeroed context but SRR0/SRR1, so **r1 = r2 = r13 = 0**; libogc's IRQ entry switches to
+  `__ppc_excpt_sp` and never touches the interrupted stack, but the sampler's handler pushed its frame
+  on r1: a DSI at 0xFFFFFFA0 inside the handler (RI = 0), libogc's stub then panics on the same bad
+  stack. **Fixed, awaiting log 32**: the handler runs on its own 1 KB stack (`g_fp_pcs_stack`) and loads
+  `_SDA2_BASE_`/`_SDA_BASE_` into r2/r13 like libogc's IRQ entry; samples in the idle loop (the `b .` at
+  the PC) are counted apart, "idle (every thread waiting)" in the `[PCS]` header. Shipped elf:
+  `port/wii/build/boot_pcs_800436b8.elf` (`frame_prof_dump` at 800436B8). Speed: in-car 59.1-60.3 fps,
+  p50 14.6-15.9 (`sh4` 7.05-7.3, `elan` 3.0-3.7, `rend` 1.03-1.43, `arm` 1.25, `aica` 1.03-1.17);
+  chase 46.8-53.8, p50 18.6-20.7 (`sh4` 9.0-9.6, `elan` 4.5-4.9, `rend` 1.9-2.1): log 30's numbers.
+  DISPLAY LISTS 1 MB ring. CACHE HINTS shows no net gain against log 30 (other stretch, CCALLS on):
+  walk 792-914 ns a command (log 30 750-800, ~5-10% slower), T&L ~2.95 us a box in-car and 3.3-3.4
+  chase (log 30 3.2-3.8 and ~3.5, ~5-10% faster), the draw's rest 1.7-2.2 us a list (1.6-1.9).
+  Counters without HOTBLOCKS: ELAN commands in-car 2.95-3.8 ms a frame at IPC 0.56-0.65, load-miss
+  32-41% (chase 4.4-5.6 ms); game + sound + others IPC 0.37-0.43 in-car (0.47-0.51 chase), load-miss
+  9-14%, and **9-11K L1 instruction misses/ms**: the game's own, not HOTBLOCKS' (log 30's 7.3K/ms was
+  the whole rest, the ELAN commands' ~1K/ms included).
 - **Log 31** (2026-11-12, `idas3wii_log31_akina_uphill`: night Akina uphill, PROFILER + JIT CCALLS +
   **JIT HOTBLOCKS** on, CACHE HINTS on, in-car then chase ~7380-8130 then in-car). A diagnostics run,
   not a speed reference: HOTBLOCKS' block table (16384 x 28 B = 448 KB, malloc'd at the first compile)
@@ -31,8 +67,7 @@ it exists.
   32-38% of its cycles in L1 load misses (~2000-2250 L2 data misses/ms, ~120 cycles each): ~1/3
   memory stall, ~2/3 instructions (~1.5M PPC instructions a frame for ~2100-2700 commands and
   ~550-800 lists). Game + sound + the rest: IPC 0.47-0.53, load-miss 12-15%, but ~10-11.5K L1
-  instruction misses/ms (one per ~35 instructions; log 30's whole rest-of-frame without HOTBLOCKS:
-  ~7.3K/ms). HOTBLOCKS (entry counts, table overflowed by 5559 blocks): chase runs the VRAM32 copy
+  instruction misses/ms (one per ~35 instructions; log 31b shows the same without HOTBLOCKS). HOTBLOCKS (entry counts, table overflowed by 5559 blocks): chase runs the VRAM32 copy
   loop 0C20A2A0 ~1.6x more (400-450K entries/s vs 265K) and an SQ copy loop 0C1D4F4C (pref) that
   in-car barely runs. CACHE HINTS cannot be judged from it (the draw's rest 1.5-1.8 us a list vs
   1.6-1.9; walk 813-911 ns a command vs ~800, under HOTBLOCKS' code pressure).
@@ -47,7 +82,7 @@ it exists.
   `[HW] CPU counters` lines while on. Resolve the C spans with `powerpc-eabi-addr2line -f -C -e
   boot.elf ADDR` on the boot.elf whose `frame_prof_dump` address matches the `[PCS]` header (keep a
   copy of each shipped boot.elf as `port/wii/build/boot_pcs_<address>.elf`; `make clean` deletes it).
-  Untested on hardware (Dolphin likely gives "no samples").
+  This first build froze at start on the Wii (log 31b above: fixed).
 - **Log 30** (2026-11-12, two runs of night Akina with the five rows below on, FRAMESKIPPING 0,
   MIRROR OFF + GAME SKIP; `idas3wii_log_30_akina_uphill` JIT CCALLS off, `..._downhill` CCALLS on).
   Owner: "more performance indeed". **In-car: 59.3-60.8 emulated fps nearly all race**, p50
@@ -287,7 +322,7 @@ it exists.
   yet): S ~11, D ~15.5-17.6, so AUTO should hold 100% with nearly every frame drawn. The owner's
   target (100% at ~45 shown) is met by day and, per log 27, at night in-car; the night chase view
   (no mirror to skip) is not measured since log 23.
-- Latest real-Wii log: **log 31** (2026-11-12, diagnostics run, entry above); latest speed
+- Latest real-Wii log: **log 32** (2026-11-12, the first PC SAMPLER profile, entry above); latest speed
   reference: **log 30** (2026-11-12, entry above). Before it **log 27** (2026-11-11, entry above), log 26 and 2P log 3
   (2026-11-11, entries above; log 26's walk, 750-810 ns a command on drawn frames with ELAN PREFETCH
   ON, matches 2P log 1's: the OFF A/B is still to do).
@@ -425,6 +460,7 @@ current work:
 | `port/emu/naomi/naomi_frontend.cpp` | Core init/run/settings, idle-loop skip (`naomi_IdleCycleScale`), assert/BIOS-entry traps |
 | `port/emu/naomi/naomi_board.cpp` | DIMM board, cart DMA, register counters |
 | `port/emu/naomi/naomi_softfloat.cpp` | SOFT FLOAT: the game's software double divide/multiply (GCC soft-float, SH-4 integer code) run natively, fingerprinted; called by the JIT at the routines' entry |
+| `port/emu/naomi/naomi_copies.cpp` | GAME COPIES: the game's word copy (0C20A280, into the store queues in races) and display-list copy (0C1D4EA0 + 0C1D4F20, into ELAN RAM) done in C, same memory/registers/T/cycles, fingerprinted; called by the JIT at the routines' entry |
 | `port/emu/naomi/naomi_motion.cpp` | MOTION FX: the race camera's motion a vblank (followed car's step and turn, in-car view, the scene's focal length) for gxRend's `mfx_*` effects |
 | `port/emu/naomi/naomi_2p.cpp` | 2 PLAYERS: whose turn the camera is (rig target, changed at every STARTRENDER), each view's aspect, the CPU car driven by the second pad, the HUD speed of its view; `naomi_2pHalf()` tells the renderers which half a render goes to, `naomi_2pSkip()` pairs their frameskip |
 | `port/emu/naomi/naomi_elan*.cpp` | ELAN: `_cmd` command walker (chained lists, model skip, user clip), `_tnl` CPU T&L + depth measure/pin + GPU light sets (point lights as GX local lights), `_gx` GPU T&L path, `_fetch.inc` GPU vertex-fetch programs (+ each list's bounding box, `cachedBox`) and their GX display-list entries (DISPLAY LISTS: `dlEntry`, its own ring, GPU waits before writing over a queued entry) |
@@ -499,6 +535,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--dimm-ahead 0/1` | DIMM AHEAD (default 0 here, the launcher's is on): run cache + stream read-ahead; on Windows the decode is done on the spot |
 | `--reflection N` | REFLECTIONS: one reflection map build in N (default every one, the launcher's is 4) |
 | `--soft-float 0/1/2` | SOFT FLOAT (default 0 here, the launcher's is NATIVE): 1 = the game's double divide/multiply run natively, 2 = the game's code runs and every result is checked against the native one (`SOFT FLOAT ... MISMATCHES` must stay 0). `--soft-float-test N`: N random pairs against the host's doubles, no CHD needed |
+| `--game-copies 0/1/2` | GAME COPIES (default 0 here, the launcher's is NATIVE): 1 = the game's copy routines done natively, their cycles charged to the interpreter (`g_sh4_hook_cycles`); 2 = the game's code runs and every call the native copy would take is checked at its return: registers, T, memory, store queues, QACR, the pushed r14, the list's word 15 (`GAME COPIES ... MISMATCHES` must stay 0). Exit lines: calls a frame, native, words a frame |
 | env `IDAS3_SF_PROBE=LO:HI[:FROM]` | names the routines called into that code range by trying native double operations on their r4-r7 and r0/r1 (how the soft-float routines were found) |
 | `--depth-plane 0/1` | DEPTH MEASURE: 1 = RACE PLANE, frames with no pin keep the race's near plane |
 | env `IDAS3_NEAR_TRACE=1` | a `[near]` line per render: pin, frame near plane, vertices measured and why |
@@ -621,6 +658,11 @@ and SH-4 block; see log 31's entry); `[CC]` JIT call-outs into C
   448 KB table (malloc'd at the first compile) left no room for the DISPLAY LISTS ring (allocated at
   the first race), and `rend` grew ~0.6-1 ms. Size such tables into `_vmem.cpp`'s heap headroom
   (`hotblocks_heap_bytes()`, `frame_prof_heap_bytes()`), and read `[elan] GX display lists:` first.
+- An asynchronous exception handler (the PC SAMPLER's) must not use the interrupted r1, r2 or r13:
+  libogc's idle thread (`KThreadIdleMain`, `b .`) runs with all three 0, and libogc's own IRQ entry
+  switches to `__ppc_excpt_sp`. A synchronous one (the fastmem DSI handler) can, because its faults
+  only come from code with a real stack. A fault inside a handler (MSR[RI] = 0) goes to libogc's panic
+  path, which prints nothing on screen and loops: it looks like a freeze with a cut log.
 - Nothing in the core may grow on the heap during the game: a few hundred KB are left beside
   the page pool, and with `-fno-exceptions` a failed `new` is `abort()`. A path that a day race
   never takes can still be hit later: the CPU T&L vectors stayed empty in races (the GPU path

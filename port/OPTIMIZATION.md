@@ -396,7 +396,8 @@ render. Menus, attract mode and car select run at 100%.
 | 11-05 | ELAN PREFETCH (run-ahead dcbt in the lists outside models), walk split by dropped/drawn frames | 2P log 1 (2 PLAYERS, day, ON only): dropped-frame walk 460-510 ns a header (~700 estimated before), drawn 760-810; an OFF run still to come |
 | 11-12 | LIST MATHS, 3D DECODE, DRAW MEMO (newlib's `sqrtf` loop and the divisions out of the recording, decode and draw), SOUND STEP, SH-4 TIMESLICE 3584 | log 30 (night Akina, every frame drawn, MIRROR OFF + GAME SKIP): **in-car 59.3-60.8 fps nearly all race**, p50 15.0-15.5, walk ~800 ns a command (928), timeslice call-outs halved; chase view 45-54 |
 | 11-12 | CACHE HINTS (`dcbz` on the per-render tables, prefetches in the draw, the walk and gxRend's strip loop), PMC split of the ELAN phase | log 31 (HOTBLOCKS run, DISPLAY LISTS starved of heap): split read, CACHE HINTS not judged; awaiting log 32 |
-| 11-12 | PC SAMPLER (performance monitor interrupt, 10 kHz PC profile), diagnostics' heap headroom, DISPLAY LISTS ring fallback | awaiting log 32 |
+| 11-12 | PC SAMPLER (performance monitor interrupt, 10 kHz PC profile), diagnostics' heap headroom, DISPLAY LISTS ring fallback | log 31b: the sampler froze at start (its handler used the idle thread's r1 = 0; fixed: own stack); CACHE HINTS no net gain (walk ~5-10% slower, T&L ~5-10% faster); log 32: the profile (chase CPU-bound, idle 0.5%; in-car idle 8-16%) |
+| 11-12 | GAME COPIES (the game's word copy and display-list copy in C), PC SAMPLER block table 8192 + SH-4 by 1 KB | awaiting log 33 (expected ~0.5-0.8 ms off a chase frame) |
 | 11-04 | PAGE GUARD (unwritten ELAN pages read-only, no per-render check) | log 19: exact, page checks ~0.15 -> 0.055 ms a render; race 45-51 fps at ~80K vertices with REAL TIME sound |
 
 ## What was done
@@ -490,6 +491,100 @@ From the `[CC]` and `[HOT]` censuses of a race:
   CR0 branch...), JIT ICI = CLEAR ALL (the game flushes the I-cache once).
 - Correctness fixes found on the way: 64-bit handler path swapped words on big-endian.
 
+### Log 32 (2026-11-12): the first PC SAMPLER profile
+
+File `idas3wii_log32.txt`: night Akina, PROFILER + PC SAMPLER on, JIT CCALLS and HOTBLOCKS off, CACHE
+HINTS on, FRAMESKIPPING 0; in-car ~5900-9000, chase ~9000-11160. Spans resolved with
+`port/wii/build/boot_pcs_800436b8.elf` (`powerpc-eabi-nm -n -S -C`; 1% of the samples is ~0.17 ms of a
+60 fps frame, ~0.19 ms of a chase frame).
+
+- Speed as logs 30/31b, so the sampler costs nothing visible: in-car 57-60 emulated fps (p50 14.9;
+  `sh4` 7.0, `elan` 3.6, `rend` 1.5, `arm` 1.07, `aica` 0.99), walk 1.6-2.2 ms a frame (1800-2500
+  commands, 830-920 ns); chase 49.5-55 (p50 18.75; `sh4` 9.13, `elan` 4.40, `rend` 1.82, `arm` 1.23,
+  `aica` 1.09), walk 2.1-2.8 ms (2550-3160 commands, 820-900 ns).
+- Where the time goes. In-car: C code 42-48%, SH-4 JIT 32-36%, ARM7 JIT ~5%, fastmem trampolines
+  ~2.2%, **idle 8-16%** (every thread waiting: the frame pacing, time to spare). Chase: C 48-51%, JIT
+  41-43%, ARM7 5-5.5%, trampolines 2.6-2.8%, **idle 0.3-0.6%**: the CPU never waits, the chase view is
+  CPU-bound. The block table (2048) overflowed by ~3000-3800 samples a report (~10% of the JIT's).
+- C by function, chase (% of all samples):
+  - ELAN walk `execute` ~5.4% (~1 ms a frame); its loop head, where a command header that misses
+    the cache is first read, 1.9-2.1% alone.
+  - The recording's lookups: `findList` 1.4% (linear probing in a 4096-slot table holding up to 3072
+    lists), `pagesSettled` 0.7%, `elan_gx_list_box` 0.9-1.5%, CACHE HINTS' helpers 0.4-0.5%: ~3.5%.
+  - `tnl_DrawList` (the recording, inlined) ~2.8%, `tnl_SetMatrix` 1.1-1.2%, `elan_gx_draw` ~3%,
+    `measureList`/`buildLightSet` 0.4%, `drawStrips<UV>` (CPU-fed lists) 0.4-0.75%.
+  - `memcpy` 0.6-0.8%, `memset` 0.4%; sound: `AICA_Sample` ~2% spread, `StreamStep` ~0.7%;
+    `SetTextureParams` ~0.6%, `bm_GetCode` 0.3%, `libPvr_UpdatePvr` 0.3%, the GX token/region
+    callbacks 0.3%, `WiiGuestMem_ElanGpuPage` 0.3%, the sampler's own drain 0.3%.
+  - Menus and loading: CHD decode (`bitstream_flush`/`ecc_compute_bytes` ~6%, `inflate_fast` 2.3%),
+    `desCrypt` ~5%, `texture_TW<conv565>` 2.5%.
+- SH-4 blocks, chase: **0C20A2A0 2.5%** (the word loop of the game's copy routine 0C20A280: runner
+  trace, every call in a race frame copies 32 or 64 bytes from main RAM into the store queues),
+  **0C1D4F4C 1.9%** (the burst loop of the display-list copy 0C1D4F20: main RAM to ELAN RAM through
+  the store queues), 0C1DC008 1.2% (an `fmov.d` store-queue burst from the FPU registers), 0C1D9900
+  0.75, 0C1D80BE 0.74, 0C0D1A60 0.72, 0C2223FA 0.50, 0C1400EE 0.46, 0C1D3A94 0.43, 0C048E9E 0.38 (the
+  reflection map), then a long tail at 0.15-0.35 each. In-car: 0C20A2A0 1.47, 0C1DC008 1.07,
+  0C1D80BE 0.70, 0C1D4F4C 0.64. Of chase's +2.1 ms of `sh4`, the two copies are ~0.5 ms and
+  0C0D1A60/0C1400EE/0C048E9E/0C15114C ~0.3; the rest is spread.
+
+Built after it, **awaiting log 33**:
+
+- **GAME COPIES** (RECOMPILER 2, last row, default NATIVE; EMULATED (OLD) keeps the recompiled
+  loops). `naomi_copies.cpp`: three of the game's routines done in C, called at their entry by the
+  recompiler (as SOFT FLOAT's): the word copy 0C20A280 (its 32-bit loop; the 8-aligned `fmov.d`
+  loop stays the game's), the display-list copy's head 0C1D4EA0 (3 bursts, word 15 kept) and the
+  rest 0C1D4F20. Same memory (store queues, ELAN RAM, the pushed r14, QACR, word 15), same registers
+  and T, and the cycles the game's blocks would have charged (so timing stays as before). Each is
+  fingerprinted (code and literal pool); what it cannot do exactly (other areas, misalignment, the
+  TA, lengths out of the ordinary) runs the game's code. Expected: most of the copies' ~4.4% of the
+  chase frame and part of the trampolines' 2.8%, ~0.5-0.8 ms in the chase view, ~0.3-0.4 in-car.
+  Runner `--game-copies 0/1/2` (2 checks every call's registers, memory, queues against the native
+  model). Checked on the race route to frame 10500 (in-car, chase, in-car): word copy 119,590 of
+  131,625 calls taken natively (the rest is the 8-aligned `fmov.d` path), list head 166,786 of
+  166,786, list rest 166,783 of 166,786, 0 mismatches (one return found the popped r14's stack slot
+  reused by an interrupt: memory below r15, now counted apart). With `--game-copies 1` the same
+  calls and **record digests identical** to the game's code at every render; the sound hash
+  differs (the copy's cycles are charged at once, so SH-4 writes land a few hundred cycles
+  differently against the sound chip, as SH-4 TIMESLICE did; no sound RAM is copied).
+- PC SAMPLER: block table 8192 (was 2048) and a new `[PCS] SH-4 code by 1 KB` line (JIT samples by
+  1 KB of guest code from 0C000000, whatever the block). New elf to resolve spans:
+  `boot_pcs_800436d8.elf`.
+
+### Log 31b (2026-11-12): the PC SAMPLER build, sampler off (it froze at start)
+
+File `idas3wii_log31.txt`: night Akina, PROFILER + JIT CCALLS on, HOTBLOCKS and PC SAMPLER off,
+CACHE HINTS on, FRAMESKIPPING 0; in-car to ~8640, chase to the end (~10800).
+
+- In-car 59.1-60.3 emulated fps, p50 14.6-15.9; typical `sh4` 7.05-7.3, `elan` 3.0-3.7, `rend`
+  1.03-1.43, `arm` 1.25, `aica` 1.03-1.17. Chase 46.8-53.8, p50 18.6-20.7; `sh4` 9.0-9.6, `elan` 4.5-4.9,
+  `rend` 1.9-2.1. Log 30's numbers in both views. The DISPLAY LISTS ring got its 1 MB.
+- CACHE HINTS against log 30 (another stretch, CCALLS on here): the walk 792-914 ns a command (log 30:
+  in-car 796 with CCALLS off, chase 750-790 with it on), so ~5-10% slower; T&L ~2.95 us a box in-car,
+  3.3-3.4 chase (log 30: 3.2-3.8, ~3.5), ~5-10% faster; the draw's rest 1.7-2.2 us a list (1.6-1.9),
+  no faster. No net gain visible. The walk's part (prefetches at each model call) is the suspect for
+  the slower walk, the `dcbz` zeroing the likely T&L gain; they share one row, so only splitting it or
+  the PC SAMPLER can separate them.
+- Counters without HOTBLOCKS: ELAN commands in-car 2.95-3.8 ms a frame (IPC 0.56-0.65, load-miss
+  32-41%), chase 4.4-5.6 (IPC 0.59-0.63); game + sound + others in-car IPC 0.37-0.43, load-miss 9-11%,
+  chase 0.47-0.51 and 12-14%, both with **9-11K L1 instruction misses/ms** and ~4K mispredicted
+  branches/ms. So log 31's I-miss rate was not HOTBLOCKS': log 30's 7.3K/ms was the whole rest of the
+  frame, the ELAN commands' ~1K/ms included. At one miss per ~30 instructions it may be a large share
+  of `sh4`; the sampler should show whether the time sits in a few blocks or is spread out.
+
+**PC SAMPLER fix** (built after log 31b, awaiting log 32). libogc's idle thread
+(`KThreadIdleMain`, a `b .` loop that runs whenever every thread waits: vsync, audio, GPU waits) has a
+zeroed context except SRR0/SRR1 (`KThreadInit` disassembled), so it runs with r1 = r2 = r13 = 0.
+libogc's IRQ entry (`PPCExcptIrqHandler`) never uses the interrupted stack: it moves to
+`__ppc_excpt_sp` and reloads r2/r13. The sampler's handler pushed its frame on the interrupted r1. The
+first sample in the idle loop stored to 0xFFFFFFA0, a DSI with MSR[RI] = 0, and libogc's stub sent it
+to `PPCExcptDefaultHandler`, which stays on the faulting stack: a freeze with no message. Now the
+handler moves to its own 1 KB stack (`g_fp_pcs_stack`, the interrupted r1 kept as the back chain),
+saves r2/r13 and loads `_SDA2_BASE_`/`_SDA_BASE_`. A sample whose PC holds `b .` (0x48000000) counts as
+idle, shown as "idle (every thread waiting)" in the `[PCS]` header: the share of time the CPU waits.
+Checked in the disassembly (boot.elf, `frame_prof_dump` at 800436B8, kept as
+`port/wii/build/boot_pcs_800436b8.elf`): the frame at `g_fp_pcs_stack` + 0x390, 16-byte aligned; r1
+restored before the `rfi`; `fp_pcs_sample` still has no FPU instruction and no stack frame.
+
 ### Log 31 (2026-11-12): night Akina uphill with JIT HOTBLOCKS (a diagnostics run)
 
 PROFILER, JIT CCALLS and JIT HOTBLOCKS on, CACHE HINTS on; in-car, chase ~7380-8130, in-car. Not a
@@ -504,8 +599,8 @@ ring needed (`no memory`), so `cached programs` took 0.7-1.35 ms a render (log 3
   Prefetching can only take the stall third; the instruction count is the larger lever, and a
   per-function profile is needed to know where it goes (the PC SAMPLER below).
 - Game, sound and the rest: IPC 0.47-0.53, load-miss 12-15%, ~1.2-1.5K L2 data misses/ms, but
-  ~10-11.5K L1 instruction misses/ms (one per ~35 instructions). Log 30, without HOTBLOCKS, had
-  ~7.3K/ms over the whole rest of the frame (the ELAN phase included). The JIT'd game code does not
+  ~10-11.5K L1 instruction misses/ms (one per ~35 instructions); log 31b, without HOTBLOCKS, has
+  9-11K/ms too (log 30's 7.3K/ms was the whole rest of the frame, the ELAN phase included). The JIT'd game code does not
   fit the 32 KB L1I, and whether those misses hit the L2 is unknown (the 750CL has an "L2
   instruction misses" event, not counted yet). If they mostly do not, code layout (hot paths
   together, smaller block prologues/epilogues) becomes a lever on `sh4`.
@@ -1179,10 +1274,26 @@ there; the push runs free in that mode since (Done after log 24).
 
 ## What is left, best first
 
-After log 31: the next step is measurement, not a guess. Log 32 with the PC SAMPLER (night Akina,
-in-car then chase) says which C functions take the ELAN phase's ~1.5M instructions a frame and the
-render's time, and which SH-4 blocks take the most time (not entries) in each view; the CACHE HINTS
-A/B against log 30 comes with it (the render probe lines stay on). Candidates to check against it:
+After log 32 (the first PC SAMPLER profile): the chase view is CPU-bound (idle 0.5%), ~2 ms short of
+60 fps; in-car has 8-16% to spare. GAME COPIES is built (log 33 to read: the `[PCS]` share of
+0C20A2A0/0C1D4F4C and the trampolines, `sh4` in the chase view). Next candidates, by the profile:
+1. The recording's list lookup (~3.5% chase: `findList` 1.4%, `pagesSettled` 0.7%, `list_box`): a
+   model's remembered fetch slot (CACHE HINTS keeps it per head) checked first, the hash probe only
+   when it does not match (exact: one entry a key). ~0.1-0.2 ms.
+2. The walk's own loop (~5.4%, 1.9-2.1% at its header read): headers inside models past the 8
+   remembered ones still miss; more heads a model, or the model's block prefetched whole when small.
+3. `tnl_SetMatrix` (1.1%): a 160-byte matrix command read and converted per call.
+4. The SH-4 game code: no single block over 1.2% once the copies are gone (0C1DC008, an `fmov.d`
+   store-queue burst, needs the FPU registers), so the JIT's own cost per instruction (I-cache
+   misses ~10K/ms) is the lever there: the new `[PCS] SH-4 code by 1 KB` line says which routines.
+5. Sound (~2.3 ms, ~7.5% of samples with the ARM7 JIT): no exact lever known.
+
+After log 31 (and 31b, where the first sampler build froze): the next step is measurement, not a
+guess. Log 32 with the fixed PC SAMPLER (night Akina, in-car then chase, JIT CCALLS off) says which C
+functions take the ELAN phase's ~1.5M instructions a frame and the render's time, which SH-4 blocks
+take the most time (not entries) in each view, and how much of the frame the CPU idles. Log 31b
+found no net CACHE HINTS gain (walk slower, T&L faster): the sampler's split of the walk will say
+whether its model-call prefetches should go. Candidates to check against it:
 the walk's per-command cost (~350 instructions), the recording per list (~1400), the JIT'd game's
 instruction fetch (~10K L1I misses/ms: block prologue/epilogue size, hot/cold layout), the VRAM32
 copy loop 0C20A2A0 and the SQ copy loop 0C1D4F4C in the chase view.

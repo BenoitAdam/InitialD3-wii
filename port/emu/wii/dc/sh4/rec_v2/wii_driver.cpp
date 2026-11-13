@@ -315,6 +315,13 @@ typedef u32 (*NaomiSoftFloatFn)(u32 r4, u32 r5, u32 r6, u32 r7);
 extern "C" NaomiSoftFloatFn naomi_SoftFloatEntry(u32 pc);
 extern "C" u32 g_soft_float_result[2];
 
+// GAME COPIES preset (naomi_copies.cpp): two of the game's bulk copies, native.
+extern "C" u32 naomi_GameCopyEntry(u32 pc);
+extern "C" u32 naomi_GameCopyWords(u32 dst, u32 src, u32 len);
+extern "C" u32 naomi_GameCopyList(u32 src, u32 dst, u32 r14, u32 r15);
+extern "C" u32 naomi_GameCopyHead(u32 src, u32 dst, u32 r14, u32 r15);
+extern "C" u32 g_game_copy_regs[8];
+
 // 2 PLAYERS (naomi_2p.cpp): the HUD speed of the second player's view.
 extern "C" u32 naomi_2pHudEntry(u32 pc);
 extern "C" void naomi_2pHud(u32 r14);
@@ -3178,6 +3185,48 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		u32 lo=ppc_addr_high(ppc_rarg1,(void*)g_soft_float_result);	// 8-aligned: lo+4 stays in range
 		ppc_lwz(GetIntReg(reg_r0),ppc_rarg1,lo);
 		ppc_lwz(GetIntReg(reg_r1),ppc_rarg1,lo+4);
+		ppc_sh_load(ppc_next_pc,reg_pr);
+		ppc_jump(loop_no_update);
+		own->MarkLabel();
+	}
+
+	// GAME COPIES: this block is the entry of the game's word copy (1),
+	// display-list copy (2) or its first 96 bytes (3). The native copy returns
+	// the cycles the game's blocks would have charged after this one (0: the
+	// game's code below runs) and leaves the registers the routine would in
+	// g_game_copy_regs; then the call returns to PR, as the SOFT FLOAT entries do.
+	if (const u32 copy = naomi_GameCopyEntry(block->start))
+	{
+		ppc_sh_load(ppc_rarg0,reg_r4);
+		ppc_sh_load(ppc_rarg1,reg_r5);
+		if (copy == 1)
+		{
+			ppc_sh_load(ppc_rarg2,reg_r6);
+			ppc_call((void*)&naomi_GameCopyWords);
+		}
+		else
+		{
+			ppc_sh_load(ppc_rarg2,reg_r14);
+			ppc_sh_load(ppc_rarg3,reg_r15);
+			ppc_call(copy == 2 ? (void*)&naomi_GameCopyList : (void*)&naomi_GameCopyHead);
+		}
+		ppc_cmpi(ppc_cr0,ppc_rrv0,0,0);
+		ppc_label* own=ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq own
+		ppc_subfx(ppc_cycles,ppc_rrv0,ppc_cycles,0,0);	// cycles -= the loop's
+		// The registers g_game_copy_regs holds, per kind (naomi.h kGameCopyRegs).
+		static const u32 kRegs[3][5]={{reg_r0,reg_r4,reg_r5,reg_r6},
+		                              {reg_r1,reg_r2,reg_r3,reg_r5},
+		                              {reg_r1,reg_r2,reg_r3,reg_r4,reg_r7}};
+		const u32 n=copy==3 ? 5 : 4;
+		const u32 lo=ppc_addr_high(ppc_rarg1,(void*)g_game_copy_regs);	// 32-aligned: lo+28 stays in range
+		for (u32 i=0;i<n;i++)
+		{
+			ppc_lwz(ppc_rarg0,ppc_rarg1,lo+i*4);
+			ppc_sh_store(ppc_rarg0,kRegs[copy-1][i]);
+		}
+		ppc_li(ppc_rarg0,copy==1 ? 1 : 0);
+		ppc_sh_store(ppc_rarg0,reg_sr_T);
 		ppc_sh_load(ppc_next_pc,reg_pr);
 		ppc_jump(loop_no_update);
 		own->MarkLabel();

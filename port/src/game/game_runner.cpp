@@ -101,6 +101,7 @@ extern "C" int g_sound_step_preset;       // SOUND STEP (emu/plugs/nullAICA/aica
 extern "C" int g_sh4_wide_slice_preset;   // SH-4 TIMESLICE (emu/dc/sh4/sh4_interpreter.cpp)
 extern "C" int g_cache_hints_preset;      // CACHE HINTS (emu/naomi/naomi_elan_cmd.cpp)
 extern "C" int g_pc_sampler_preset;       // PC SAMPLER (emu/plugs/drkPvr/frame_prof.cpp)
+extern "C" int g_game_copies_preset;      // GAME COPIES (emu/naomi/naomi_copies.cpp)
 #if defined(GEKKO)
 u32 recSh4_CodeCacheHighWater();      // emu/dc/sh4/rec_v2/driver.cpp
 u32 recSh4_CodeCacheSize();
@@ -465,7 +466,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_between_warp_preset,  &g_headlight_preset,  &g_jit_frswap_preset,  &g_elan_model_prefetch_preset,
         &g_aica_half_mix_preset, &g_list_maths_preset, &g_walk_decode_preset, &g_draw_memo_preset,
         &g_sound_step_preset,    &g_sh4_wide_slice_preset, &g_cache_hints_preset,
-        &g_pc_sampler_preset};
+        &g_pc_sampler_preset,    &g_game_copies_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

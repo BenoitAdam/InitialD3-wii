@@ -145,6 +145,33 @@ extern "C" u32 naomi_SoftFloatDiv(u32 r4, u32 r5, u32 r6, u32 r7);
 extern "C" u32 naomi_SoftFloatMul(u32 r4, u32 r5, u32 r6, u32 r7);
 extern "C" u32 g_soft_float_result[2];
 extern "C" int g_soft_float_preset;
+// GAME COPIES (naomi_copies.cpp): the game's word copy (0C20A280, its 32-bit
+// loop) and its store-queue display-list copy (0C1D4EA0 the first 96 bytes,
+// 0C1D4F20 the rest) done natively. Entry: which one starts at pc (0 none, or
+// the option is off). Each returns 0 to leave the call to the game's code, else
+// the SH-4 cycles the game's blocks would have charged after the entry block,
+// with the registers it leaves in g_game_copy_regs (kGameCopyRegs says which)
+// and T = kGameCopyT.
+enum
+{
+    kGameCopyNone = 0,
+    kGameCopyWords = 1,     // dst r4, src r5, bytes r6
+    kGameCopyList = 2,      // src r4, dst r5 (+ r14, r15)
+    kGameCopyHead = 3       // src r4, dst r5 (+ r14, r15)
+};
+extern "C" u32 naomi_GameCopyEntry(u32 pc);
+extern "C" u32 naomi_GameCopyWords(u32 dst, u32 src, u32 len);
+extern "C" u32 naomi_GameCopyList(u32 src, u32 dst, u32 r14, u32 r15);
+extern "C" u32 naomi_GameCopyHead(u32 src, u32 dst, u32 r14, u32 r15);
+// Only checks whether the copy would be taken natively (the runner's check).
+extern "C" u32 naomi_GameCopyWould(u32 kind, u32 r4, u32 r5, u32 r6, u32 r15);
+extern "C" u32 g_game_copy_regs[8];
+// Per kind: the SH-4 registers g_game_copy_regs holds, in order (-1 ends), and T.
+static const int kGameCopyRegs[4][6] = {{-1}, {0, 4, 5, 6, -1}, {1, 2, 3, 5, -1}, {1, 2, 3, 4, 7, -1}};
+static const u32 kGameCopyT[4] = {0, 1, 0, 0};
+// The entry block's instructions (the interpreter charges each one).
+static const u32 kGameCopyEntryCycles[4] = {0, 5, 21, 48};
+extern "C" int g_game_copies_preset;
 void naomi_VBlank();
 void naomi_OnStartRender();
 // Called from the update cascade: logs the CPU state once if execution ever

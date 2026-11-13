@@ -56,8 +56,14 @@ static const u32 kPcsTextLo = 0x80003F00u;
 static const u32 kPcsSpanShift = 8;
 static const u32 kPcsSpans = 8192;     // 2 MB of code (.text is ~1.4 MB)
 static const u32 kPcsRing = 4096;      // power of two
-static const u32 kPcsBlocks = 2048;    // power of two
-static const u32 kPcsBytes = kPcsSpans * 4 + kPcsRing * 4 + kPcsBlocks * 8;
+// Log 32: 2048 blocks overflowed by ~10% of the JIT samples in a race.
+static const u32 kPcsBlocks = 8192;    // power of two
+// The JIT samples also by 1 KB of SH-4 code from 0C000000 (the game's code is
+// in its first 4 MB), whatever the block: a routine split over many blocks.
+static const u32 kPcsRegionLo = 0x0C000000u;
+static const u32 kPcsRegionShift = 10;
+static const u32 kPcsRegions = 4096;
+static const u32 kPcsBytes = kPcsSpans * 4 + kPcsRing * 4 + kPcsBlocks * 8 + kPcsRegions * 4;
 
 // Heap the sampler takes when it is on: _vmem.cpp leaves it out of the guest
 // page pool.
@@ -411,6 +417,13 @@ static double fp_ratio(u64 a, u64 b)
 // It takes PMC1, so the [HW] counter lines stop (the render probe lines stay).
 // The interrupt is masked while MSR[EE] is 0 (IRQ handlers, IRQ_Disable
 // sections): their time lands on the instruction after them.
+// The interrupt can land anywhere EE is 1, libogc's idle thread included
+// (KThreadIdleMain, a `b .` loop that runs whenever every thread waits). Its
+// context is zeroed BSS but for SRR0/SRR1, so it runs with r1 = r2 = r13 = 0:
+// the handler must not push on the interrupted stack (the first build did, and
+// froze at the first sample in the idle loop: a DSI at 0xFFFFFFA0 with RI = 0
+// sends libogc's stub to its panic path, on the same bad stack). Like libogc's
+// IRQ entry, it switches to its own stack and loads the small-data bases.
 // ---------------------------------------------------------------------------
 extern "C" const u8* g_arm7_code_lo;
 extern "C" const u8* g_arm7_code_hi;
@@ -424,11 +437,15 @@ struct PcsBlock { u32 pc, n; };
 static u32* s_pcs_span = 0;
 static u32* s_pcs_ring = 0;
 static PcsBlock* s_pcs_blk = 0;
+static u32* s_pcs_region = 0;
 static volatile u32 s_pcs_head = 0;     // written by the interrupt
 static u32 s_pcs_tail = 0;              // by the frame loop
 static volatile u32 s_pcs_on = 0;
 static bool s_pcs_failed = false;
 static u32 s_pcs_total = 0, s_pcs_jit = 0, s_pcs_arm = 0, s_pcs_tramp = 0, s_pcs_other = 0, s_pcs_lost = 0;
+static u32 s_pcs_idle = 0;
+// The handler's own stack (see above). 1 KB: its frame and fp_pcs_sample, a leaf.
+extern "C" { u32 g_fp_pcs_stack[256] __attribute__((aligned(32))); }
 static u32 s_pcs_unfound = 0, s_pcs_full = 0, s_pcs_t0 = 0;
 static int s_pcs_dumps = 0;
 
@@ -470,14 +487,20 @@ extern "C" void fp_pcs_sample(u32 pc)
   }
   const u32 t = pc - kPcsTextLo;
   if (t < (kPcsSpans << kPcsSpanShift))
-    s_pcs_span[t >> kPcsSpanShift]++;
+  {
+    if (*(const u32*)pc == 0x48000000u)   // `b .`: libogc's idle loop, every thread waiting
+      s_pcs_idle++;
+    else
+      s_pcs_span[t >> kPcsSpanShift]++;
+  }
   else
     s_pcs_other++;
 }
 
 // The interrupt's entry, from libogc's general exception stub (see the DSI
-// handler in wii_fastmem.cpp for its contract): save what C clobbers, count,
-// restore, resume where the program was.
+// handler in wii_fastmem.cpp for its contract: r11/r12 are in SPRG0/SPRG1 and
+// free, SRR0/SRR1/CR in __ppc_excpt_buf). On its own stack: save what C
+// clobbers, count, restore, resume where the program was.
 extern "C" void __fp_pcs_handler(void);
 asm(R"(
     .text
@@ -485,41 +508,52 @@ asm(R"(
     .globl  __fp_pcs_handler
     .type   __fp_pcs_handler, %function
 __fp_pcs_handler:
-    stwu    1, -96(1)
+    lis     12, (g_fp_pcs_stack + 1024 - 112)@ha
+    addi    12, 12, (g_fp_pcs_stack + 1024 - 112)@l
+    stw     1,  0(12)                       # back chain = the interrupted r1 (0 in the idle loop)
+    mr      1, 12
     stw     0,  16(1)
-    stw     3,  20(1)
-    stw     4,  24(1)
-    stw     5,  28(1)
-    stw     6,  32(1)
-    stw     7,  36(1)
-    stw     8,  40(1)
-    stw     9,  44(1)
-    stw     10, 48(1)
+    stw     2,  20(1)
+    stw     3,  24(1)
+    stw     4,  28(1)
+    stw     5,  32(1)
+    stw     6,  36(1)
+    stw     7,  40(1)
+    stw     8,  44(1)
+    stw     9,  48(1)
+    stw     10, 52(1)
+    stw     13, 56(1)
     mflr    0
-    stw     0,  52(1)
-    mfctr   0
-    stw     0,  56(1)
-    mfxer   0
     stw     0,  60(1)
+    mfctr   0
+    stw     0,  64(1)
+    mfxer   0
+    stw     0,  68(1)
+    lis     2, _SDA2_BASE_@ha               # small-data bases, as libogc's IRQ entry
+    addi    2, 2, _SDA2_BASE_@l
+    lis     13, _SDA_BASE_@ha
+    addi    13, 13, _SDA_BASE_@l
     lis     3, __ppc_excpt_buf@ha
     lwz     3, __ppc_excpt_buf@l(3)         # r3 = interrupted PC (saved SRR0)
     bl      fp_pcs_sample
-    lwz     0,  60(1)
+    lwz     0,  68(1)
     mtxer   0
-    lwz     0,  56(1)
+    lwz     0,  64(1)
     mtctr   0
-    lwz     0,  52(1)
+    lwz     0,  60(1)
     mtlr    0
-    lwz     10, 48(1)
-    lwz     9,  44(1)
-    lwz     8,  40(1)
-    lwz     7,  36(1)
-    lwz     6,  32(1)
-    lwz     5,  28(1)
-    lwz     4,  24(1)
-    lwz     3,  20(1)
+    lwz     13, 56(1)
+    lwz     10, 52(1)
+    lwz     9,  48(1)
+    lwz     8,  44(1)
+    lwz     7,  40(1)
+    lwz     6,  36(1)
+    lwz     5,  32(1)
+    lwz     4,  28(1)
+    lwz     3,  24(1)
+    lwz     2,  20(1)
     lwz     0,  16(1)
-    addi    1, 1, 96
+    lwz     1,  0(1)                        # the interrupted r1
     lis     12, __ppc_excpt_buf@ha
     la      12, __ppc_excpt_buf@l(12)
     lwz     11, 0(12)
@@ -548,14 +582,17 @@ static void fp_pcs_start()
   s_pcs_span = (u32*)calloc(kPcsSpans, sizeof(u32));
   s_pcs_ring = (u32*)malloc(kPcsRing * sizeof(u32));
   s_pcs_blk = (PcsBlock*)calloc(kPcsBlocks, sizeof(PcsBlock));
-  if (!s_pcs_span || !s_pcs_ring || !s_pcs_blk)
+  s_pcs_region = (u32*)calloc(kPcsRegions, sizeof(u32));
+  if (!s_pcs_span || !s_pcs_ring || !s_pcs_blk || !s_pcs_region)
   {
     free(s_pcs_span);
     free(s_pcs_ring);
     free(s_pcs_blk);
+    free(s_pcs_region);
     s_pcs_span = 0;
     s_pcs_ring = 0;
     s_pcs_blk = 0;
+    s_pcs_region = 0;
     s_pcs_failed = true;
     fp_out("[PCS] no memory for the sampler's tables, PC SAMPLER off\n");
     return;
@@ -617,7 +654,10 @@ static void fp_pcs_drain()
       s_pcs_unfound++;
       continue;
     }
-    u32 i = (pc * 2654435761u) >> 21;   // 11 bits: kPcsBlocks = 2048
+    const u32 r = ((pc & 0x1FFFFFFFu) - kPcsRegionLo) >> kPcsRegionShift;
+    if (r < kPcsRegions)
+      s_pcs_region[r]++;
+    u32 i = (pc * 2654435761u) >> 19;   // 13 bits: kPcsBlocks = 8192
     u32 k = 0;
     for (; k < 64; k++, i = (i + 1) & (kPcsBlocks - 1))
     {
@@ -666,6 +706,7 @@ static void fp_pcs_top(const char* title, u32* counts, u32 stride, u32 n, u32 sh
 
 static u32 fp_pcs_span_addr(u32 i) { return kPcsTextLo + (i << kPcsSpanShift); }
 static u32 fp_pcs_blk_addr(u32 i) { return s_pcs_blk[i].pc; }
+static u32 fp_pcs_region_addr(u32 i) { return kPcsRegionLo + (i << kPcsRegionShift); }
 
 static void fp_pcs_report()
 {
@@ -681,23 +722,27 @@ static void fp_pcs_report()
     fp_out("[PCS] no samples in %.1f s: the performance monitor interrupt never came (an emulator?)\n", secs);
   else
   {
-    const u32 jit = s_pcs_jit, arm = s_pcs_arm, tramp = s_pcs_tramp, other = s_pcs_other;
-    const u32 code = total - jit - arm - tramp - other;
+    const u32 jit = s_pcs_jit, arm = s_pcs_arm, tramp = s_pcs_tramp, other = s_pcs_other, idle = s_pcs_idle;
+    const u32 code = total - jit - arm - tramp - other - idle;
     const double pct = 100.0 / total;
     // frame_prof_dump's address ties the spans to the boot.elf they came from.
     fp_out("[PCS] %.1f s, %u samples (%.1f kHz, frame_prof_dump at %08X): C code %.1f%%, SH-4 JIT %.1f%%"
-           " (blocks not found %.1f%%, lost %u), ARM7 JIT %.1f%%, trampolines %.1f%%, other %.1f%%"
-           " | blocks over the table %u\n",
+           " (blocks not found %.1f%%, lost %u), ARM7 JIT %.1f%%, trampolines %.1f%%, idle (every thread"
+           " waiting) %.1f%%, other %.1f%% | blocks over the table %u\n",
            secs, total, secs > 0 ? total / secs / 1000.0 : 0.0, (u32)(uintptr_t)&frame_prof_dump, code * pct,
-           jit * pct, s_pcs_unfound * pct, s_pcs_lost, arm * pct, tramp * pct, other * pct, s_pcs_full);
+           jit * pct, s_pcs_unfound * pct, s_pcs_lost, arm * pct, tramp * pct, idle * pct, other * pct,
+           s_pcs_full);
     fp_pcs_top("C code by 256-byte span (% of all samples)", s_pcs_span, 1, kPcsSpans, 40, total,
                fp_pcs_span_addr);
     fp_pcs_top("SH-4 blocks by time (% of all samples)", &s_pcs_blk[0].n, 2, kPcsBlocks, 32, total,
                fp_pcs_blk_addr);
+    fp_pcs_top("SH-4 code by 1 KB (% of all samples)", s_pcs_region, 1, kPcsRegions, 32, total,
+               fp_pcs_region_addr);
   }
   memset(s_pcs_span, 0, kPcsSpans * sizeof(u32));
   memset(s_pcs_blk, 0, kPcsBlocks * sizeof(PcsBlock));
-  s_pcs_total = s_pcs_jit = s_pcs_arm = s_pcs_tramp = s_pcs_other = s_pcs_lost = 0;
+  memset(s_pcs_region, 0, kPcsRegions * sizeof(u32));
+  s_pcs_total = s_pcs_jit = s_pcs_arm = s_pcs_tramp = s_pcs_other = s_pcs_lost = s_pcs_idle = 0;
   s_pcs_unfound = s_pcs_full = 0;
 }
 

@@ -60,6 +60,8 @@ volatile bool sh4_int_bCpuRun = false;
 void (*g_sh4_step_hook)(u32 pc, u32 op) = nullptr;
 // Called before an instruction is fetched: may change next_pc (runner's --reflection).
 void (*g_sh4_pc_hook)() = nullptr;
+// Instructions a pc hook stepped over (the runner's GAME COPIES): charged as if run.
+u32 g_sh4_hook_cycles = 0;
 // Cycles charged per interpreted instruction when > 0 (runner's --cpi).
 s32 g_sh4_cpu_ratio_override = 0;
 #endif
@@ -175,7 +177,14 @@ void Sh4_int_Run()
 		{
 #if HOST_OS != OS_WII
 			if (g_sh4_pc_hook)
+			{
 				g_sh4_pc_hook();
+				if (g_sh4_hook_cycles)
+				{
+					l -= (s32)(g_sh4_hook_cycles * s_cpu_ratio);
+					g_sh4_hook_cycles = 0;
+				}
+			}
 #endif
 			const u32 op = ReadMem16(next_pc);
 #if HOST_OS != OS_WII

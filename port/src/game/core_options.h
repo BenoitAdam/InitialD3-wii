@@ -132,6 +132,7 @@ enum CoreOptionId
     OPT_SH4_SLICE,
     OPT_CACHE_HINTS,
     OPT_PC_SAMPLER,
+    OPT_GAME_COPIES,
     kCoreOptionCount
 };
 
@@ -424,6 +425,11 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // cycles go, by C function and by SH-4 block. Takes the [HW] counters.
     {"PC SAMPLER    ", "with PROFILER: where the CPU time goes, by function and SH-4 block (~1% slower)",
      PAGE_LOGS, 0, 2, {"OFF", "ON"}, {0, 1}},
+    // Two of the game's bulk copies (its word copy into the store queues, its
+    // display-list copy into ELAN RAM) done in C instead of recompiled SH-4
+    // loops (naomi_copies.cpp); the same memory and registers, cycles charged.
+    {"GAME COPIES   ", "game's word and display-list copy loops run natively (same results, less CPU)",
+     PAGE_RECOMPILER_2, 1, 2, {"EMULATED (OLD)", "NATIVE"}, {0, 1}},
 };
 
 // The order a page shows its rows in (the launcher walks this list and keeps the
@@ -453,7 +459,7 @@ inline constexpr CoreOptionId kCoreOptionOrder[kCoreOptionCount] = {
     OPT_IFB_FLUSH, OPT_JIT_NEWOPS, OPT_JIT_TFWD, OPT_JIT_FMOV, OPT_JIT_CARRY, OPT_JIT_MAC, OPT_JIT_FSCHG,
     OPT_JIT_CR0, OPT_BLOCKCOPY, OPT_JIT_FSQRT, OPT_JIT_FIPR, OPT_VRAM32_FAST, OPT_SQ_FAST,
     // RECOMPILER 2
-    OPT_JIT_COLD_ENTRY, OPT_SOFT_FLOAT, OPT_JIT_FRSWAP,
+    OPT_JIT_COLD_ENTRY, OPT_SOFT_FLOAT, OPT_JIT_FRSWAP, OPT_GAME_COPIES,
     // FIXES
     OPT_ARM7_STR_ALIGN, OPT_ADPCM_LOOP, OPT_ARM7_RESET_FIX, OPT_AICA_RACE, OPT_AICA_CA_CLAMP,
     OPT_JIT_LINK_GUARD, OPT_DIV32_FIX, OPT_INTERP_FIX, OPT_SPG_FIX, OPT_TA_GUARD, OPT_INF_VTX,

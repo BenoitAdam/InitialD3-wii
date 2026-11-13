@@ -31,6 +31,8 @@
 #include "dc/sh4/sh4_opcode_list.h"
 #include "dc/mem/sb.h"
 #include "dc/mem/sh4_mem.h"
+#include "dc/mem/sh4_internal_reg.h"
+#include "dc/sh4/ccn.h"
 #include "dc/aica/aica_if.h"
 #include "dc/pvr/pvr_if.h"
 
@@ -734,6 +736,151 @@ static int softFloatTest(u32 pairs)
     return wrong[0] || wrong[1];
 }
 
+// --game-copies 0/1/2: GAME COPIES (default 0 here, the launcher's is NATIVE). 1 = the game's
+// word copy and display-list copy (its head and the rest) done natively (naomi_copies.cpp),
+// their cycles charged to the interpreter; 2 = the game's code runs, and each call the native
+// copy would take is checked at its return against what the native copy assumes and leaves:
+// registers, T, the copied memory (through the memory handlers), the store queues, QACR, the
+// pushed r14, the list's word 15.
+extern u32 g_sh4_hook_cycles;           // sh4_interpreter.cpp: charged after the pc hook
+static int s_gameCopies;
+struct GameCopyCall
+{
+    u32 ret, sp, kind, a[4], r14, word15;
+};
+static std::vector<GameCopyCall> s_gcStack;
+static u64 s_gcCalls[4], s_gcNative[4], s_gcChecked[4], s_gcWrong[4], s_gcWords[4], s_gcStackReused;
+static const char* const kGcNames[4] = {"", "word copy", "list copy", "list head"};
+
+static void gameCopyWrong(const GameCopyCall& c, const char* what, u32 got, u32 want)
+{
+    if (s_gcWrong[c.kind]++ < 16)
+        printf("[run] GAME COPIES %s MISMATCH (%s): args %08X %08X %08X %08X, got %08X, the native copy %08X\n",
+               kGcNames[c.kind], what, c.a[0], c.a[1], c.a[2], c.a[3], got, want);
+}
+
+static void gameCopyCheck(const GameCopyCall& c)
+{
+    s_gcChecked[c.kind]++;
+    const u32 before = s_gcWrong[c.kind];
+    if (sr.T != kGameCopyT[c.kind])
+        gameCopyWrong(c, "T", sr.T, kGameCopyT[c.kind]);
+    if (c.kind == kGameCopyWords)
+    {
+        const u32 dst = c.a[0], src = c.a[1], n = c.a[2] >> 2;
+        const bool sq = (dst >> 26) == 0x38;
+        // The copy's last word: in the store queues for an SQ destination.
+        const u32 last = sq ? *(const u32*)&sq_both[(dst + (n - 1) * 4) & 0x3C] : ReadMem32(dst + (n - 1) * 4);
+        const u32 want[4] = {last, dst + n * 4, src + n * 4, 0};
+        const u32 got[4] = {r[0], r[4], r[5], r[6]};
+        static const char* const names[4] = {"r0", "r4", "r5", "r6"};
+        for (int i = 0; i < 4; i++)
+            if (got[i] != want[i])
+                gameCopyWrong(c, names[i], got[i], want[i]);
+        for (u32 i = 0; i < n && s_gcWrong[c.kind] == before; i++)
+        {
+            const u32 w = ReadMem32(src + i * 4);
+            // The queues hold the last 64 bytes written.
+            const u32 g = sq ? (n - i <= 16 ? *(const u32*)&sq_both[(dst + i * 4) & 0x3C] : w)
+                             : ReadMem32(dst + i * 4);
+            if (g != w)
+                gameCopyWrong(c, "memory", g, w);
+        }
+        s_gcWords[c.kind] += n;
+        return;
+    }
+    const bool head = c.kind == kGameCopyHead;
+    const u32 src = c.a[0], dst = c.a[1], sp = c.a[3];
+    // Head: 3 bursts from src to dst; the rest: (length - 65) >> 5 from src + 96 to dst + 96.
+    const u32 from = head ? src : src + 96, to = head ? dst : dst + 96;
+    const u32 bursts = head ? 3 : (ReadMem32(src + 24) - 65) >> 5;
+    const u32 queue = (to & 0x03FFFFFF) | 0xE0000000, end = queue + bursts * 32;
+    if (head)
+    {
+        const u32 want[5] = {end - 32, end, 0, src + 96, c.word15};
+        const u32 got[5] = {r[1], r[2], r[3], r[4], r[7]};
+        static const char* const names[5] = {"r1", "r2", "r3", "r4", "r7"};
+        for (int i = 0; i < 5; i++)
+            if (got[i] != want[i])
+                gameCopyWrong(c, names[i], got[i], want[i]);
+    }
+    else
+    {
+        const u32 want[4] = {end - 32, 0, from + bursts * 32, end};
+        const u32 got[4] = {r[1], r[2], r[3], r[5]};
+        static const char* const names[4] = {"r1", "r2", "r3", "r5"};
+        for (int i = 0; i < 4; i++)
+            if (got[i] != want[i])
+                gameCopyWrong(c, names[i], got[i], want[i]);
+    }
+    if (r[14] != c.r14 || r[15] != sp)
+        gameCopyWrong(c, "r14/r15", r[14], c.r14);
+    if (CCN_QACR0.reg_data != to >> 24 || CCN_QACR1.reg_data != to >> 24)
+        gameCopyWrong(c, "QACR", CCN_QACR0.reg_data, to >> 24);
+    // Below r15 once popped: an interrupt taken between the pop and the return
+    // may have pushed there (seen once in 167K calls). Counted, not a mismatch.
+    if (ReadMem32(sp - 4) != c.r14)
+        s_gcStackReused++;
+    const u32 dest = to & 0x1FFFFFE0;
+    for (u32 i = 0; i < bursts * 8 && s_gcWrong[c.kind] == before; i++)
+    {
+        // The head's word 15 keeps the value read before the bursts.
+        const u32 want = head && i == 15 ? c.word15 : ReadMem32(from + i * 4);
+        if (ReadMem32(dest + i * 4) != want)
+            gameCopyWrong(c, "memory", ReadMem32(dest + i * 4), want);
+    }
+    for (u32 b = bursts >= 2 ? bursts - 2 : 0; b < bursts && s_gcWrong[c.kind] == before; b++)
+        for (u32 i = 0; i < 8; i++)
+        {
+            const u32 q = *(const u32*)&sq_both[((queue + b * 32) & 0x20) + i * 4];
+            if (q != ReadMem32(from + b * 32 + i * 4))
+                gameCopyWrong(c, "store queue", q, ReadMem32(from + b * 32 + i * 4));
+        }
+    s_gcWords[c.kind] += bursts * 8;
+}
+
+static void gameCopyStep()
+{
+    const u32 pc = next_pc & 0x1FFFFFFF;
+    while (!s_gcStack.empty() && pc == (s_gcStack.back().ret & 0x1FFFFFFF) && r[15] == s_gcStack.back().sp)
+    {
+        gameCopyCheck(s_gcStack.back());
+        s_gcStack.pop_back();
+    }
+    if (pc != 0x0C20A280 && pc != 0x0C1D4F20 && pc != 0x0C1D4EA0)
+        return;
+    const u32 kind = naomi_GameCopyEntry(pc);
+    if (kind == kGameCopyNone)
+        return;
+    s_gcCalls[kind]++;
+    if (s_gameCopies == 2)
+    {
+        if (!naomi_GameCopyWould(kind, r[4], r[5], r[6], r[15]))
+            return;
+        s_gcNative[kind]++;
+        // The head's word 15, as the game reads it before its bursts.
+        const u32 word15 = kind == kGameCopyHead ? ReadMem32(r[5] + 60) : 0;
+        if (s_gcStack.size() < 64)
+            s_gcStack.push_back({pr, r[15], kind, {r[4], r[5], r[6], r[15]}, r[14], word15});
+        return;
+    }
+    const u32 cycles = kind == kGameCopyWords  ? naomi_GameCopyWords(r[4], r[5], r[6])
+                       : kind == kGameCopyList ? naomi_GameCopyList(r[4], r[5], r[14], r[15])
+                                               : naomi_GameCopyHead(r[4], r[5], r[14], r[15]);
+    if (!cycles)
+        return;
+    s_gcWords[kind] += kind == kGameCopyWords ? r[6] >> 2
+                       : kind == kGameCopyHead ? 24
+                                               : (g_game_copy_regs[2] - r[4] - 96) >> 2;
+    for (u32 i = 0; kGameCopyRegs[kind][i] >= 0; i++)
+        r[kGameCopyRegs[kind][i]] = g_game_copy_regs[i];
+    sr.T = kGameCopyT[kind];
+    // The entry block's instructions too: the interpreter charges each one.
+    g_sh4_hook_cycles += cycles + kGameCopyEntryCycles[kind];
+    s_gcNative[kind]++;
+    next_pc = pr;
+}
+
 static bool s_reflectionHook;
 static bool s_mirrorHook;           // MIRROR = OFF + GAME SKIP (--mirror 2)
 
@@ -781,6 +928,8 @@ static void pcHook()
         probeStep();
     if (s_softFloat)
         softFloatStep();
+    if (s_gameCopies)
+        gameCopyStep();
 }
 
 // --work-from F[:T]: from frame F on, a [work] line per frame with its SH-4
@@ -1516,6 +1665,14 @@ int main(int argc, char** argv)
         if (s_softFloat)
             g_sh4_pc_hook = pcHook;
     }
+    g_game_copies_preset = 0;
+    if (const char* s = argValue(argc, argv, "--game-copies"))
+    {
+        s_gameCopies = atoi(s);
+        g_game_copies_preset = s_gameCopies != 0;
+        if (s_gameCopies)
+            g_sh4_pc_hook = pcHook;
+    }
     if (const char* p = getenv("IDAS3_SF_PROBE"))
     {
         sscanf(p, "%x:%x:%u", &s_probeLo, &s_probeHi, &s_probeFrom);
@@ -1879,6 +2036,17 @@ int main(int argc, char** argv)
                kSfNames[k], (unsigned long long)s_sfCalls[k],
                g_host_render.vblanks ? (double)s_sfCalls[k] / g_host_render.vblanks : 0.0,
                (unsigned long long)s_sfNative[k], (unsigned long long)s_sfChecked[k], (unsigned long long)s_sfWrong[k]);
+    for (int k = 1; k < 4 && s_gameCopies; k++)
+        printf("[run] GAME COPIES %s: %llu calls (%.1f a frame), %llu native, %llu checked (%.0f words a frame), "
+               "%llu MISMATCHES\n",
+               kGcNames[k], (unsigned long long)s_gcCalls[k],
+               g_host_render.vblanks ? (double)s_gcCalls[k] / g_host_render.vblanks : 0.0,
+               (unsigned long long)s_gcNative[k], (unsigned long long)s_gcChecked[k],
+               g_host_render.vblanks ? (double)s_gcWords[k] / g_host_render.vblanks : 0.0,
+               (unsigned long long)s_gcWrong[k]);
+    if (s_gameCopies == 2)
+        printf("[run] GAME COPIES: pushed r14 found reused below r15 at %llu returns (an interrupt in between)\n",
+               (unsigned long long)s_gcStackReused);
     const double secs = (double)(platform::microseconds() - s_startUs) / 1e6;
     char line[256];
     snprintf(line, sizeof(line), "[run] stopped after %u frames in %.1f s (%.1f emulated fps), pc %08X\n",
