@@ -68,13 +68,14 @@ connected at once. Menu navigation: D-pad to move, **A** to select, **B** to go 
 a race, insert a coin, then press Start. The full list, including the launcher's keys, is in
 [control.txt](control.txt).
 
-## 2 players mode !
+## 2 players splitscreen !
 
 Set preset to "2 players" and enter any race. Controler 2 control the opponent !
 
 Specific presets :
 
 | Option |	Default |	Alternative behavior |
+| --- | --- | --- |
 | P2 CAR |	FULL PHYSICS |	ON RAILS (Assisted driving) |
 | P2 SCENERY |	AROUND EACH CAR	| AROUND P1 (Maybe more FPS) |
 
