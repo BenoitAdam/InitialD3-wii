@@ -11,7 +11,7 @@ the Homebrew Channel. A Windows build of the same launcher is kept for debugging
 > repository contains no game assets, copyrighted code, or system BIOS. Users must supply
 > their own legally obtained ROM dumps to run this software.**
 
-**Status: alpha (0.25).** The game boots to its menus and races are playable, but speed on real
+**Status: beta (1.00).** The game boots to its menus and races are playable, but speed on real
 hardware is not yet full. Menus and attract mode run at full speed; races currently run
 around 40 fps with every frame drawn. Expect bugs and frequent changes.
 

@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <app version="1">
-  <name>Speed Boy 3 (alpha)</name>
+  <name>Speed Boy 3 (Beta 1.00)</name>
   <coder>Xale00</coder>
-  <version>alpha 0.26</version>
+  <version>beta 1.00</version>
   <release_date>20261029</release_date>
   <short_description>Initial D Arcade Stage 3 (NAOMI 2) port</short_description>
-  <long_description>Alpha port of Initial D Arcade Stage 3 (NAOMI 2, GDS-0033).
+  <long_description>Beta port of Initial D Arcade Stage 3 (NAOMI 2, GDS-0033).
 
 Independent open-source project, not affiliated with or endorsed by Sega, Kodansha, Shuichi Shigeno or Nintendo. No game data or BIOS is included: you must supply your own legally obtained files.
 

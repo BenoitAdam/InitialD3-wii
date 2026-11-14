@@ -11,7 +11,7 @@ it exists.
 
 - An **emulation-based port** of *Initial D Arcade Stage 3* (Sega NAOMI 2, GD-ROM GDS-0033)
   to the **Wii**, launched from the Homebrew Channel. App name: **Speed Boy 3**
-  (`port/wii/meta.xml`). Version string in `port/src/version.h` (currently `alpha 0.26`).
+  (`port/wii/meta.xml`). Version string in `port/src/version.h` (currently `beta 1.00`).
 - Core = fork of the owner's own **nullDC4Wii** (Dreamcast emulator for Wii, MIT; author
   handle Xale00 / BenoitAdam94), forked around nullDC4Wii commit 0996e7c on 2026-10-15,
   plus a NAOMI 2 layer written here (DIMM board, JVS/MIE, card reader, **ELAN** T&L chip).
