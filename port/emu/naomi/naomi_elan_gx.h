@@ -80,6 +80,14 @@ struct ElanGxLightSet
     u8 count;                   // <= 8 (GX hardware lights); <= 7 with a beam
     u8 localMask;               // lights that are local (point) lights
     u8 beam;                    // 1: beamLight is drawn as a projected cone (GX light 7)
+    // LIGHT SUM: 2 or 4 when the lights and ambient are stored that many times
+    // weaker (0: as they are). Where both cars' beams met, the Wii drew the
+    // road black (owner, 2026-11-14): the GX sums there reach 2-3.6 (runner,
+    // night demo) where one car's stay under 2 nearly everywhere, so the
+    // Wii's light sum seems to hold values up to ~2 and wrap past it (not
+    // documented; GX colours themselves stop at 1). The drawing side then
+    // takes the channel without the material, x sumScale, clamped, x material.
+    u8 sumScale;
     float ambient[3];
     ElanGxLight lights[8];
     ElanGxBeam beamLight;
@@ -186,6 +194,10 @@ extern int g_elan_point_preset;
 // vertex, as the ELAN), 1 SOFT (per vertex, a wider and softer cone), 2 SMOOTH
 // (GPU path: the cone projected per pixel on lists crossing its edge).
 extern int g_headlight_preset;
+// Launch option LIGHT SUM: 1 = a point-lit list whose lights could add up past
+// what the Wii's lighting holds is lit at 1/2 or 1/4 and the TEV multiplies
+// back (ElanGxLightSet::sumScale); 0 = every list lit at full strength.
+extern int g_light_sum_preset;
 // Launch option 3D LIST CULL (GPU path, lists with a fetch program's box):
 // 0 = off (every list recorded, depth measured as before), 1 = lists behind
 // the camera dropped, 2 = also lists beside or above/below the picture, 3 =

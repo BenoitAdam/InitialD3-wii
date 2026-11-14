@@ -21,6 +21,28 @@ it exists.
 
 ### Status (2026-11-14)
 
+- **LIGHT SUM (built 2026-11-14, awaiting the owner's Wii test)**. Owner: at night, where both cars' headlight
+  beams overlap on the road, the road is black ("1 + 1 = 0"); each beam alone is fine. Every emulated path
+  clamps the light sum (ELAN CPU lighting, the runner's GX preview, `toByte`, the beam's TEV stages), so it is
+  the Wii's GX lighting. Runner census (env `IDAS3_HEADLIGHT_CENSUS`, `[gxsum]` lines: the sum GX's channel
+  adds up before its clamp; night attract demo, `--point-lights 1`, frames 8400-12000): one car near = one GX
+  light 4x strong (the game sends its headlight 4 times), sums past 2 at ~0.1% of the vertices it lights; both
+  cars near = the game shares its 4 headlight slots (strengths 1+1, 2+2, 3+1, 4+1 seen), 2-3 headlights on
+  a vertex, sums 2-6.6 at ~8% of those vertices (570K over the run). So the Wii's light sum most likely
+  holds values up to ~2 and wraps past them (found documented nowhere; Dolphin clamps at 255 and will not
+  show it). Built: **LIGHT SUM** (RENDERING 2, last row, last in `CoreOptionId`, default SCALED, FULL
+  (OLD)): `pickLights` bounds what a point-lit list's GX sum can reach (ambient + each light on its axis,
+  at the list's nearest point, N.L 1; headlights whose cone misses the list's sphere left out) and past
+  `kSumSafe` 1.9 stores the set 1/2 or 1/4 as strong (`ElanGxLightSet::sumScale`); the draw
+  (`sumBegin`) gives channel 0 a white material and three TEV stages after gxRend's stage 0: TEVREG2 =
+  clamp(S x channel 0), x the material (TEVREG1), x the texture: the ELAN's material x min(1, sum), 1-2 bits
+  less precise on those lists. Not for vertex-coloured, decal-alpha (TSP ShadInstr 2), AUTOSORT or
+  SMOOTH-beam lists ("left over the safe sum"). Runner A/B (8400-11000): 13 snapshots pixel-identical,
+  channel sums <= 1.89 (old: up to 6.6), ~100-130 lists a frame scaled. New `[prof]   LIGHT SUM per
+  frame:` line (lists at 1/2, at 1/4, left over, drawn scaled). To read on the Wii: the overlap lit, no
+  change elsewhere (banding on scaled lists?), `rend`. If the black stays with SCALED, the ~2 guess is
+  wrong (the census line tells the sums; kSumSafe is the knob). Elf: `port/wii/build/boot_pcs_80043f74.elf`
+  (also holds SCREEN BUFFERS, still awaiting log 35).
 - **Log 34** (2026-11-14, `idas3wii_log_34prev.txt`: log 33's settings + INT DIVIDE NATIVE + JIT FPU BANKS
   RENAME, PC SAMPLER on, night Akina, in-car ~6480-12480 with two short chase stretches ~9500-9720 and
   ~9960-10080). In-car 59.4-60.8 fps, p50 14.5-15.0, typical `sh4` 6.55-6.8 against log 32's 6.96-7.2
@@ -593,6 +615,7 @@ idas3wii_run --chd <gds-0033.chd> --frames N --cpi 2 [options]
 | `--list-maths 0/1`, `--walk-decode 0/1` | LIST MATHS, 3D DECODE: record digests must match the run without them (with HEADLIGHTS ARCADE; SOFT/SMOOTH may differ in borderline cone tests), `lights per frame` WRONG must stay 0 |
 | `--draw-memo 0/1` | DRAW MEMO with `--gpu-tnl`: `DRAW MEMO per drawn render` line, every program taken from the recorded slot checked against the full lookup (WRONG must stay 0) |
 | `--sound-step 0/1` | SOUND STEP: the exit line's sound hash must be the one without it |
+| `--light-sum 0/1` | LIGHT SUM (default 1, as the launcher): point-lit lists whose GX light sum could pass 1.9 lit at 1/2 or 1/4; the `--point-lights 1` preview applies it (snapshots must not change against `0`), `LIGHT SUM per frame` line; with env `IDAS3_HEADLIGHT_CENSUS=1` the `[gxsum]` lines give the sums GX's channel holds (must stay under 2 with `1`) by headlights on the vertex |
 | `--sh4-slice 0/1` | SH-4 TIMESLICE: 1 = 3584 cycles (the interpreter takes the same preset): changes timing, so digests and the sound hash change; the route must still reach and drive the race |
 | `--cache-hints 0/1` | CACHE HINTS: prefetches are no-ops under MSVC and `dcbz` is Wii-only, so on Windows this checks the bookkeeping (the fetch slot kept per model head): record digests and the sound hash must be the ones without it |
 | `--small N` | SMALL 3D with `--gpu-tnl`: lists and whole models under N pixels on screen not drawn; `SMALL 3D per frame` line. Snapshots cannot show it (GPU lists are not drawn in them) |
@@ -697,6 +720,10 @@ and SH-4 block; see log 31's entry); `[CC]` JIT call-outs into C
   paced to that retrace. Never copy into an XFB that `VIDEO_GetCurrentFramebuffer()` or
   `VIDEO_GetNextFramebuffer()` returns: it is, or is about to be, under the scan (tearing; SCREEN
   BUFFERS). Faster emulation makes such a race show more, so a speed row can look like it causes it.
+- GX lighting: a light's colour stops at 1, so a stronger light carries the excess in its attenuation
+  (`gxPointLight`); but the Wii's per-channel light sum seems to hold only up to ~2 and wrap past it
+  (black where both cars' beams meet, 2026-11-14; LIGHT SUM, awaiting confirmation). Keep a channel's
+  possible sum under ~1.9 and multiply back in the TEV. Dolphin clamps at 255: it cannot show this.
 - After installing PPC exception handlers put a `sync` + memory clobber: GCC moved the inline
   store past a volatile guest read once.
 - The dynarec pins SH-4 GPRs in r14..r28: `Sh4cntx.r[]` read from C (e.g. in a trap) can be stale.
@@ -779,6 +806,9 @@ and SH-4 block; see log 31's entry); `[CC]` JIT call-outs into C
 
 ## Open issues (besides speed)
 
+- Black road where both cars' headlight beams overlap (owner, 2026-11-14): LIGHT SUM built, awaiting
+  the Wii test (Status, top entry). If it holds, the same limit may have left black spots in a lone
+  car's beam (sums past 2 at ~0.1% of its vertices, e.g. the opponent's rear bumper up close).
 - Specular is dropped on the GPU T&L path (visible on untextured lists, and at night on
   bumpers, grilles and the road's glints, where the headlights make it).
 - Night headlight beam shows the road's polygons (owner, since day 1, NIGHT LIGHTS CPU and GPU

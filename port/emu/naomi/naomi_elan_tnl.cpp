@@ -414,9 +414,55 @@ void lighting(float* base, float* offs, int vol, Vec3 P, Vec3 N)
 // ambient + sum of attenuation x clamped N.L x light colour), no offset colour.
 const ElanGxLightSet* s_gxPreview = nullptr;
 
+// Host census (env IDAS3_HEADLIGHT_CENSUS=1, with --point-lights 1 and no
+// --gpu-tnl): the sums GX's lighting would add up before its clamp (with LIGHT
+// SUM, the scaled ones the channel holds), at the vertices of point-lit lists,
+// by how many headlights light the vertex: what the Wii's light sum must hold.
+struct GxSumCensus
+{
+    u32 renders;
+    u32 bins[3][8];       // vertices by strong lights lighting them (0, 1, 2+), by sum: < 1, 2, 3, 4, 5, 6, 8, more
+    float max[3];         // the largest sum seen
+    float maxOne;         // the largest one headlight gave alone
+    // Vertices lit by two headlights, by each one's top (copies x 2 x colour):
+    // [the higher's top in halves, capped at 9][the lower's]
+    u32 tops[10][10];
+    u32 lamps[5];         // vertices by headlights lighting them: 0, 1, 2, 3, 4+
+};
+GxSumCensus s_gxSum = {};
+const bool s_gxSumOn = getenv("IDAS3_HEADLIGHT_CENSUS") != nullptr;
+
+void gxSumCensusPrint()
+{
+    GxSumCensus& c = s_gxSum;
+    if (!s_gxSumOn || ++c.renders < 60)
+        return;
+    u32 any = 0;
+    for (int k = 0; k < 3; k++)
+        for (int b = 0; b < 8; b++)
+            any += c.bins[k][b];
+    if (any)
+        for (int k = 0; k < 3; k++)
+            printf("[gxsum] %s headlights: vertices by GX light sum <1 %u <2 %u <3 %u <4 %u <5 %u <6 %u <8 %u more %u | "
+                   "max %.2f | one light alone max %.2f\n",
+                   k == 0 ? "no" : k == 1 ? "one of the" : "two or more", c.bins[k][0], c.bins[k][1], c.bins[k][2],
+                   c.bins[k][3], c.bins[k][4], c.bins[k][5], c.bins[k][6], c.bins[k][7], c.max[k], c.maxOne);
+    if (any)
+        printf("[gxsum]   vertices by headlights lighting them: 0 %u, 1 %u, 2 %u, 3 %u, 4+ %u\n", c.lamps[0],
+               c.lamps[1], c.lamps[2], c.lamps[3], c.lamps[4]);
+    for (int a = 0; a < 10; a++)
+        for (int b = 0; b < 10; b++)
+            if (c.tops[a][b])
+                printf("[gxsum]   vertices lit by 2+ headlights, the two strongest of tops %.1f and %.1f: %u\n",
+                       a * 0.5f, b * 0.5f, c.tops[a][b]);
+    c = {};
+}
+
 void gxLighting(float* base, float* offs, Vec3 P, Vec3 N, const ElanGxLightSet& ls)
 {
     float acc[3] = {ls.ambient[0], ls.ambient[1], ls.ambient[2]};
+    u32 strongLit = 0;
+    float strongest = 0.f, topHi = 0.f, topLo = 0.f;
     for (u32 i = 0; i < ls.count; i++)
     {
         const ElanGxLight& g = ls.lights[i];
@@ -434,9 +480,42 @@ void gxLighting(float* base, float* offs, Vec3 P, Vec3 N, const ElanGxLightSet& 
         const float f = attn * std::fmax(0.f, dot(N, L));
         for (int c = 0; c < 3; c++)
             acc[c] += f * g.color[c];
+        // A headlight: its cone term is gxPointLight's parabola (a2 < 0).
+        const float v = f * std::fmax(g.color[0], std::fmax(g.color[1], g.color[2]));
+        if ((ls.localMask >> i & 1) && g.angle[2] < 0.f && v > 0.05f)
+        {
+            strongLit++;
+            strongest = std::fmax(strongest, v);
+            const float top = (g.angle[0] + g.angle[1] + g.angle[2]) *
+                              std::fmax(g.color[0], std::fmax(g.color[1], g.color[2]));
+            if (top > topHi)
+            {
+                topLo = topHi;
+                topHi = top;
+            }
+            else if (top > topLo)
+                topLo = top;
+        }
     }
+    if (s_gxSumOn && strongLit >= 2)
+        s_gxSum.tops[std::min(9, (int)(topHi * 2.f + 0.5f))][std::min(9, (int)(topLo * 2.f + 0.5f))]++;
+    if (s_gxSumOn)
+        s_gxSum.lamps[std::min(4u, strongLit)]++;
+    if (s_gxSumOn)
+    {
+        const float sum = std::fmax(acc[0], std::fmax(acc[1], acc[2]));
+        const int k = strongLit > 2 ? 2 : (int)strongLit;
+        const int b = sum < 1.f ? 0 : sum < 2.f ? 1 : sum < 3.f ? 2 : sum < 4.f ? 3 : sum < 5.f ? 4 : sum < 6.f ? 5 : sum < 8.f ? 6 : 7;
+        s_gxSum.bins[k][b]++;
+        s_gxSum.max[k] = std::fmax(s_gxSum.max[k], sum);
+        if (strongLit == 1)
+            s_gxSum.maxOne = std::fmax(s_gxSum.maxOne, strongest);
+    }
+    // LIGHT SUM: the channel holds min(1, sum / S) with a white material; the
+    // TEV takes it x S, clamped, x the material.
+    const float S = ls.sumScale > 1 ? (float)ls.sumScale : 1.f;
     for (int c = 0; c < 3; c++)
-        base[c] *= clamp01(acc[c]);
+        base[c] *= std::fmin(1.f, S * clamp01(acc[c]));
     for (int c = 0; c < 4; c++)
         offs[c] = 0.f;
 }
@@ -961,11 +1040,13 @@ struct LightPick
     u8 slot[8], copies[8];  // in the set's order
     u8 beamSlot, beamCopies; // the beam's light, 0xFF: none
     u8 beamMask;             // ...with the front mask (the list reaches behind the lamp)
+    u8 sumScale;             // LIGHT SUM: 1, 2 or 4 (buildLightSet divides by it)
 
     bool same(const LightPick& o) const
     {
         return gen == o.gen && n == o.n && beamSlot == o.beamSlot && beamCopies == o.beamCopies &&
-               beamMask == o.beamMask && !memcmp(slot, o.slot, n) && !memcmp(copies, o.copies, n);
+               beamMask == o.beamMask && sumScale == o.sumScale && !memcmp(slot, o.slot, n) &&
+               !memcmp(copies, o.copies, n);
     }
 };
 
@@ -1026,11 +1107,11 @@ Sphere boxSphere(const Box& b)
     return {{(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f}, r};
 }
 
-// LIST MATHS: only HEADLIGHTS SOFT and SMOOTH look at a list's sphere
-// (pickLights): with ARCADE it is not worked out at all.
+// LIST MATHS: only HEADLIGHTS SOFT and SMOOTH and LIGHT SUM look at a list's
+// sphere (pickLights): without them it is not worked out at all.
 inline bool sphereNeeded()
 {
-    return !g_list_maths_preset || g_headlight_preset;
+    return !g_list_maths_preset || g_headlight_preset || g_light_sum_preset;
 }
 constexpr Sphere kNoSphere = {{0.f, 0.f, 0.f}, -1.f};
 
@@ -1314,8 +1395,15 @@ inline bool quickFar(const DistSq&, const Light&)
     return false;
 }
 
+// LIGHT SUM (see pickLights' end): the largest GX light sum, ambient included,
+// a channel is trusted with. Where both cars' beams met the sums reached 2-3.6
+// and the Wii drew black; one car's stay under 2 nearly everywhere.
+constexpr float kSumSafe = 1.9f;
+
+// scaleOk: the list can be drawn with LIGHT SUM's stages (its material from a
+// register, gxRend's stage 0 a modulate, the stages after it free).
 template <class DistSq>
-bool pickLights(LightPick& out, DistSq distSq, const Sphere& sphere, bool beamOk)
+bool pickLights(LightPick& out, DistSq distSq, const Sphere& sphere, bool beamOk, bool scaleOk)
 {
     NaomiElanStats& st = elan_Stats();
     st.lightPicks++;
@@ -1423,6 +1511,50 @@ bool pickLights(LightPick& out, DistSq distSq, const Sphere& sphere, bool beamOk
             for (u32 b = a; b > 0 && pick[b].slot < pick[b - 1].slot; b--)
                 std::swap(pick[b], pick[b - 1]);
     }
+    // LIGHT SUM: the most GX's channel can add up on this list (ambient, and
+    // each light at its brightest: on its axis, at the list's nearest point,
+    // facing it), against kSumSafe; past it the set is stored 1/2 or 1/4 as
+    // strong and the draw multiplies back. Headlights whose cone misses the
+    // list's sphere add nothing.
+    out.sumScale = 1;
+    {
+        float bound = clamp01(std::fmax(lm.ambientBase[0][0], std::fmax(lm.ambientBase[0][1], lm.ambientBase[0][2])));
+        for (u32 j = 0; j < n; j++)
+        {
+            const Light& l = s.lights[pick[j].slot];
+            float v = 2.f * pick[j].copies * std::fmax(l.color[0], std::fmax(l.color[1], l.color[2]));
+            if (l.parallel)
+            {
+                bound += clamp01(v);
+                continue;
+            }
+            if (isHeadlight(l) && coneSide(l, sphere) == kConeOut)
+                continue;
+            if (l.angleAtten)
+            {
+                const float p = l.angleA + l.angleB, q = -l.angleB;
+                v *= clamp01(q > 0.f ? p + q : p);       // gxPointLight's term at its largest
+            }
+            if (l.distAtten)
+                v /= 0.84f + (1.5f + 1.9f / -l.distA) * pick[j].near;   // gxPointLight's fit, nearest point
+            bound += v;
+        }
+        if (bound > kSumSafe)
+        {
+            if (!g_light_sum_preset || !scaleOk || out.beamSlot != 0xFF)
+                st.sumUnsafe++;
+            else if (bound > 2.f * kSumSafe)
+            {
+                out.sumScale = 4;
+                st.sumQuarter++;
+            }
+            else
+            {
+                out.sumScale = 2;
+                st.sumHalf++;
+            }
+        }
+    }
     out.gen = s_lightGen;
     out.n = n;
     for (u32 j = 0; j < n; j++)
@@ -1465,14 +1597,33 @@ bool buildLightSet(const LightPick& p, ElanGxLightSet& out)
         gxBeam(s.lights[p.beamSlot], 2.f * p.beamCopies, p.beamMask != 0, out.beamLight);
         out.beam = 1;
     }
+    if (p.sumScale > 1)
+    {
+        // LIGHT SUM: everything the channel adds up, 1/S as strong (colours
+        // stop at 1, so a local light's share goes in its angle term).
+        const float k = 1.f / p.sumScale;
+        for (int c = 0; c < 3; c++)
+            out.ambient[c] *= k;
+        for (u32 j = 0; j < out.count; j++)
+        {
+            ElanGxLight& g = out.lights[j];
+            if (out.localMask >> j & 1)
+                for (float& a : g.angle)
+                    a *= k;
+            else
+                for (float& c : g.color)
+                    c *= k;
+        }
+        out.sumScale = p.sumScale;
+    }
     return true;
 }
 
 template <class DistSq>
-bool pointLightSet(ElanGxLightSet& out, DistSq distSq, const Sphere& sphere)
+bool pointLightSet(ElanGxLightSet& out, DistSq distSq, const Sphere& sphere, bool scaleOk)
 {
     LightPick p;
-    return pickLights(p, distSq, sphere, false) && buildLightSet(p, out);
+    return pickLights(p, distSq, sphere, false, scaleOk) && buildLightSet(p, out);
 }
 
 // The light set of a point-lit list into rec.lights / rec.lightKey: a set
@@ -1500,10 +1651,10 @@ u32 s_setKeyNext = 0;                           // the last key given
 u32 s_setUses = 0;
 
 template <class DistSq>
-bool pointLightRecord(ElanGxRecord& rec, DistSq distSq, const Sphere& sphere, bool beamOk)
+bool pointLightRecord(ElanGxRecord& rec, DistSq distSq, const Sphere& sphere, bool beamOk, bool scaleOk)
 {
     LightPick p;
-    if (!pickLights(p, distSq, sphere, beamOk))
+    if (!pickLights(p, distSq, sphere, beamOk, scaleOk))
     {
         rec.lightKey = 0;
         return false;
@@ -2192,11 +2343,16 @@ bool recordForGpu(const u32* w, u32 vertexSize, u32 count, u32 layout, u32 pcw, 
         // material would have to be a second vertex colour), nor under
         // AUTOSORT (whose peeling owns the TEV stages it would take).
         const bool beamOk = !r.colorFromVertex && !r.envMap && !g_autosort_preset;
+        // LIGHT SUM's stages replace stage 0's colour by texture x light x
+        // material: not for a vertex colour (no register holds it) nor decal
+        // alpha (TSP ShadInstr 2, which gxRend may draw as GX_DECAL).
+        const bool scaleOk = !r.colorFromVertex && !g_autosort_preset && (r.tsp >> 6 & 3) != 2;
         const bool sphere = sphereNeeded();
-        const bool built = measure ? pointLightRecord(r, [&](Vec3 p) { return distanceSq(box, p); },
-                                                      sphere ? boxSphere(box) : kNoSphere, beamOk)
-                                   : pointLightRecord(r, lightDistance,
-                                                      sphere ? modelBoxSphere(mbox, s.matrix.tm) : kNoSphere, beamOk);
+        const bool built =
+            measure ? pointLightRecord(r, [&](Vec3 p) { return distanceSq(box, p); },
+                                       sphere ? boxSphere(box) : kNoSphere, beamOk, scaleOk)
+                    : pointLightRecord(r, lightDistance, sphere ? modelBoxSphere(mbox, s.matrix.tm) : kNoSphere,
+                                       beamOk, scaleOk);
         if (!built)
             return false;
     }
@@ -2594,6 +2750,7 @@ void tnl_OnStartRender()
 {
 #if !defined(GEKKO)
     headlightCensusPrint();
+    gxSumCensusPrint();
 #endif
     // A render with no GPU list (a frame the frameskip dropped, a 2D screen)
     // says nothing about the depth range: keep the last verdict. Clearing it
@@ -2758,7 +2915,9 @@ int tnl_DrawList(const u32* w, u32 vertexSize, int listType)
         Box box;
         float minZ, maxZ;
         measureList<true>(w + 8, count, vertexSize, s.matrix.tm, minZ, maxZ, &box);
-        if (pointLightSet(preview, [&](Vec3 p) { return distanceSq(box, p); }, boxSphere(box)))
+        const bool vertexColour = layout == 0x042 || layout == 0x04A;
+        const bool scaleOk = !vertexColour && !g_autosort_preset && (tsp >> 6 & 3) != 2;
+        if (pointLightSet(preview, [&](Vec3 p) { return distanceSq(box, p); }, boxSphere(box), scaleOk))
             s_gxPreview = &preview;
     }
 #endif

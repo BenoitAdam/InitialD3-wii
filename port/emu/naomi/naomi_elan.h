@@ -42,6 +42,11 @@ struct NaomiElanStats
     // left out of a list their cone misses, lists given a projected beam (SMOOTH),
     // of which with the front mask (reaching behind the lamp).
     u32 coneOut, beamLists, beamMasked;
+    // LIGHT SUM: point-lit lists recorded with their lights at 1/2 and at 1/4
+    // (the most their GX sum could reach was over 1.9, or 3.8), those left at
+    // full strength although over 1.9 (vertex-coloured, decal alpha, AUTOSORT,
+    // a beam, or LIGHT SUM off), and (Wii) lists drawn scaled.
+    u32 sumHalf, sumQuarter, sumUnsafe, sumDrawn;
     // Light commands decoded (not skipped by frameskip), and those that send a
     // slot the light it already holds (nothing to change); light model likewise.
     u32 lightCmds, lightCmdsSame, lightModelCmds, lightModelCmdsSame;

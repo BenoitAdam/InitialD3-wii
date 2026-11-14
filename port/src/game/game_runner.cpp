@@ -340,6 +340,12 @@ void logMemoryActivity(const NaomiFrameInfo& info)
                        "(reaching behind the lamp), %u headlights left out of lists their cone misses\n",
                        (es.beamLists - s_prevBox.beamLists) / frames, (es.beamMasked - s_prevBox.beamMasked) / frames,
                        (es.coneOut - s_prevBox.coneOut) / frames);
+        if (es.sumHalf != s_prevBox.sumHalf || es.sumQuarter != s_prevBox.sumQuarter ||
+            es.sumUnsafe != s_prevBox.sumUnsafe)
+            log::write("[prof]   LIGHT SUM per frame: point-lit lists lit at 1/2 %u, at 1/4 %u, left over the safe sum "
+                       "%u | drawn scaled %u\n",
+                       (es.sumHalf - s_prevBox.sumHalf) / frames, (es.sumQuarter - s_prevBox.sumQuarter) / frames,
+                       (es.sumUnsafe - s_prevBox.sumUnsafe) / frames, (es.sumDrawn - s_prevBox.sumDrawn) / frames);
         if (es.mirrorModels != s_prevBox.mirrorModels)
             log::write("[prof]   MIRROR OFF per frame: %u models not drawn (%u from their summary), %u lists, %u "
                        "vertices\n",
@@ -509,7 +515,7 @@ bool runGame(GameSession& session, const BiosImage& bios, const RunOptions& opti
         &g_aica_half_mix_preset, &g_list_maths_preset, &g_walk_decode_preset, &g_draw_memo_preset,
         &g_sound_step_preset,    &g_sh4_wide_slice_preset, &g_cache_hints_preset,
         &g_pc_sampler_preset,    &g_game_copies_preset, &g_int_divide_preset, &g_jit_fpu_banks_preset,
-        &g_screen_buffers_preset};
+        &g_screen_buffers_preset, &g_light_sum_preset};
     static_assert(sizeof(presets) / sizeof(presets[0]) == kCoreOptionCount, "one preset per CoreOptionId");
     for (int i = 0; i < kCoreOptionCount; i++)
     {

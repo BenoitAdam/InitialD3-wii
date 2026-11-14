@@ -136,6 +136,7 @@ enum CoreOptionId
     OPT_INT_DIVIDE,
     OPT_JIT_FPU_BANKS,
     OPT_SCREEN_BUFFERS,
+    OPT_LIGHT_SUM,
     kCoreOptionCount
 };
 
@@ -446,6 +447,13 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // the copy then lands under the scan (tearing). A third is always free.
     {"SCREEN BUFFERS", "3: a new picture is never copied over the one on screen (no tearing, 0.7 MB)",
      PAGE_DEPTH, 1, 2, {"2 (OLD)", "3 (NO TEARING)"}, {0, 1}},
+    // Where both cars' headlight beams met, the road was black (owner,
+    // 2026-11-14): GX light sums of 2-3.6 there, the Wii's lighting seemingly
+    // holding up to ~2. SCALED lights such lists at 1/2 or 1/4 and the TEV
+    // multiplies back before the material (naomi_elan_tnl.cpp pickLights,
+    // naomi_elan_gx.cpp sumBegin): the same picture, 1-2 bits less precise.
+    {"LIGHT SUM     ", "night: where lights add up (both cars' beams) the Wii drew black; SCALED keeps them in range",
+     PAGE_DEPTH_2, 1, 2, {"FULL (OLD)", "SCALED"}, {0, 1}},
 };
 
 // The order a page shows its rows in (the launcher walks this list and keeps the
@@ -464,7 +472,7 @@ inline constexpr CoreOptionId kCoreOptionOrder[kCoreOptionCount] = {
     OPT_P2_SCENERY, OPT_4BPP, OPT_8BPP, OPT_ELAN_GX, OPT_ELAN_FETCH, OPT_TEX_CACHE, OPT_VQ_CMPR,
     OPT_TMEM_CACHE, OPT_COLOUR_FETCH, OPT_ELAN_PREFETCH, OPT_MODEL_PREFETCH, OPT_HEADLIGHTS,
     OPT_MOTION_FX, OPT_MOTION_LEVEL, OPT_BETWEEN_WARP, OPT_LIST_MATHS, OPT_WALK_DECODE, OPT_DRAW_MEMO,
-    OPT_CACHE_HINTS,
+    OPT_CACHE_HINTS, OPT_LIGHT_SUM,
     // AUDIO
     OPT_AUDIO_SYNC, OPT_AUDIO_BLOCK, OPT_AUDIO_DRC, OPT_SOUND_CLOCK, OPT_DIMM_AHEAD, OPT_SOUND_MIX,
     OPT_SFX_MENU, OPT_SFX_TIRE, OPT_SOUND_STEP,

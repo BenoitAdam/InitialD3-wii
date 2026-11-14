@@ -11,6 +11,7 @@ int g_elan_colour_fetch_preset = 0;
 int g_elan_point_preset = 0;
 int g_elan_box_preset = 0;
 int g_headlight_preset = 0;
+int g_light_sum_preset = 1;
 extern "C" {
 int g_draw_memo_preset = 0;     // DRAW MEMO (launch page)
 }
@@ -1238,7 +1239,7 @@ u32 s_xformKeys[kMaxXforms], s_lsetKeys[kMaxLightSets];
 // so they are zeroed in the cache instead (dcbz: no read). Each table's
 // front: its first line not zeroed this render. The tables are 32-byte
 // aligned and their sizes multiples of 32 (24 x 6144 or 4096, 108 x 1536 or
-// 1024, 560 x 64 or 48), so the last line zeroed is still theirs.
+// 1024, 564 x 64 or 48), so the last line zeroed is still theirs.
 static_assert(sizeof(Item) * kMaxItems % 32 == 0 && sizeof(Item) * kMinItems % 32 == 0 &&
                   sizeof(ElanGxXform) * kMaxXforms % 32 == 0 && sizeof(ElanGxXform) * kMinXforms % 32 == 0 &&
                   sizeof(ElanGxLightSet) * kMaxLightSets % 32 == 0 && sizeof(ElanGxLightSet) * kMinLightSets % 32 == 0,
@@ -2190,7 +2191,7 @@ static void prefetchAhead(u32 index)
                 const u32 bytes = (u32)offsetof(ElanGxLightSet, lights) + ls.count * sizeof(ElanGxLight);
                 for (u32 b = 32; b < bytes; b += 32)
                     __builtin_prefetch(p + b);
-                __builtin_prefetch(p + bytes - 1);     // sets are not line-aligned (560 bytes)
+                __builtin_prefetch(p + bytes - 1);     // sets are not line-aligned (564 bytes)
                 if (ls.beam)
                 {
                     __builtin_prefetch(&ls.beamLight);
@@ -2327,6 +2328,41 @@ static void beamEnd(const Item& it, const ElanGxFrame& f)
     GX_SetNumChans(f.clr1 ? 2 : 1);
 }
 
+// LIGHT SUM (ElanGxLightSet::sumScale = S): channel 0 has a white material and
+// gives min(1, sum / S); the ELAN's colour is m x min(1, sum), m the list's
+// material, so after gxRend's stage 0 (whose colour is replaced; its alpha,
+// texture alpha x the material's, stays):
+//   TEVREG2 = clamp(S x channel 0);  TEVREG2 x= m;  colour = texture x TEVREG2
+// m is in TEVREG1 (only the FMV program uses it, and it loads it again when it
+// starts), TEVREG2 is scratch as for the beam. Only register materials (the
+// pick leaves vertex-coloured lists at S = 1), not under AUTOSORT.
+static void sumStage(u8 stage, u8 coord, u8 map, u8 chan, u8 b, u8 c, u8 d, u8 scale, u8 out)
+{
+    GX_SetTevDirect(stage);
+    GX_SetTevOrder(stage, coord, map, chan);
+    GX_SetTevColorIn(stage, GX_CC_ZERO, b, c, d);
+    GX_SetTevColorOp(stage, GX_TEV_ADD, GX_TB_ZERO, scale, GX_TRUE, out);
+    GX_SetTevAlphaIn(stage, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
+    GX_SetTevAlphaOp(stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+}
+
+static void sumBegin(const Item& it, u8 scale)
+{
+    GX_SetTevColor(GX_TEVREG1, (GXColor){it.base[0], it.base[1], it.base[2], 255});
+    u8 stage = GX_TEVSTAGE1;
+    sumStage(stage++, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_RASC,
+             scale == 4 ? GX_CS_SCALE_4 : GX_CS_SCALE_2, GX_TEVREG2);
+    sumStage(stage++, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLORNULL, GX_CC_C2, GX_CC_C1, GX_CC_ZERO, GX_CS_SCALE_1,
+             GX_TEVREG2);
+    if (it.textured)
+        sumStage(stage++, GX_TEXCOORD0, GX_TEXMAP0, GX_COLORNULL, GX_CC_C2, GX_CC_TEXC, GX_CC_ZERO, GX_CS_SCALE_1,
+                 GX_TEVPREV);
+    else
+        sumStage(stage++, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLORNULL, GX_CC_ZERO, GX_CC_ZERO, GX_CC_C2,
+                 GX_CS_SCALE_1, GX_TEVPREV);
+    GX_SetNumTevStages(stage);                  // GX_TEVSTAGEn == n
+}
+
 static bool drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
 {
     if (index >= s_nItems)
@@ -2440,6 +2476,9 @@ static bool drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
     // attenuation of the channel.
     const u8 matSrc = hasColor ? GX_SRC_VTX : GX_SRC_REG;
     const bool local = ls.lit && ls.localMask;
+    // LIGHT SUM: the set was stored 1/sumScale as strong (naomi_elan_tnl.cpp
+    // pickLights: only for lists this can draw), so the material goes after.
+    const u8 sumScale = ls.lit && ls.sumScale > 1 && !hasColor ? ls.sumScale : (u8)0;
     const u32 chanKey = (ls.lit ? 0x100u | ls.count : 0u) | (hasColor ? 0x200u : 0u) | (local ? 0x400u : 0u);
     if (chanKey != s_run.chan)
     {
@@ -2456,7 +2495,8 @@ static bool drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
     }
     if (!hasColor)
     {
-        const u32 mat = rgba(it.base, forceOpaqueAlpha ? (u8)255 : it.base[3]);
+        static const u8 kWhite[3] = {255, 255, 255};
+        const u32 mat = rgba(sumScale ? kWhite : it.base, forceOpaqueAlpha ? (u8)255 : it.base[3]);
         if (!s_run.matValid || mat != s_run.matColor)
         {
             GX_SetChanMatColor(GX_COLOR0A0, toColor(mat));
@@ -2482,6 +2522,11 @@ static bool drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
                        (hasUV ? 1u : 0u);
     const u32 alphaOr = forceOpaqueAlpha ? 0xFF000000u : 0u;
     const bool beam = ls.lit && ls.beam && !hasColor && !env && beamBegin(it, x, ls);
+    if (sumScale)                               // never with a beam (pickLights)
+    {
+        sumBegin(it, sumScale);
+        elan_Stats().sumDrawn++;
+    }
     if (!(s_fetchOn && (!hasColor || g_elan_colour_fetch_preset) && fetchDraw(it, fmtKey, alphaOr)))
     {
         useFormat(fmtKey);
@@ -2489,7 +2534,7 @@ static bool drawItem(u32 index, const ElanGxFrame& f, bool forceOpaqueAlpha)
     }
     if (beam)
         beamEnd(it, f);
-    return beam;
+    return beam || sumScale;
 }
 
 #endif

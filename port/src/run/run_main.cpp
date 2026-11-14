@@ -1566,6 +1566,17 @@ void host_on_vblank()
                          (es.coneOut - last.coneOut) / 60);
                 logLine(line);
             }
+            if (es.sumHalf != last.sumHalf || es.sumQuarter != last.sumQuarter || es.sumUnsafe != last.sumUnsafe)
+            {
+                // LIGHT SUM: picks (recorded lists with --gpu-tnl, the preview's
+                // lists without it) whose light sum could pass kSumSafe.
+                snprintf(line, sizeof(line),
+                         "[run]   LIGHT SUM per frame: point-lit lists lit at 1/2 %u, at 1/4 %u, left over the safe "
+                         "sum %u\n",
+                         (es.sumHalf - last.sumHalf) / 60, (es.sumQuarter - last.sumQuarter) / 60,
+                         (es.sumUnsafe - last.sumUnsafe) / 60);
+                logLine(line);
+            }
             if (es.lightCmds != last.lightCmds || es.lightCmdsSame != last.lightCmdsSame || es.lightPicks != last.lightPicks)
             {
                 snprintf(line, sizeof(line),
@@ -1971,6 +1982,14 @@ int main(int argc, char** argv)
         // texture coordinates checked against the ELAN's cone at every vertex).
         extern int g_headlight_preset;
         g_headlight_preset = atoi(hl);
+    }
+    if (const char* lsum = argValue(argc, argv, "--light-sum"))
+    {
+        // LIGHT SUM (default 1 here and in the launcher): point-lit lists whose
+        // GX light sum could pass ~2 are lit at 1/2 or 1/4 (the preview and the
+        // census show the scaled sums; the picture must not change).
+        extern int g_light_sum_preset;
+        g_light_sum_preset = atoi(lsum);
     }
     if (const char* lc = argValue(argc, argv, "--list-cull"))
     {
