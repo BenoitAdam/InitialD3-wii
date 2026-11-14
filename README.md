@@ -1,5 +1,7 @@
 # Initial D 3 for Wii
 
+Forked from https://github.com/distilledorion-sketch/Initial-D-Arcade-Stage-3-Native-SH-4-Recompilation-WIP-
+
 An experimental **NAOMI 2 → Wii** port of *Initial D Arcade Stage 3* (GDS-0033), built on
 an emulator core forked from nullDC4Wii with a NAOMI 2
 hardware layer on top (DIMM board, JVS I/O, ELAN 3D chip). It runs on a Wii or vWii through
