@@ -153,7 +153,7 @@ struct CoreOption
 
 inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // ---- General -----------------------------------------------------------
-    {"SPEED LIMITER ", "caps emulation at 100% (the menus otherwise run up to 160%)", PAGE_GENERAL, 0, 2,
+    {"SPEED LIMITER ", "caps emulation at 100% (the menus otherwise run up to 160%)", PAGE_GENERAL, 1, 2,
      {"OFF (UNCAPPED)", "ON (CAP 100%)"}, {0, 1}},
     {"IDLE LOOP SKIP", "Initial D's wait-for-frame loop runs 30x fewer times (same timing)", PAGE_CORE, 1,
      2, {"OFF", "ON"}, {0, 1}},
@@ -167,7 +167,7 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
      PAGE_DEPTH, 1, 2, {"WALK ALL", "SKIP MODELS"}, {0, 1}},
     // (OLD) values last: autolaunch.txt holds each row's index.
     {"TEXTURE CACHE ", "VERY FAST+: NORMAL + a memo of each render's binds. (OLD) ones alias here",
-     PAGE_DEPTH_2, 3, 6,
+     PAGE_DEPTH_2, 1, 6,
      {"VERY FAST", "VERY FAST+", "FAST", "NORMAL (DEFAULT)", "QUALITY (SLOW)", "VERY FAST+ (OLD)"},
      {0, 7, 1, 2, 3, 6}},
     {"VQ AS CMPR    ", "VQ 565 textures as GX CMPR (4 bits a texel); ON (OLD): the old encoder",
@@ -248,7 +248,7 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     {"SQ FLUSH FAST ", "store-queue flushes to memory inline, no C call (Initial D: 4K a frame)", PAGE_RECOMPILER,
      1, 2, {"OFF (C CALL)", "ON (INLINE)"}, {0, 1}},
     // ---- Audio (nullDC4Wii's wii_audio.cpp) -------------------------------------
-    {"AUDIO SYNC    ", "paces emulation to the sound, EMULATED clock only (FREE RUN: never waits)", PAGE_AUDIO, 1, 3,
+    {"AUDIO SYNC    ", "paces emulation to the sound, EMULATED clock only (FREE RUN: never waits)", PAGE_AUDIO, 0, 3,
      {"0 (FREE RUN)", "4 (RECOMMENDED)", "8 (MOST SLACK)"}, {0, 4, 8}},
     {"AUDIO BLOCK   ", "samples per sound buffer: bigger = more slack, more delay", PAGE_AUDIO, 0, 3,
      {"1024 (23 MS)", "1536 (35 MS)", "2048 (46 MS)"}, {0, 1, 2}},
@@ -319,7 +319,7 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
     // (naomi_frontend.cpp naomi_MirrorViewSkip), so neither its SH-4 work nor
     // its ELAN commands are left.
     {"MIRROR        ", "in-car view: the mirror draws the scene twice; OFF faster, OFF + GAME SKIP fastest",
-     PAGE_GENERAL, 1, 3, {"ON (LEGACY)", "OFF (FASTER)", "OFF + GAME SKIP"}, {1, 0, 2}},
+     PAGE_GENERAL, 2, 3, {"ON (LEGACY)", "OFF (FASTER)", "OFF + GAME SKIP"}, {1, 0, 2}},
     // SOUND LEVELS (sgc_if.cpp): two sounds recognised by their sample.
     {"MENU SOUND    ", "menu cursor sound (left/right/up/down): 0 = muted, 10 = as the game", PAGE_AUDIO, 5, 11,
      {"0 (MUTED)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10 (AS THE GAME)"},
@@ -328,7 +328,7 @@ inline constexpr CoreOption kCoreOptions[kCoreOptionCount] = {
      11, {"0 (MUTED)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10 (AS THE GAME)"},
      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
     // Needs 3D LIST CULL (the boxes): naomi_elan_tnl.cpp, tooSmall.
-    {"SMALL 3D      ", "GPU T&L: 3D objects smaller than this on screen are not drawn (faster)", PAGE_GENERAL, 0, 4,
+    {"SMALL 3D      ", "GPU T&L: 3D objects smaller than this on screen are not drawn (faster)", PAGE_GENERAL, 1, 4,
      {"DRAW ALL (LEGACY)", "UNDER 2 PIXELS", "UNDER 4 PIXELS", "UNDER 8 PIXELS"}, {0, 2, 4, 8}},
     // In-car view = rear-view mirror models on screen (naomi_frontend.cpp,
     // naomi_ReflectionSkip): only the opponent's car shows the reflection there.

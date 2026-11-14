@@ -428,6 +428,7 @@ struct GxSumCensus
     // [the higher's top in halves, capped at 9][the lower's]
     u32 tops[10][10];
     u32 lamps[5];         // vertices by headlights lighting them: 0, 1, 2, 3, 4+
+    u32 baseOver;         // ...of all, under a light model with base over (excess light into the offset)
 };
 GxSumCensus s_gxSum = {};
 const bool s_gxSumOn = getenv("IDAS3_HEADLIGHT_CENSUS") != nullptr;
@@ -448,8 +449,8 @@ void gxSumCensusPrint()
                    k == 0 ? "no" : k == 1 ? "one of the" : "two or more", c.bins[k][0], c.bins[k][1], c.bins[k][2],
                    c.bins[k][3], c.bins[k][4], c.bins[k][5], c.bins[k][6], c.bins[k][7], c.max[k], c.maxOne);
     if (any)
-        printf("[gxsum]   vertices by headlights lighting them: 0 %u, 1 %u, 2 %u, 3 %u, 4+ %u\n", c.lamps[0],
-               c.lamps[1], c.lamps[2], c.lamps[3], c.lamps[4]);
+        printf("[gxsum]   vertices by headlights lighting them: 0 %u, 1 %u, 2 %u, 3 %u, 4+ %u | under base over %u\n",
+               c.lamps[0], c.lamps[1], c.lamps[2], c.lamps[3], c.lamps[4], c.baseOver);
     for (int a = 0; a < 10; a++)
         for (int b = 0; b < 10; b++)
             if (c.tops[a][b])
@@ -500,7 +501,10 @@ void gxLighting(float* base, float* offs, Vec3 P, Vec3 N, const ElanGxLightSet& 
     if (s_gxSumOn && strongLit >= 2)
         s_gxSum.tops[std::min(9, (int)(topHi * 2.f + 0.5f))][std::min(9, (int)(topLo * 2.f + 0.5f))]++;
     if (s_gxSumOn)
+    {
         s_gxSum.lamps[std::min(4u, strongLit)]++;
+        s_gxSum.baseOver += s.lightModel.baseOver;
+    }
     if (s_gxSumOn)
     {
         const float sum = std::fmax(acc[0], std::fmax(acc[1], acc[2]));
