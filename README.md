@@ -2,14 +2,15 @@
 
 # Initial D Arcade Stage 3 Emulator for Wii
 
-Forked from https://github.com/distilledorion-sketch/Initial-D-Arcade-Stage-3-Native-SH-4-Recompilation-WIP- and build around https://github.com/BenoitAdam/nullDC4Wii
+Forked from https://github.com/distilledorion-sketch/Initial-D-Arcade-Stage-3-Native-SH-4-Recompilation-WIP-
+and build around https://github.com/BenoitAdam/nullDC4Wii
 
 An experimental **NAOMI 2 → Wii** port of *Initial D Arcade Stage 3* (GDS-0033), built on
 an emulator core forked from nullDC4Wii with a NAOMI 2
 hardware layer on top (DIMM board, JVS I/O, ELAN 3D chip). It runs on a Wii or vWii through
 the Homebrew Channel. A Windows build of the same launcher is kept for debugging.
 
-> **Initial D 3 is an independent open-source software project. It is not affiliated with,
+> **Speed Boy 3 is an independent open-source software project. It is not affiliated with,
 > endorsed by, or sponsored by Sega, Kodansha, Shuichi Shigeno, or Nintendo. "Initial D" and
 > "Initial D Arcade Stage 3" are registered trademarks of their respective owners. This
 > repository contains no game assets, copyrighted code, or system BIOS. Users must supply
@@ -17,7 +18,7 @@ the Homebrew Channel. A Windows build of the same launcher is kept for debugging
 
 **Status: beta (1.00).** The game boots to its menus and races are playable, but speed on real
 hardware is not yet full. Menus and attract mode run at full speed; races currently run
-around 40 fps with every frame drawn. Expect bugs and frequent changes.
+around 50/60 fps with every frame drawn. Expect bugs and frequent changes.
 
 ## Requirements
 
@@ -148,7 +149,7 @@ own licence headers.
 
 ## Legal
 
-Initial D 3 is an independent open-source software project. It is not affiliated with,
+Speed Boy 3 is an independent open-source software project. It is not affiliated with,
 endorsed by, or sponsored by Sega, Kodansha, Shuichi Shigeno, or Nintendo. "Initial D" and
 "Initial D Arcade Stage 3" are registered trademarks of their respective owners. This
 repository contains no game assets, copyrighted code, or system BIOS. Users must supply their
