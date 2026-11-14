@@ -1,8 +1,8 @@
 [![Discord](https://img.shields.io/discord/286429969104764928?label=NullDC4wii&logo=discord&logoColor=FFFFFF)](https://discord.gg/sJst6jmQyH)
 
-# Initial D 3 for Wii
+# Initial D Arcade Stage 3 Emulator for Wii
 
-Forked from https://github.com/distilledorion-sketch/Initial-D-Arcade-Stage-3-Native-SH-4-Recompilation-WIP-
+Forked from https://github.com/distilledorion-sketch/Initial-D-Arcade-Stage-3-Native-SH-4-Recompilation-WIP- and build around https://github.com/BenoitAdam/nullDC4Wii
 
 An experimental **NAOMI 2 → Wii** port of *Initial D Arcade Stage 3* (GDS-0033), built on
 an emulator core forked from nullDC4Wii with a NAOMI 2
