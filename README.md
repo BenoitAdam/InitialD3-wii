@@ -98,33 +98,28 @@ profiler that writes timings to the log are available for performance testing.
 
 Music tempo follows emulation speed, so it only sounds right when the game runs at 100%.
 
-## Building
+## FAQ
 
-**Wii:** devkitPro with devkitPPC and libogc. Run `port\build_wii.bat`, or run `make` in
-`port/wii` from a devkitPro shell. It builds the SD card layout in `port/wii/dist/`
-(`apps/initiald3wii/boot.dol`): copy its contents to the root of the card.
+### Is this an Emulator or a Recomp ?
 
-**Windows (debug build and tests):** Visual Studio 2022 or Build Tools with the C++ workload.
-Run `port\build_windows.bat`, or from an x64 Native Tools prompt:
+It's an **Emulator**. Initially I was thinking I was doing a recomp but by asking to use NullDC4Wii to help, Claude undertood to make it the emulator way. It's not really important, maybe someone will do a recomp one day.
 
-```
-cmake -S port -B build-port -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-port
-ctest --test-dir build-port --output-on-failure
-```
+### How does a Wii Emulate NAOMI 2 ? It has more Ram than Wii !
 
-The tests need no game data: they build a synthetic GD-ROM CHD with a fake encrypted image
-and run the whole load pipeline on it. See [port/README.md](port/README.md) for the source
-map and details.
+Yes but all Ram isn't use everytime, so there is dynamic stuff to take only whats necessary
 
-## Repository layout
+### Will you make other NAOMI 2 games ?
 
-- `port/src/` – launcher: CHD / PIC / DES handling, menus, game runner.
-- `port/emu/` – emulator core: SH-4 interpreter and PowerPC dynarec, PVR → GX renderer,
-  AICA / ARM7 sound, and the NAOMI 2 layer (`naomi/`).
-- `port/third_party/` – libchdr and its dependencies (LZMA, zlib, zstd, dr_flac).
-- `port/wii/` – Wii Makefile, `meta.xml`, icon.
-- `port/tests/` – tests that need no game data.
+No, me and my friend are just big fans of **Initial D !**
+
+### What's NullDC4Wii ?
+
+It's a Dreamcast emulator for Wii 
+https://github.com/BenoitAdam/nullDC4Wii
+
+### Can I Fork your project
+
+Of course you are free to, but please contact me anyway when doing a side-project
 
 ## Reporting problems
 
