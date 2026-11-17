@@ -102,7 +102,7 @@ Music tempo follows emulation speed, so it only sounds right when the game runs 
 
 ### Is this an Emulator or a Recomp ?
 
-It's an **Emulator**. Initially I was thinking I was doing a recomp but by asking to use NullDC4Wii to help, Claude undertood to make it the emulator way. It's not really important, maybe someone will do a recomp one day.
+It's an **Emulator**. Initially I was thinking I was doing a recomp but by asking to use NullDC4Wii to help, Claude understood to make it the emulator way. It's not really important (except to get full 100% speed), but maybe someone will do a recomp one day.
 
 ### How does a Wii Emulate NAOMI 2 ? It has more Ram than Wii !
 
@@ -117,7 +117,7 @@ No, me and my friend are just big fans of **Initial D !**
 It's a Dreamcast emulator for Wii 
 https://github.com/BenoitAdam/nullDC4Wii
 
-### Can I Fork your project
+### Can I Fork your project ?
 
 Of course you are free to, but please contact me anyway when doing a side-project
 
