@@ -121,6 +121,32 @@ https://github.com/BenoitAdam/nullDC4Wii
 
 Of course you are free to, but please contact me anyway when doing a side-project
 
+### Do you have a discord ?
+
+Yes : https://discord.gg/sJst6jmQyH
+
+### Do you accept donation ?
+
+Yes ! Initially I was against donation but spending this much time & effort (and sometimes money) to this project led me to ask for donation. Not trying to getting rich, just staying afloat.
+
+#### Buy Me a Coffee / Ko-Fi
+
+This is very popular amongst small dev project, I don't know what's the difference or if some people would prefer one over the other one, anyway here are the links : 
+
+- https://buymeacoffee.com/nulldc4wii
+- https://ko-fi.com/nulldc4wii
+
+#### Patreon
+
+The classic "Patreon" subscribing is here :
+
+https://www.patreon.com/cw/NullDC4Wii
+
+#### Paypal
+
+For those used to Paypal, the link is here :
+https://www.paypal.com/ncp/payment/2NE7AYS77K6AJ
+
 ## Reporting problems
 
 Open a GitHub issue with the launcher options you used, what you were doing, and the newest
